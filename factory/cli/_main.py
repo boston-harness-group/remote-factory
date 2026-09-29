@@ -124,6 +124,7 @@ _COMMAND_GROUPS: list[tuple[str, list[str]]] = [
         [
             "leakage-check",
             "validate-research",
+            "check-patch-targets",
             "checkpoint",
             "resume",
             "notify",
@@ -446,6 +447,7 @@ def main(argv: list[str] | None = None) -> int:
         "outer-loop": lambda a: __import__(
             "factory.cli.outer_loop", fromlist=["cmd_outer_loop"]
         ).cmd_outer_loop(a),
+        "check-patch-targets": _cli.cmd_check_patch_targets,
         "mempalace": _cli.cmd_mempalace,
         "graph": lambda a: {
             "extract": _cli.cmd_graph_extract,

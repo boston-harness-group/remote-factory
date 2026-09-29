@@ -34,6 +34,40 @@ You will be given:
      - Do NOT add PR comments summarizing what was fixed — the commit messages are sufficient
      - The commit list on the PR already shows what each follow-up changed
 
+### Behavioral Tests for Data Paths
+
+When the issue names **Data path:** tags, write one behavioral test per named data path *in addition to* your normal unit tests. These tests verify the pieces are wired together correctly — they catch the integration bugs that unit tests miss.
+
+**Rules for behavioral tests:**
+- Call the **real entry point** — not an isolated internal function
+- Fake **only external I/O** (API calls, database, filesystem, subprocesses) — the project's own modules must run for real
+- Assert on the **final output** at the far end of the path, not an intermediate value
+- Tag each test with `# Behavioral test: <data_path_name>`
+
+**Good — fakes only the external boundary:**
+```python
+# Behavioral test: config_parse
+def test_config_roundtrip(tmp_path):
+    factory_md = tmp_path / "factory.md"
+    factory_md.write_text("## Goal\nTest project\n## Scope\n### Modifiable\n- src/**\n")
+    result = parse_factory_config(str(tmp_path))  # real parser, real file
+    assert result.goal == "Test project"
+    assert "src/**" in result.modifiable
+```
+
+**Bad — over-mocks the project's own modules:**
+```python
+# DON'T DO THIS: patches the code under test, not the I/O boundary
+@patch("factory.config.parser._read_toml")
+@patch("factory.config.parser._validate_schema")
+def test_config_parse(mock_validate, mock_read):
+    mock_read.return_value = {"goal": "Test"}
+    mock_validate.return_value = True
+    result = parse_factory_config("/fake")  # nothing real runs
+```
+
+Behavioral tests are **in addition to** unit tests — they do not replace them. Unit tests verify individual functions; behavioral tests verify the wiring between them.
+
 ## Constraints
 
 ### Scope
