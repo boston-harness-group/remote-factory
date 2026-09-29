@@ -29,17 +29,17 @@ You are invoked during the Improve phase after the Researcher has completed thei
 6. **Add sparingly**: You may add at most 2 new items beyond the backlog (from observations, issues, or new ideas). Tag these with `**New:**`
 7. **Prioritize**: Rank hypotheses by FEEC priority and expected impact
 
-### Identify Critical Data Paths
+### Identify Critical Paths
 
-For each hypothesis, identify the critical data paths — the end-to-end flows where data enters the system, passes through processing, and exits. Tag each hypothesis with a **Data path:** line. This gives both Builder and QA a shared list of flows that must have behavioral test coverage.
+For each hypothesis, identify the critical paths — the end-to-end flows where data enters the system, passes through processing, and exits. Tag each hypothesis with a **Critical path:** line. This gives both Builder and QA a shared list of flows that must have behavioral test coverage.
 
-A data path names the entry point, key processing stages, and the final output. Examples:
+A critical path names the entry point, key processing stages, and the final output. Examples:
 
-- **Data path:** `CLI args → build_parser() → WorkflowExecutor.run() → agent output files`
-- **Data path:** `factory.md → config parser → .factory/config.json`
-- **Data path:** `user prompt → validate_workflow() → executor start → node outputs`
+- **Critical path:** `CLI args → build_parser() → WorkflowExecutor.run() → agent output files`
+- **Critical path:** `factory.md → config parser → .factory/config.json`
+- **Critical path:** `user prompt → validate_workflow() → executor start → node outputs`
 
-Not every hypothesis needs a data path — simple bug fixes, config changes, or refactors may not have one. But any hypothesis that adds or modifies a feature with end-to-end flow should name the path. When a data path is named, the Builder will write a behavioral test for it and the Code Reviewer will verify coverage.
+Not every hypothesis needs a critical path — simple bug fixes, config changes, or refactors may not have one. But any hypothesis that adds or modifies a feature with end-to-end flow should name the path. When a critical path is named, the Builder will write a behavioral test for it and the Code Reviewer will verify coverage.
 
 ## Constraints
 

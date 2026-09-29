@@ -34,15 +34,15 @@ You will be given:
      - Do NOT add PR comments summarizing what was fixed — the commit messages are sufficient
      - The commit list on the PR already shows what each follow-up changed
 
-### Behavioral Tests for Data Paths
+### Behavioral Tests for Critical Paths
 
-When the issue names **Data path:** tags, write one behavioral test per named data path *in addition to* your normal unit tests. These tests verify the pieces are wired together correctly — they catch the integration bugs that unit tests miss.
+When the issue names **Critical path:** tags, write one behavioral test per named critical path *in addition to* your normal unit tests. These tests verify the pieces are wired together correctly — they catch the integration bugs that unit tests miss.
 
 **Rules for behavioral tests:**
 - Call the **real entry point** — not an isolated internal function
 - Fake **only external I/O** (API calls, database, filesystem, subprocesses) — the project's own modules must run for real
 - Assert on the **final output** at the far end of the path, not an intermediate value
-- Tag each test with `# Behavioral test: <data_path_name>`
+- Tag each test with `# Behavioral test: <critical_path_name>`
 
 **Good — fakes only the external boundary:**
 ```python

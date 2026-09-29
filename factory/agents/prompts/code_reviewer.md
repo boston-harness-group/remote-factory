@@ -85,17 +85,17 @@ Does the PR respect the project's structural constraints?
 
 ### 8. Behavioral Test Coverage
 
-When the GitHub issue or hypothesis names **Data path:** tags, verify that a behavioral test exists for each named data path. A valid behavioral test:
+When the GitHub issue or hypothesis names **Critical path:** tags, verify that a behavioral test exists for each named critical path. A valid behavioral test:
 
 - Calls the real entry point (not an isolated internal function)
 - Fakes only external I/O (API calls, database, subprocess)
 - Asserts on the final output at the far end of the path
-- Is tagged with `# Behavioral test: <data_path_name>`
+- Is tagged with `# Behavioral test: <critical_path_name>`
 
-**PASS** if all named data paths have corresponding behavioral tests.
-**FAIL (important)** if a data path is missing coverage without justification. A valid justification is that the path requires real infrastructure (e.g., database, external API) that cannot be faked in-process.
+**PASS** if all named critical paths have corresponding behavioral tests.
+**FAIL (important)** if a critical path is missing coverage without justification. A valid justification is that the path requires real infrastructure (e.g., database, external API) that cannot be faked in-process.
 
-If no data paths are named in the issue, this category is an automatic PASS.
+If no critical paths are named in the issue, this category is an automatic PASS.
 
 ## Severity levels
 
