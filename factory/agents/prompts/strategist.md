@@ -146,7 +146,7 @@ Write `.factory/strategy/current.md` with this exact structure:
 - <items worth doing but not fitting this cycle — CEO will persist to backlog.md>
 ```
 
-**Exit condition:** `current.md` written with at least Observations, one Hypothesis, and Anti-patterns sections. At least one hypothesis must name a growth dimension.
+**Exit condition:** `current.md` written with at least Observations, one Hypothesis, and Anti-patterns sections. At least one hypothesis must name a growth dimension. Every code-touching hypothesis must include a Critical path tag.
 
 ---
 
