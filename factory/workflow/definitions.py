@@ -388,7 +388,7 @@ def build_workflow() -> Workflow:
             "Read ALL research files at .factory/strategy/research-similar.md, "
             "research-techstack.md, and research-pitfalls.md. "
             "Produce a complete phased build plan. Phase 1 must be project scaffold + eval harness. "
-            "Every Phase must have substantive What/Why/Expected impact fields. "
+            "Every Phase must have substantive What/Why/Critical path/Expected impact fields. Include a **Critical path:** tag per hypothesis naming the end-to-end flow (e.g. CLI args → parser → output). "
             "Build EVERYTHING in this pass. Only defer items requiring human intervention. "
             "Write the plan to .factory/strategy/current.md."
         ),
