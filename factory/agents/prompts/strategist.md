@@ -132,7 +132,7 @@ Write `.factory/strategy/current.md` with this exact structure:
 - **Backlog item:** <item text> (if clearing a backlog item) OR **New:** (if a new idea)
 - **Growth dimension:** <dimension name> (required for growth hypotheses)
 - **What:** <specific, scoped change — one PR's worth>
-- **Critical path:** `<entry> → <processing> → <output>` — the end-to-end flow this change affects. Use N/A only for doc-only or config-only changes.
+- **Critical path:** `<entry> → <processing> → <output>`
 - **Execution step:** <required for operational/mixed types>
 - **Expected output:** <required for operational/mixed types>
 - **Why:** <reasoning tied to observations>
