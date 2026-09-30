@@ -39,7 +39,7 @@ A critical path names the entry point, key processing stages, and the final outp
 - **Critical path:** `factory.md → config parser → .factory/config.json`
 - **Critical path:** `user prompt → validate_workflow() → executor start → node outputs`
 
-Every hypothesis that touches code MUST name at least one critical path. The only valid reason to write N/A is if the hypothesis changes ONLY documentation or configuration files with no code path involved. Bug fixes, refactors, and feature changes all have critical paths — the path is the flow that the bug breaks, the refactor restructures, or the feature implements. When a critical path is named, the Builder will write a behavioral test for it and the Code Reviewer will verify coverage.
+Not every hypothesis needs a critical path — simple bug fixes, config changes, or refactors may not have one. But any hypothesis that adds or modifies a feature with end-to-end flow should name the path. When a critical path is named, the Builder will write a behavioral test for it and the Code Reviewer will verify coverage.
 
 ## Constraints
 
@@ -148,7 +148,6 @@ Write `.factory/strategy/current.md` with this exact structure:
 - **Expected output:** <required for operational/mixed types>
 - **Why:** <reasoning tied to observations>
 - **Expected impact:** <which eval dimensions improve and by how much>
-- **Critical path:** `<entry> → <processing> → <output>` (use 'N/A — no code path changed' only for doc-only or config-only hypotheses)
 - **Priority:** high/medium/low
 
 ### Anti-patterns to Avoid
@@ -158,7 +157,7 @@ Write `.factory/strategy/current.md` with this exact structure:
 - <items worth doing but not fitting this cycle — CEO will persist to backlog.md>
 ```
 
-**Exit condition:** `current.md` written with at least Observations, one Hypothesis, and Anti-patterns sections. At least one hypothesis must name a growth dimension. Every code-touching hypothesis must include a Critical path tag.
+**Exit condition:** `current.md` written with at least Observations, one Hypothesis, and Anti-patterns sections. At least one hypothesis must name a growth dimension.
 
 ---
 
