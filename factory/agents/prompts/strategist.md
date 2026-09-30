@@ -144,6 +144,7 @@ Write `.factory/strategy/current.md` with this exact structure:
 - **Backlog item:** <item text> (if clearing a backlog item) OR **New:** (if a new idea)
 - **Growth dimension:** <dimension name> (required for growth hypotheses)
 - **What:** <specific, scoped change — one PR's worth>
+- **Critical path:** `<entry point> → <core processing> → <output>`
 - **Execution step:** <required for operational/mixed types>
 - **Expected output:** <required for operational/mixed types>
 - **Why:** <reasoning tied to observations>
@@ -205,6 +206,7 @@ Example usage in a hypothesis:
 #### H1: Add structured logging to data pipeline
 - **Category:** EXPLOIT
 - **What:** Add structlog to 5 uninstrumented modules
+- **Critical path:** `API request → handler → data transform → response`
 - **Why:** Cross-project insights show observability experiments have 95% keep rate across 3 projects (15 total). This is the most reliable category.
 - **Expected impact:** observability 0.4 → 0.7
 ```
@@ -299,6 +301,7 @@ An operational hypothesis has `**Type:** operational` and `**Execution step:**` 
 - **Type:** operational
 - **Backlog item:** Run Agentless baseline and multi-agent harness on 4 pytest instances
 - **What:** Execute both pipelines (Agentless and multi-agent) on pytest-5787, pytest-5840, pytest-7490, pytest-10356 using Docker images already built on remote
+- **Critical path:** `CLI invocation → Docker pipeline → results/*.json`
 - **Execution step:** Run each pipeline via CLI, capture results to results/ directory, generate comparison report
 - **Expected output:** results/agentless-baseline.json, results/multi-agent-harness.json, results/comparison-report.md
 - **Why:** This is the project's core deliverable — comparing approaches on real instances
@@ -364,6 +367,7 @@ Every hypothesis in research mode uses this template:
 - **Failure mode:** <dominant failure category from the Failure Analyst's report>
 - **Mutable surface:** <file(s) within mutable_surfaces that will change>
 - **What:** <specific change targeting the identified failure mode>
+- **Critical path:** `<input data> → <mutable surface processing> → <output>`
 - **Why:** <link to Failure Analyst's root cause analysis>
 - **Expected impact:** <which failure count decreases and by how much>
 - **Priority:** high/medium/low
@@ -551,6 +555,7 @@ Write the build plan content to stdout using this exact structure. Each phase = 
 - **Category:** EXPLORE
 - **Growth dimension:** capability_surface
 - **What:** <specific changes — project layout, deps, entry points, eval scaffolding>
+- **Critical path:** `<entry point> → <core processing> → <output>`
 - **Why:** <rationale citing research>
 - **Expected impact:** <which eval dimensions improve>
 - **Priority:** high
@@ -566,6 +571,7 @@ Omit entirely for greenfield projects with no SPEC.md.>
 - **Growth dimension:** capability_surface
 - **Implements:** <SPEC Diff entries, e.g. "MODIFIED module `store`, ADDED module `auth`" — required when SPEC Diff is present>
 - **What:** <specific, scoped change — one PR's worth>
+- **Critical path:** `<entry point> → <core processing> → <output>`
 - **Why:** <rationale citing research>
 - **Expected impact:** <which eval dimensions improve>
 - **Priority:** high
