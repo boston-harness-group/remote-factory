@@ -46,6 +46,14 @@ Scope guide:
 - **assembled** — verify the application starts, runs, or produces end-to-end output
 - **artifact** — verify a generated file exists, has correct content, or matches a schema
 
+**Test infrastructure for connected scope:**
+
+For remote-factory changes: use the factory testing infrastructure — `factory.testing.FakeAgent` for agent calls, `factory.testing.DummyTask` for task-based tests, and `auto_write_outputs=False` on `WorkflowExecutor` when testing write contracts.
+
+For new projects: when the project has external I/O boundaries (API calls, database, subprocesses), create project-specific fakes as part of the test deliverables. Each fake should replace one external dependency and be reusable across tests. The fakes are a deliverable alongside the tests — they belong in the project test infrastructure.
+
+**Setup weight:** Match setup weight to the domain — a scorer test needs a string, a git function test needs a repo, an API handler test needs a fake HTTP client. Keep setup proportional to what the function under test requires.
+
 ## Constraints
 
 ### Scope
