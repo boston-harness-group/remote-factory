@@ -11,7 +11,7 @@ from factory.testing.patch_check import (
     PatchTarget,
     check_file,
     _classify,
-    _detect_project_name,
+    _detect_package_names,
     _format_result,
 )
 
@@ -37,31 +37,38 @@ def _write_pyproject(tmp_path: Path, project_name: str = "my-project") -> None:
 
 class TestClassify:
     def test_external_target(self):
-        assert _classify("requests.get", "factory") == "external"
+        assert _classify("requests.get", frozenset({"factory"})) == "external"
 
     def test_internal_target(self):
-        assert _classify("factory.cli.main", "factory") == "internal"
+        assert _classify("factory.cli.main", frozenset({"factory"})) == "internal"
 
     def test_allowlisted_datetime(self):
-        assert _classify("datetime.datetime.now", "factory") == "allowlisted"
+        assert _classify("datetime.datetime.now", frozenset({"factory"})) == "allowlisted"
 
     def test_allowlisted_random(self):
-        assert _classify("random.randint", "factory") == "allowlisted"
+        assert _classify("random.randint", frozenset({"factory"})) == "allowlisted"
 
     def test_allowlisted_time(self):
-        assert _classify("time.time", "factory") == "allowlisted"
+        assert _classify("time.time", frozenset({"factory"})) == "allowlisted"
 
     def test_allowlisted_os_environ(self):
-        assert _classify("os.environ", "factory") == "allowlisted"
+        assert _classify("os.environ", frozenset({"factory"})) == "allowlisted"
 
     def test_allowlisted_uuid(self):
-        assert _classify("uuid.uuid4", "factory") == "allowlisted"
+        assert _classify("uuid.uuid4", frozenset({"factory"})) == "allowlisted"
 
     def test_project_name_exact_match(self):
-        assert _classify("factory", "factory") == "internal"
+        assert _classify("factory", frozenset({"factory"})) == "internal"
 
     def test_unrelated_package(self):
-        assert _classify("boto3.client", "factory") == "external"
+        assert _classify("boto3.client", frozenset({"factory"})) == "external"
+
+    def test_multiple_package_names(self):
+        """Internal detection works when multiple package names are provided."""
+        names = frozenset({"my_lib", "my_utils"})
+        assert _classify("my_lib.core.run", names) == "internal"
+        assert _classify("my_utils.helpers.parse", names) == "internal"
+        assert _classify("other_pkg.run", names) == "external"
 
 
 # ── exit code tests ─────────────────────────────────────────────
@@ -244,26 +251,55 @@ class TestEdgeCases:
 
 # ── project name detection ──────────────────────────────────────
 
-class TestProjectNameDetection:
-    def test_detect_from_pyproject(self, tmp_path):
-        """Detects project name from pyproject.toml."""
+class TestPackageNameDetection:
+    def test_detect_init_py_dirs(self, tmp_path):
+        """Finds directories with __init__.py as importable packages."""
         _write_pyproject(tmp_path, "cool-project")
-        name = _detect_project_name(tmp_path)
-        assert name == "cool_project"
+        pkg_dir = tmp_path / "cool_lib"
+        pkg_dir.mkdir()
+        (pkg_dir / "__init__.py").write_text("")
+        names = _detect_package_names(tmp_path)
+        assert "cool_lib" in names
+
+    def test_pyproject_name_included_as_fallback(self, tmp_path):
+        """The pyproject.toml name (dash→underscore) is also included."""
+        _write_pyproject(tmp_path, "cool-project")
+        names = _detect_package_names(tmp_path)
+        assert "cool_project" in names
 
     def test_dash_to_underscore(self, tmp_path):
         """Dashes in project name are converted to underscores."""
         _write_pyproject(tmp_path, "my-cool-project")
-        name = _detect_project_name(tmp_path)
-        assert name == "my_cool_project"
+        names = _detect_package_names(tmp_path)
+        assert "my_cool_project" in names
+
+    def test_excluded_dirs_not_detected(self, tmp_path):
+        """Common non-package dirs (.venv, __pycache__) are excluded."""
+        _write_pyproject(tmp_path, "proj")
+        for excluded in (".venv", "__pycache__", "node_modules"):
+            d = tmp_path / excluded
+            d.mkdir()
+            (d / "__init__.py").write_text("")
+        names = _detect_package_names(tmp_path)
+        for excluded in (".venv", "__pycache__", "node_modules"):
+            assert excluded not in names
+
+    def test_egg_info_dirs_excluded(self, tmp_path):
+        """Directories ending in .egg-info are excluded."""
+        _write_pyproject(tmp_path, "proj")
+        egg = tmp_path / "proj.egg-info"
+        egg.mkdir()
+        (egg / "__init__.py").write_text("")
+        names = _detect_package_names(tmp_path)
+        assert "proj.egg-info" not in names
 
     def test_no_pyproject(self, tmp_path):
-        """Missing pyproject.toml → empty string."""
-        name = _detect_project_name(tmp_path)
-        assert name == ""
+        """Missing pyproject.toml → empty frozenset."""
+        names = _detect_package_names(tmp_path)
+        assert names == frozenset()
 
     def test_auto_detect_in_check_file(self, tmp_path):
-        """check_file auto-detects project name when not provided."""
+        """check_file auto-detects package names when not provided."""
         _write_pyproject(tmp_path, "my-project")
         f = _write_test_file(tmp_path, """\
             from unittest.mock import patch
@@ -291,6 +327,30 @@ class TestProjectNameDetection:
         # is only reliable in isolated tmp dirs. If it finds a pyproject,
         # that's fine — the important thing is no crash.
         assert result.exit_code in (0, 1, 2)
+
+    def test_original_bug_mismatched_name(self, tmp_path):
+        """Reproduces the original bug: pyproject.toml name != actual package dir.
+
+        A project with pyproject.toml name='my-project' but actual importable
+        package 'my_lib/' (with __init__.py) must detect 'my_lib' as internal.
+        """
+        _write_pyproject(tmp_path, "my-project")
+        pkg_dir = tmp_path / "my_lib"
+        pkg_dir.mkdir()
+        (pkg_dir / "__init__.py").write_text("")
+        f = _write_test_file(tmp_path, """\
+            from unittest.mock import patch
+
+            @patch("my_lib.core.run")
+            def test_engine(mock_run):
+                mock_run.return_value = True
+        """)
+        # Without the fix, 'my_lib.core.run' would be classified as 'external'
+        # because _detect_project_name would only find 'my_project' from pyproject.toml
+        result = check_file(f)
+        assert result.exit_code == 1
+        assert result.targets[0].classification == "internal"
+        assert result.targets[0].target == "my_lib.core.run"
 
 
 # ── format output ───────────────────────────────────────────────

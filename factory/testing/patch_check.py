@@ -62,16 +62,17 @@ class CheckResult:
         return 0
 
 
-def _classify(target: str, project_name: str) -> str:
+def _classify(target: str, package_names: frozenset[str]) -> str:
     """Classify a dotted target string."""
     # Check allowlist first — these are always ok
     for allowed in ALLOWLISTED_MODULES:
         if target == allowed or target.startswith(allowed + "."):
             return "allowlisted"
 
-    # Internal = starts with the project package name
-    if target.startswith(project_name + ".") or target == project_name:
-        return "internal"
+    # Internal = starts with any of the project's package names
+    for name in package_names:
+        if target.startswith(name + ".") or target == name:
+            return "internal"
 
     return "external"
 
@@ -79,8 +80,8 @@ def _classify(target: str, project_name: str) -> str:
 class PatchVisitor(ast.NodeVisitor):
     """Walks an AST and extracts patch targets from decorators and calls."""
 
-    def __init__(self, project_name: str) -> None:
-        self.project_name = project_name
+    def __init__(self, package_names: frozenset[str]) -> None:
+        self.package_names = package_names
         self.targets: list[PatchTarget] = []
 
     # ── decorator-based patches ──────────────────────────────────
@@ -102,7 +103,7 @@ class PatchVisitor(ast.NodeVisitor):
                         target=target_str,
                         line=decorator.lineno,
                         kind="decorator",
-                        classification=_classify(target_str, self.project_name),
+                        classification=_classify(target_str, self.package_names),
                     )
                 )
 
@@ -155,7 +156,7 @@ class PatchVisitor(ast.NodeVisitor):
                             target=target_str,
                             line=node.lineno,
                             kind="monkeypatch_setattr",
-                            classification=_classify(target_str, self.project_name),
+                            classification=_classify(target_str, self.package_names),
                         )
                     )
             elif attr in ("setenv", "delenv") and self._is_monkeypatch(node.func.value):
@@ -217,22 +218,63 @@ class PatchVisitor(ast.NodeVisitor):
         return None
 
 
-def _detect_project_name(start_dir: Path | None = None) -> str:
-    """Detect the project package name from pyproject.toml."""
+_EXCLUDED_DIRS: frozenset[str] = frozenset(
+    {
+        ".venv",
+        "venv",
+        "node_modules",
+        ".git",
+        "__pycache__",
+        ".factory",
+        ".tox",
+        "build",
+        "dist",
+        ".eggs",
+    }
+)
+
+
+def _detect_package_names(start_dir: Path | None = None) -> frozenset[str]:
+    """Detect importable package names by finding directories with __init__.py.
+
+    Also includes the pyproject.toml project name (dash→underscore) as a fallback.
+    Returns a frozenset of all discovered package names.
+    """
     search_dir = start_dir or Path.cwd()
 
-    # Walk up to find pyproject.toml
+    # Walk up to find pyproject.toml (project root)
+    project_root: Path | None = None
     current = search_dir.resolve()
     for _ in range(20):  # safety limit
         candidate = current / "pyproject.toml"
         if candidate.is_file():
-            return _parse_project_name(candidate)
+            project_root = current
+            break
         parent = current.parent
         if parent == current:
             break
         current = parent
 
-    return ""
+    names: set[str] = set()
+
+    if project_root is not None:
+        # Scan project root for directories containing __init__.py
+        for child in project_root.iterdir():
+            if not child.is_dir():
+                continue
+            dir_name = child.name
+            # Skip common non-package directories and egg-info dirs
+            if dir_name in _EXCLUDED_DIRS or dir_name.endswith(".egg-info"):
+                continue
+            if (child / "__init__.py").is_file():
+                names.add(dir_name)
+
+        # Also include pyproject.toml name as fallback
+        toml_name = _parse_project_name(project_root / "pyproject.toml")
+        if toml_name:
+            names.add(toml_name)
+
+    return frozenset(names)
 
 
 def _parse_project_name(toml_path: Path) -> str:
@@ -249,7 +291,10 @@ def _parse_project_name(toml_path: Path) -> str:
         return ""
 
 
-def check_file(path: str | Path, project_name: str | None = None) -> CheckResult:
+def check_file(
+    path: str | Path,
+    project_name: str | frozenset[str] | None = None,
+) -> CheckResult:
     """Analyse a test file for over-mocking.
 
     Parameters
@@ -257,8 +302,8 @@ def check_file(path: str | Path, project_name: str | None = None) -> CheckResult
     path:
         Path to the Python test file.
     project_name:
-        The project's importable package name (e.g. ``factory``).
-        Auto-detected from ``pyproject.toml`` if not provided.
+        Importable package name(s).  Accepts a single string, a frozenset of
+        strings, or ``None`` (auto-detected from the project root).
 
     Returns
     -------
@@ -268,12 +313,19 @@ def check_file(path: str | Path, project_name: str | None = None) -> CheckResult
     if not file_path.is_file():
         return CheckResult(path=str(file_path), error=f"File not found: {file_path}")
 
+    # Normalise to frozenset[str]
+    package_names: frozenset[str]
     if project_name is None:
-        project_name = _detect_project_name(file_path.parent)
-    if not project_name:
+        package_names = _detect_package_names(file_path.parent)
+    elif isinstance(project_name, str):
+        package_names = frozenset({project_name})
+    else:
+        package_names = project_name
+
+    if not package_names:
         return CheckResult(
             path=str(file_path),
-            error="Could not detect project name from pyproject.toml",
+            error="Could not detect package names from project root",
         )
 
     try:
@@ -290,7 +342,7 @@ def check_file(path: str | Path, project_name: str | None = None) -> CheckResult
     except SyntaxError as exc:
         return CheckResult(path=str(file_path), error=f"Syntax error: {exc}")
 
-    visitor = PatchVisitor(project_name)
+    visitor = PatchVisitor(package_names)
     visitor.visit(tree)
 
     return CheckResult(path=str(file_path), targets=visitor.targets)
@@ -342,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--project-name",
         default=None,
-        help="Project package name (auto-detected from pyproject.toml if omitted)",
+        help="Project package name (auto-detected from project root if omitted)",
     )
     args = parser.parse_args(argv)
 
