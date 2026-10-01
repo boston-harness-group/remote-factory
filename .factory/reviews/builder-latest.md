@@ -1,26 +1,19 @@
-# Builder Review — Remove duplicate fields from hypothesis template
-
-## Issue
-Remove 4 extra fields from the hypothesis template in `factory/agents/prompts/strategist.md` that duplicate what the acceptance criteria table already captures.
+# Builder Review — Split universal vs project-specific test infrastructure guidance
 
 ## Changes Made
-- **File:** `factory/agents/prompts/strategist.md`
-- **Lines removed (previously 139-142):**
-  - `**Regression scenario:** <what input or condition produces the bug or gap>`
-  - `**Expected outcome:** <what should happen instead>`
-  - `**Required scope:** local (single function) | connection (value crosses a module boundary)`
-  - `**Connection to exercise:** <required only when scope=connection — ...>`
+
+### 1. Simplified universal Builder prompt (`factory/agents/prompts/builder.md`)
+- **Before:** Two paragraphs under "Test infrastructure for connected scope" — one for remote-factory changes (naming FakeAgent, DummyTask, auto_write_outputs) and one for new projects (create project-specific fakes)
+- **After:** Single line: "create or use project-specific fakes that replace external I/O. The fakes are a test deliverable — they belong in the project test infrastructure, not inline in each test."
+- **Rationale:** The universal prompt should not contain remote-factory-specific tooling details. Those belong in the project override.
+
+### 2. Created project-specific override (`.factory/agents/builder.md`)
+- Lists the three reusable test infrastructure components: `FakeAgent`, `DummyTask`, `auto_write_outputs=False`
+- Placed at `.factory/agents/builder.md` — the standard project-specific override path used by the agent runner's two-tier lookup
 
 ## Verification
-- Searched entire file for all 4 field names — confirmed they appeared only once (lines 139-142)
-- After removal, template flows: Acceptance criteria → Execution step → Expected output → Why
-- No other hypothesis templates or examples in the file contained these fields
 
-## Acceptance Evidence
-
-| Criterion | Scope | Evidence |
-|---|---|---|
-| 4 duplicate fields removed from hypothesis template | artifact | `git diff` shows exactly 4 lines removed from lines 139-142 |
-| No other occurrences remain in file | artifact | `grep -n "Regression scenario\|Expected outcome\|Required scope\|Connection to exercise"` returns empty |
-| Template structure is correct after removal | artifact | Lines 138→139 now flow from acceptance criteria table row directly to `**Execution step:**` |
-| No unrelated changes | artifact | `git diff --stat` shows only `strategist.md` modified (4 deletions) |
+- **Artifact check:** Both files exist with correct content
+- **Smoke tests:** 165 passed (test_models, test_guards, test_runners)
+- **Agent runner lookup:** Confirmed `factory/agents/runner.py` checks `.factory/agents/<role>.md` as the first-priority override path (line 64)
+- **No test breakage:** Changes are prompt-only (markdown), no code logic affected
