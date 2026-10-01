@@ -43,7 +43,7 @@ When the issue names **Critical path:** tags, write one behavioral test per name
 - Fake **only external I/O** (API calls, database, filesystem, subprocesses) — the project's own modules must run for real
 - Assert on the **final output** at the far end of the path, not an intermediate value
 - Tag each test with `# Behavioral test: <critical_path_name>`
-- Keep setup minimal — call the real entry point with the simplest input that exercises the path. If you can test with a string or a tmp_path, don't create subprocesses, git repos, or network fixtures.
+- Keep setup minimal, but test the full path — call the outermost entry point (not an internal function) with the simplest input that exercises the path end-to-end. If you can test with a string or a tmp_path, don't create subprocesses, git repos, or network fixtures.
 
 **Good — fakes only the external boundary:**
 ```python
