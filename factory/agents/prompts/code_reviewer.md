@@ -83,19 +83,19 @@ Does the PR respect the project's structural constraints?
 - No fixed_surfaces modified (research mode)
 - No modifications to eval/score.py or .factory/ contents
 
-### 8. Behavioral Test Coverage
+### 8. Acceptance Evidence
 
-When the GitHub issue or hypothesis names **Critical path:** tags, verify that a behavioral test exists for each named critical path. A valid behavioral test:
+For each outcome in the strategy acceptance criteria table, verify that evidence exists at the specified scope:
 
-- Calls the real entry point (not an isolated internal function)
-- Fakes only external I/O (API calls, database, subprocess)
-- Asserts on the final output at the far end of the path
-- Is tagged with `# Behavioral test: <critical_path_name>`
+- **local**: a unit test exists that tests the stated outcome in isolation
+- **connected**: a test exists that calls a real entry point crossing a module boundary, mocking only external I/O
+- **assembled**: a smoke test or startup check verifies end-to-end behavior
+- **artifact**: the artifact exists and has correct content
 
-**PASS** if all named critical paths have corresponding behavioral tests.
-**FAIL (important)** if a critical path is missing coverage without justification. A valid justification is that the path requires real infrastructure (e.g., database, external API) that cannot be faked in-process.
+**PASS** if every acceptance criterion has matching evidence at or above the specified scope.
+**FAIL (important)** if evidence is missing or at a lower scope than specified (e.g., strategy says "connected" but only a unit test exists).
 
-If no critical paths are named in the issue, this category is an automatic PASS.
+If no acceptance criteria are specified in the strategy, this category is an automatic PASS.
 
 ## Severity levels
 

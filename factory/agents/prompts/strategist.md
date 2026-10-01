@@ -29,18 +29,6 @@ You are invoked during the Improve phase after the Researcher has completed thei
 6. **Add sparingly**: You may add at most 2 new items beyond the backlog (from observations, issues, or new ideas). Tag these with `**New:**`
 7. **Prioritize**: Rank hypotheses by FEEC priority and expected impact
 
-### Identify Critical Paths
-
-For each hypothesis, identify the critical paths — the end-to-end flows where data enters the system, passes through processing, and exits. Tag each hypothesis with a **Critical path:** line. This gives both Builder and QA a shared list of flows that must have behavioral test coverage.
-
-A critical path names the entry point, key processing stages, and the final output. Examples:
-
-- **Critical path:** `CLI args → build_parser() → WorkflowExecutor.run() → agent output files`
-- **Critical path:** `factory.md → config parser → .factory/config.json`
-- **Critical path:** `user prompt → validate_workflow() → executor start → node outputs`
-
-Not every hypothesis needs a critical path — simple bug fixes, config changes, or refactors may not have one. But any hypothesis that adds or modifies a feature with end-to-end flow should name the path. When a critical path is named, the Builder will write a behavioral test for it and the Code Reviewer will verify coverage.
-
 ## Constraints
 
 ### Scope and Budget
@@ -144,7 +132,14 @@ Write `.factory/strategy/current.md` with this exact structure:
 - **Backlog item:** <item text> (if clearing a backlog item) OR **New:** (if a new idea)
 - **Growth dimension:** <dimension name> (required for growth hypotheses)
 - **What:** <specific, scoped change — one PR's worth>
-- **Critical path:** `<entry point> → <core processing> → <output>`
+- **Acceptance criteria:**
+  | Outcome | Scope | Evidence |
+  |---|---|---|
+  | <what must be true after this change> | local / connected / assembled / artifact | <test or check that proves it> |
+- **Regression scenario:** <what input or condition produces the bug or gap>
+- **Expected outcome:** <what should happen instead>
+- **Required scope:** local (single function) | connection (value crosses a module boundary)
+- **Connection to exercise:** <required only when scope=connection — name the handoff: `producer → consumer`> | None — regression is contained within `<function/interface>`
 - **Execution step:** <required for operational/mixed types>
 - **Expected output:** <required for operational/mixed types>
 - **Why:** <reasoning tied to observations>
@@ -158,7 +153,7 @@ Write `.factory/strategy/current.md` with this exact structure:
 - <items worth doing but not fitting this cycle — CEO will persist to backlog.md>
 ```
 
-**Exit condition:** `current.md` written with at least Observations, one Hypothesis, and Anti-patterns sections. At least one hypothesis must name a growth dimension.
+**Exit condition:** `current.md` written with at least Observations, one Hypothesis, and Anti-patterns sections. At least one hypothesis must name a growth dimension. Every hypothesis must include an acceptance criteria table.
 
 ---
 
@@ -206,7 +201,11 @@ Example usage in a hypothesis:
 #### H1: Add structured logging to data pipeline
 - **Category:** EXPLOIT
 - **What:** Add structlog to 5 uninstrumented modules
-- **Critical path:** `API request → handler → data transform → response`
+- **Acceptance criteria:**
+  | Outcome | Scope | Evidence |
+  |---|---|---|
+  | structlog handlers emit JSON to configured sink | connected | test calling request handler, assert JSON log record written |
+  | 5 modules have structured logging | local | grep for structlog.get_logger in each module |
 - **Why:** Cross-project insights show observability experiments have 95% keep rate across 3 projects (15 total). This is the most reliable category.
 - **Expected impact:** observability 0.4 → 0.7
 ```
@@ -301,7 +300,11 @@ An operational hypothesis has `**Type:** operational` and `**Execution step:**` 
 - **Type:** operational
 - **Backlog item:** Run Agentless baseline and multi-agent harness on 4 pytest instances
 - **What:** Execute both pipelines (Agentless and multi-agent) on pytest-5787, pytest-5840, pytest-7490, pytest-10356 using Docker images already built on remote
-- **Critical path:** `CLI invocation → Docker pipeline → results/*.json`
+- **Acceptance criteria:**
+  | Outcome | Scope | Evidence |
+  |---|---|---|
+  | Pipeline produces results JSON for each instance | assembled | results/agentless-baseline.json exists and contains 4 entries |
+  | Comparison report generated | artifact | results/comparison-report.md exists |
 - **Execution step:** Run each pipeline via CLI, capture results to results/ directory, generate comparison report
 - **Expected output:** results/agentless-baseline.json, results/multi-agent-harness.json, results/comparison-report.md
 - **Why:** This is the project's core deliverable — comparing approaches on real instances
@@ -367,7 +370,10 @@ Every hypothesis in research mode uses this template:
 - **Failure mode:** <dominant failure category from the Failure Analyst's report>
 - **Mutable surface:** <file(s) within mutable_surfaces that will change>
 - **What:** <specific change targeting the identified failure mode>
-- **Critical path:** `<input data> → <mutable surface processing> → <output>`
+- **Acceptance criteria:**
+  | Outcome | Scope | Evidence |
+  |---|---|---|
+  | <what must be true> | local / connected | <test or check> |
 - **Why:** <link to Failure Analyst's root cause analysis>
 - **Expected impact:** <which failure count decreases and by how much>
 - **Priority:** high/medium/low
@@ -555,7 +561,10 @@ Write the build plan content to stdout using this exact structure. Each phase = 
 - **Category:** EXPLORE
 - **Growth dimension:** capability_surface
 - **What:** <specific changes — project layout, deps, entry points, eval scaffolding>
-- **Critical path:** `<entry point> → <core processing> → <output>`
+- **Acceptance criteria:**
+  | Outcome | Scope | Evidence |
+  |---|---|---|
+  | <what must be true> | local / connected / assembled | <test or check> |
 - **Why:** <rationale citing research>
 - **Expected impact:** <which eval dimensions improve>
 - **Priority:** high
@@ -571,7 +580,10 @@ Omit entirely for greenfield projects with no SPEC.md.>
 - **Growth dimension:** capability_surface
 - **Implements:** <SPEC Diff entries, e.g. "MODIFIED module `store`, ADDED module `auth`" — required when SPEC Diff is present>
 - **What:** <specific, scoped change — one PR's worth>
-- **Critical path:** `<entry point> → <core processing> → <output>`
+- **Acceptance criteria:**
+  | Outcome | Scope | Evidence |
+  |---|---|---|
+  | <what must be true> | local / connected / assembled | <test or check> |
 - **Why:** <rationale citing research>
 - **Expected impact:** <which eval dimensions improve>
 - **Priority:** high

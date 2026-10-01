@@ -34,40 +34,17 @@ You will be given:
      - Do NOT add PR comments summarizing what was fixed — the commit messages are sufficient
      - The commit list on the PR already shows what each follow-up changed
 
-### Behavioral Tests for Critical Paths
+### Acceptance Evidence
 
-When the issue names **Critical path:** tags, write one behavioral test per named critical path *in addition to* your normal unit tests. These tests verify the pieces are wired together correctly — they catch the integration bugs that unit tests miss.
+The strategy specifies acceptance criteria for each hypothesis with scope levels: **local** (unit test), **connected** (test through a real module boundary), **assembled** (smoke test / startup check), **artifact** (verify file exists and is correct).
 
-**Rules for behavioral tests:**
-- Call the **real entry point** — not an isolated internal function
-- Fake **only external I/O** (API calls, database, filesystem, subprocesses) — the project's own modules must run for real
-- Assert on the **final output** at the far end of the path, not an intermediate value
-- Tag each test with `# Behavioral test: <critical_path_name>`
-- Test the full critical path end-to-end — call the outermost entry point, not an internal function. Mock only external I/O (subprocess, network, database) if needed to keep the test fast. The test must exercise the real wiring between components. Keep setup minimal but never sacrifice path coverage for brevity.
+Produce the evidence each criterion requires at the specified scope. You cannot silently downgrade scope — if the strategy says "connected," you must test through the real handoff, not mock it away into a unit test.
 
-**Good — fakes only the external boundary:**
-```python
-# Behavioral test: config_parse
-def test_config_roundtrip(tmp_path):
-    factory_md = tmp_path / "factory.md"
-    factory_md.write_text("## Goal\nTest project\n## Scope\n### Modifiable\n- src/**\n")
-    result = parse_factory_config(str(tmp_path))  # real parser, real file
-    assert result.goal == "Test project"
-    assert "src/**" in result.modifiable
-```
-
-**Bad — over-mocks the project's own modules:**
-```python
-# DON'T DO THIS: patches the code under test, not the I/O boundary
-@patch("factory.config.parser._read_toml")
-@patch("factory.config.parser._validate_schema")
-def test_config_parse(mock_validate, mock_read):
-    mock_read.return_value = {"goal": "Test"}
-    mock_validate.return_value = True
-    result = parse_factory_config("/fake")  # nothing real runs
-```
-
-Behavioral tests are **in addition to** unit tests — they do not replace them. Unit tests verify individual functions; behavioral tests verify the wiring between them.
+Scope guide:
+- **local** — test a single function or module in isolation
+- **connected** — call a real entry point that crosses at least one module boundary; mock only external I/O (subprocess, network, database)
+- **assembled** — verify the application starts, runs, or produces end-to-end output
+- **artifact** — verify a generated file exists, has correct content, or matches a schema
 
 ## Constraints
 
@@ -94,7 +71,7 @@ The Builder produces three artifacts:
 
 1. **Git commits** on the current branch with descriptive messages
 2. **A GitHub pull request** targeting the specified base branch
-3. **Behavioral tests** for each `**Critical path:**` named in the issue (one test per path, tagged `# Behavioral test: <name>`)
+3. **Acceptance evidence** matching each criterion in the strategy at the specified scope
 
 PR format (first run only — on reloop, the original PR body is preserved; do not overwrite it):
 ```
@@ -107,8 +84,8 @@ Closes #<ISSUE_NUM>
 ```
 
 **Exit conditions:**
-- **Success (first run):** PR opened, tests passing, all changes committed, behavioral tests written for each named critical path
-- **Success (reloop):** Commits pushed to existing PR, tests passing, all changes committed, behavioral tests written for each named critical path
+- **Success (first run):** PR opened, tests passing, all changes committed, acceptance criteria have verification evidence
+- **Success (reloop):** Commits pushed to existing PR, tests passing, all changes committed, acceptance criteria have verification evidence
 - **Blocked:** Comment posted on GitHub issue explaining the blocker, no uncommitted changes left behind
 
 ## Pre-Execution Guardrails
