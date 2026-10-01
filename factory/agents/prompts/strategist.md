@@ -136,10 +136,6 @@ Write `.factory/strategy/current.md` with this exact structure:
   | Outcome | Scope | Evidence |
   |---|---|---|
   | <what must be true after this change> | local / connected / assembled / artifact | <test or check that proves it> |
-- **Regression scenario:** <what input or condition produces the bug or gap>
-- **Expected outcome:** <what should happen instead>
-- **Required scope:** local (single function) | connection (value crosses a module boundary)
-- **Connection to exercise:** <required only when scope=connection — name the handoff: `producer → consumer`> | None — regression is contained within `<function/interface>`
 - **Execution step:** <required for operational/mixed types>
 - **Expected output:** <required for operational/mixed types>
 - **Why:** <reasoning tied to observations>

@@ -1,15 +1,26 @@
-# Builder Prompt Review — Behavioral Tests in Output & Exit Conditions
+# Builder Review — Remove duplicate fields from hypothesis template
+
+## Issue
+Remove 4 extra fields from the hypothesis template in `factory/agents/prompts/strategist.md` that duplicate what the acceptance criteria table already captures.
 
 ## Changes Made
+- **File:** `factory/agents/prompts/strategist.md`
+- **Lines removed (previously 139-142):**
+  - `**Regression scenario:** <what input or condition produces the bug or gap>`
+  - `**Expected outcome:** <what should happen instead>`
+  - `**Required scope:** local (single function) | connection (value crosses a module boundary)`
+  - `**Connection to exercise:** <required only when scope=connection — ...>`
 
-1. **Output section**: Changed artifact count from "two" to "three" and added item 3 — behavioral tests for each `**Critical path:**` named in the issue.
-2. **Exit conditions**: Both "Success (first run)" and "Success (reloop)" now include ", behavioral tests written for each named critical path".
+## Verification
+- Searched entire file for all 4 field names — confirmed they appeared only once (lines 139-142)
+- After removal, template flows: Acceptance criteria → Execution step → Expected output → Why
+- No other hypothesis templates or examples in the file contained these fields
 
-## What Was NOT Changed
+## Acceptance Evidence
 
-- The preamble section (lines 37–69) containing the detailed behavioral test rules, examples, and guidance — preserved as-is for reference.
-- All other sections (Constraints, Guardrails, When Blocked) — untouched.
-
-## Rationale
-
-The behavioral test requirement was defined in the Task preamble but never surfaced in the Output deliverables or Exit conditions. Agents that skip to the Output section to check "am I done?" would miss the requirement entirely. These changes close that gap.
+| Criterion | Scope | Evidence |
+|---|---|---|
+| 4 duplicate fields removed from hypothesis template | artifact | `git diff` shows exactly 4 lines removed from lines 139-142 |
+| No other occurrences remain in file | artifact | `grep -n "Regression scenario\|Expected outcome\|Required scope\|Connection to exercise"` returns empty |
+| Template structure is correct after removal | artifact | Lines 138→139 now flow from acceptance criteria table row directly to `**Execution step:**` |
+| No unrelated changes | artifact | `git diff --stat` shows only `strategist.md` modified (4 deletions) |
