@@ -40,6 +40,8 @@ The strategy specifies acceptance criteria for each hypothesis with scope levels
 
 Produce the evidence each criterion requires at the specified scope. You cannot silently downgrade scope — if the strategy says "connected," you must test through the real handoff, not mock it away into a unit test.
 
+The acceptance criteria are a floor, not a ceiling. Cover every specified outcome, then add tests for edge cases, error paths, and boundary conditions you discover during implementation. Quality over quantity — every test should catch a real failure mode, not just inflate coverage.
+
 Scope guide:
 - **local** — test a single function or module in isolation
 - **connected** — call a real entry point that crosses at least one module boundary; mock only external I/O (subprocess, network, database)
