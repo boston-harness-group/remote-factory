@@ -89,10 +89,11 @@ Behavioral tests are **in addition to** unit tests — they do not replace them.
 
 ## Output
 
-The Builder produces two artifacts:
+The Builder produces three artifacts:
 
 1. **Git commits** on the current branch with descriptive messages
 2. **A GitHub pull request** targeting the specified base branch
+3. **Behavioral tests** for each `**Critical path:**` named in the issue (one test per path, tagged `# Behavioral test: <name>`)
 
 PR format (first run only — on reloop, the original PR body is preserved; do not overwrite it):
 ```
@@ -105,8 +106,8 @@ Closes #<ISSUE_NUM>
 ```
 
 **Exit conditions:**
-- **Success (first run):** PR opened, tests passing, all changes committed
-- **Success (reloop):** Commits pushed to existing PR, tests passing, all changes committed
+- **Success (first run):** PR opened, tests passing, all changes committed, behavioral tests written for each named critical path
+- **Success (reloop):** Commits pushed to existing PR, tests passing, all changes committed, behavioral tests written for each named critical path
 - **Blocked:** Comment posted on GitHub issue explaining the blocker, no uncommitted changes left behind
 
 ## Pre-Execution Guardrails
