@@ -12,7 +12,7 @@ from factory.testing.patch_check import (
     check_file,
     _classify,
     _detect_package_names,
-    _format_result,
+    format_result,
 )
 
 
@@ -358,12 +358,12 @@ class TestPackageNameDetection:
 class TestFormatResult:
     def test_pass_format(self):
         result = CheckResult(path="test.py", targets=[])
-        output = _format_result(result)
+        output = format_result(result)
         assert "No patch targets found" in output
 
     def test_error_format(self):
         result = CheckResult(path="test.py", error="Syntax error")
-        output = _format_result(result)
+        output = format_result(result)
         assert "ERROR" in output
 
     def test_advisory_format(self):
@@ -371,7 +371,7 @@ class TestFormatResult:
             path="test.py",
             targets=[PatchTarget("my_project.core.run", 10, "decorator", "internal")],
         )
-        output = _format_result(result)
+        output = format_result(result)
         assert "ADVISORY WARNING" in output
         assert "INTERNAL" in output
 

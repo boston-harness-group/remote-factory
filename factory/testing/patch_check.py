@@ -130,7 +130,7 @@ class PatchVisitor(ast.NodeVisitor):
         # @patch.object(module, "attr") — target is module.attr
         if isinstance(func, ast.Attribute) and func.attr == "object":
             if isinstance(func.value, ast.Attribute) and func.value.attr == "patch":
-                return None  # patch.object is harder to resolve statically — skip
+                return None  # Known limitation: patch.object(module, "attr") cannot be resolved statically; skip
             if isinstance(func.value, ast.Name) and func.value.id == "patch":
                 return None  # same — skip patch.object
 
@@ -348,7 +348,7 @@ def check_file(
     return CheckResult(path=str(file_path), targets=visitor.targets)
 
 
-def _format_result(result: CheckResult) -> str:
+def format_result(result: CheckResult) -> str:
     """Format a CheckResult for human-readable output."""
     lines: list[str] = []
     lines.append(f"File: {result.path}")
@@ -380,28 +380,3 @@ def _format_result(result: CheckResult) -> str:
     lines.append(f"\nResult: {status} (exit code {exit_code})")
 
     return "\n".join(lines)
-
-
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point for patch-target checking."""
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        prog="factory check-patch-targets",
-        description="Check test files for over-mocking (internal patch targets)",
-    )
-    parser.add_argument("test_file", help="Path to the test file to analyse")
-    parser.add_argument(
-        "--project-name",
-        default=None,
-        help="Project package name (auto-detected from project root if omitted)",
-    )
-    args = parser.parse_args(argv)
-
-    result = check_file(args.test_file, project_name=args.project_name)
-    print(_format_result(result))
-    return result.exit_code
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

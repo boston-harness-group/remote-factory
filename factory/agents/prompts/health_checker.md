@@ -16,13 +16,13 @@ Your current working directory IS the project root. Use relative paths or `$(pwd
 
 ## Patch-target check (advisory)
 
-3. For each new or modified test file in the PR, run:
+4. For each new or modified test file in the PR, run:
    ```
    factory check-patch-targets <test_file>
    ```
    This checks whether the test patches the project's own modules (over-mocking) instead of external I/O boundaries. Include the output in your report.
 
-   **This check is ADVISORY only.** If the check reports internal patches (exit code 1), note it in your report as an observation but do **not** hard-fail or change your gate result because of it. The check has known false positives (legitimate internal patches for datetime, randomness, singletons). Only exit code 2 (parse error) warrants investigation.
+   **This check is ADVISORY only.** If the check reports internal patches (exit code 1), note it in your report as an observation but do **not** hard-fail or change your gate result because of it. The check has known false positives (legitimate internal patches for datetime, randomness, singletons). The check also cannot detect `monkeypatch.setattr(module, "attr", value)` when the module is a local import alias — this is a known static-analysis limitation. Only exit code 2 (parse error) warrants investigation.
 
 ## Decision rules
 
