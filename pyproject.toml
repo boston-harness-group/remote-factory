@@ -36,6 +36,9 @@ Issues = "https://github.com/akashgit/remote-factory/issues"
 [project.optional-dependencies]
 migrate = ["tomli_w>=1.0"]
 telemetry = ["langfuse>=3.0"]  # kept for backward compat; langfuse is now a core dep
+# The OpenShell Python SDK pulls gRPC/protobuf/cloudpickle; only `factory contained --target
+# openshell` needs it, so it stays out of the default install.
+contained-openshell = ["openshell>=0.1"]
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

@@ -4,9 +4,9 @@ The runtime is a place to run the factory, not a mode of the factory: everything
 handed inward verbatim, except for path rewriting.
 
 This module is only the front door: register the parser, then hand one interpreted command to
-whoever owns it. The three things it hands to are peers, and none of them knows about the others —
+whoever owns it. The things it hands to are peers, and none of them knows about the others —
 `contained_args.py` reads the command line, `contained_local.py` runs one podman container,
-`contained_k8s.py` runs one cluster pod.
+`contained_k8s.py` runs one cluster pod, `contained_openshell.py` runs one OpenShell sandbox.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ def build_contained_parser(sub: argparse._SubParsersAction) -> argparse.Argument
     global _PARSER
     p = sub.add_parser(
         "contained",
-        help="Run any factory command in a container (local) or a pod (k8s)",
+        help="Run any factory command in a container (local), a pod (k8s), or a sandbox (openshell)",
         usage="factory contained [runtime flags] -- <factory command>\n"
               "       factory contained {ls|attach|rm|sync|setup|verify|bundle|help} [name]",
         epilog=HELP_EPILOG,
@@ -61,7 +61,8 @@ def build_contained_parser(sub: argparse._SubParsersAction) -> argparse.Argument
     # Every flag is SUPPRESSed from argparse's own listing and described in the epilog instead:
     # a flat list hides which target each flag belongs to, and printing both lists each flag twice.
     p.add_argument("rest", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
-    p.add_argument("--target", choices=["local", "k8s"], default="local", help=argparse.SUPPRESS)
+    p.add_argument("--target", choices=["local", "k8s", "openshell"], default="local",
+                   help=argparse.SUPPRESS)
     p.add_argument("--division", action="store_true", default=False, help=argparse.SUPPRESS)
     p.add_argument("--name", default=None, help=argparse.SUPPRESS)
     p.add_argument("--env", action="append", default=[], metavar="KEY=VALUE", dest="extra_env",
@@ -72,6 +73,10 @@ def build_contained_parser(sub: argparse._SubParsersAction) -> argparse.Argument
     p.add_argument("--storage-class", default=None, dest="storage_class", help=argparse.SUPPRESS)
     p.add_argument("--context", default=None, help=argparse.SUPPRESS)
     p.add_argument("--image", default=None, help=argparse.SUPPRESS)
+    # Openshell-scoped: the policy is a full replacement (never merged with the default), and
+    # the gateway names which registered gateway this machine talks to.
+    p.add_argument("--policy", default=None, help=argparse.SUPPRESS)
+    p.add_argument("--gateway", default=None, help=argparse.SUPPRESS)
     # `rm` prompts before deleting an active runtime and the cluster upload prompts on a secret-scan
     # finding; `--yes` skips both, for automation.
     p.add_argument("--yes", action="store_true", default=False, help=argparse.SUPPRESS)
@@ -80,6 +85,22 @@ def build_contained_parser(sub: argparse._SubParsersAction) -> argparse.Argument
 
 
 def _verify(args: argparse.Namespace) -> int:
+    if args.target == "openshell":
+        from factory.contained.prereq import format_check, summary_line
+        from factory.contained.openshell_prereq import verify_openshell
+
+        # Streamed for the same reason the cluster checks stream: several are gateway round
+        # trips, and silence until the last one lands is indistinguishable from a hang.
+        checks = verify_openshell(
+            gateway=args.gateway,
+            on_check=lambda c: print(format_check(c), flush=True),
+        )
+        print()
+        print(summary_line(
+            checks,
+            ready_command="factory contained --target openshell -- ceo <path> --headless",
+        ))
+        return 0 if all(c.ok for c in checks) else 1
     if args.target == "k8s":
         from factory.contained.k8s_setup import verify_k8s
         from factory.contained.prereq import format_check, summary_line
@@ -137,6 +158,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             namespace=args.namespace,
             division=args.division,
             assume_yes=args.yes,
+            gateway=getattr(args, "gateway", None),
         )
     if args.subcommand == "bundle":
         from factory.contained.bundle import render_bundle
@@ -152,5 +174,9 @@ def _dispatch(args: argparse.Namespace) -> int:
         from factory.cli.contained_k8s import run_k8s
 
         return run_k8s(args)
+    if args.target == "openshell":
+        from factory.cli.contained_openshell import run_openshell
+
+        return run_openshell(args)
 
     return run_local(args)

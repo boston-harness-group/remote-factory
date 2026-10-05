@@ -147,9 +147,13 @@ def test_help_lists_flags_by_target_not_as_a_flat_list() -> None:
     sub = parser.add_subparsers(dest="command")
     p = cli.build_contained_parser(sub)
     text = p.format_help()
-    assert "Both targets:" in text and "Local only:" in text and "K8s only:" in text
+    assert (
+        "All targets:" in text and "Local only:" in text and "K8s only:" in text
+        and "Openshell only:" in text
+    )
     # The flags appear once — in the tables — not twice.
     assert text.count("--storage-class") == 1
+    assert text.count("--policy") == 1
 
 
 # --------------------------------------------------------------------------------------------
@@ -586,8 +590,10 @@ def test_help_explains_the_targets_and_the_subcommands() -> None:
         assert f"  {subcommand}" in text, f"--help does not explain `{subcommand}`"
     assert "--yes" in text
     assert "FACTORY_CONTAINED_DRY_RUN" in text
-    # It says what contained is not, without jargon or alarm.
-    assert "not a security sandbox" in text
+    # It says what contained is and is not, without jargon or alarm — and scopes the security
+    # claim to the targets it is true for, since the openshell target exists to change it.
+    assert "not security sandboxes" in text
+    assert "openshell" in text
     assert "SCC" not in text and "egress" not in text
 
 
@@ -645,10 +651,12 @@ def test_ls_does_not_reach_for_a_cluster_the_user_has_never_used(tmp_path: Path)
     home = tmp_path / "contained-home"
     with patch.dict(os.environ, {"FACTORY_CONTAINED_HOME": str(home)}, clear=False), \
          patch("factory.contained.lifecycle.local_runtimes", return_value=[]), \
+         patch("factory.contained.lifecycle.openshell_runtimes", return_value=[]) as sandbox, \
          patch("factory.contained.k8s.cluster_runtimes") as cluster:
         runtimes, notes, unconfigured = lifecycle.list_runtimes(None)
     cluster.assert_not_called()
-    assert unconfigured == ["k8s"]
+    sandbox.assert_not_called()          # never-used openshell is skipped like the cluster
+    assert unconfigured == ["k8s", "openshell"]
     assert notes == []
     assert runtimes == []
 

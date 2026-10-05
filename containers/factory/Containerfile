@@ -139,6 +139,16 @@ RUN set -eux; \
 # `g=u` rather than `g+rwX`: it copies the owner's bits exactly, so an executable stays executable
 # and a plain file does not silently become one.
 #
+# `o=u` (mirroring the owner's bits onto *other*) is applied to `${CONTAINER_HOME}` and
+# `/workspace` only, never to `${FACTORY_HOME}`. The openshell target needs it there: its
+# gateway hard-rejects any workload identity whose GID is 0, so a sandboxed run is UID+GID
+# 1001 — a group that owns nothing — and HOME plus the workspace are the two paths such a run
+# must write. `${FACTORY_HOME}` gets no `o=u` on purpose: the openshell policy mounts it
+# read-only (plain `o=rX`, which the files already carry), and making the venv
+# world-writable in local/k8s to buy nothing in openshell is a bad trade. Local (bind-mounted
+# workspace, host UID) and k8s (PVC, fsGroup) never touch the image's own directory modes
+# either way; the container is single-tenant.
+#
 # ~/.factory is created here even though `factory contained` bind-mounts the host's over the top:
 # without it, a run on a machine that has no ~/.factory yet gets a mountless container whose first
 # registry write fails on a missing directory.
@@ -146,9 +156,10 @@ RUN set -eux; \
     mkdir -p "${CONTAINER_HOME}/.factory" "${CONTAINER_HOME}/.claude" "${CONTAINER_HOME}/.config" \
              "${CONTAINER_HOME}/.cache" "${CONTAINER_HOME}/.npm" /workspace; \
     chgrp -R 0 "${FACTORY_HOME}" "${CONTAINER_HOME}" /workspace; \
-    chmod -R g=u "${FACTORY_HOME}" "${CONTAINER_HOME}" /workspace; \
+    chmod -R g=u "${FACTORY_HOME}"; \
+    chmod -R g=u,o=u "${CONTAINER_HOME}" /workspace; \
     chmod g=u /etc/passwd; \
-    chmod g=u "${CONTAINER_HOME}/.claude.json"
+    chmod g=u,o=u "${CONTAINER_HOME}/.claude.json"
 
 # 1001 is the UBI base image's non-root UID and is only the *default*: both targets override it.
 # Stated anyway so `podman run` with no --user is still non-root.

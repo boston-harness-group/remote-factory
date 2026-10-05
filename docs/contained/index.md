@@ -1,7 +1,7 @@
 # Contained Runtimes
 
 `factory contained` runs any factory command somewhere other than your shell — in a podman container
-on your machine, or in a pod on an OpenShift cluster.
+on your machine, in a pod on an OpenShift cluster, or in an OpenShell sandbox.
 
 ```bash
 factory contained -- ceo ~/code/my-project
@@ -44,21 +44,23 @@ You need `podman` (with its machine running on macOS), and inference credentials
 
 ## Choosing a target
 
-| | `--target local` | `--target k8s` |
-|---|---|---|
-| Where it runs | a podman container on your machine | a pod on a Kubernetes/OpenShift cluster |
-| Good for | everyday work; attaching and watching | long unattended runs; more CPU and memory than a laptop |
-| Needs | podman | a namespace, and a one-time setup you apply yourself |
-| Your project | a copy, bind-mounted from disk | a copy, uploaded to a volume that outlives the pod |
-| Credentials | taken from your shell, and they enter the container | a Secret you create in the namespace |
-| Survives a laptop closing | no | yes |
+| | `--target local` | `--target k8s` | `--target openshell` |
+|---|---|---|---|
+| Where it runs | a podman container on your machine | a pod on a Kubernetes/OpenShift cluster | an OpenShell sandbox, driven by a gateway you run |
+| Good for | everyday work; attaching and watching | long unattended runs; more CPU and memory than a laptop | runs whose **input you do not trust** |
+| Needs | podman | a namespace, and a one-time setup you apply yourself | the `openshell` CLI, a local gateway, and a `claude-code` provider |
+| Your project | a copy, bind-mounted from disk | a copy, uploaded to a volume that outlives the pod | a copy, uploaded into the sandbox |
+| Credentials | taken from your shell, and they enter the container | a Secret you create in the namespace | **never enter the sandbox** — held by the gateway, attached as a provider |
+| Egress | normal network access | normal network access from the pod | **deny-by-default**, kernel-enforced allowlist |
+| Survives a laptop closing | no | yes | as long as the gateway's machine stays up |
 
 ### What it does and does not protect you from
 
-`contained` exists to make runs **reproducible** and to keep them **off your working tree**. Both
+`contained` exists to make runs **reproducible** and to keep them **off your working tree**. All
 targets do that well.
 
-It is **not a security sandbox**, and it is worth being concrete about what that means:
+The local and cluster targets are **not security sandboxes**, and it is worth being concrete about
+what that means:
 
 - The agent's code runs with normal network access and can reach anything your machine can. Nothing
   restricts what it writes or fetches.
@@ -71,6 +73,39 @@ It is **not a security sandbox**, and it is worth being concrete about what that
 The cluster target is the more constrained of the two — it runs under a restricted security context
 with namespace-scoped permissions — but the point above still stands for both.
 
+### The openshell target is different, by design
+
+The openshell target (experimental) exists for the case the other two exclude: running the factory
+on input you do not trust — an arbitrary GitHub issue, a spec from a stranger, a codebase you were
+sent. Inside an OpenShell sandbox, agent-authored code is confined at the **kernel level**:
+
+- **Filesystem**: Landlock allowlists. The workspace is read-write; nothing else is writable.
+- **Network**: deny-by-default. Every connection is intercepted and decided by a supervisor against
+  the policy — `uv` may reach PyPI, the `claude-code` provider allows the inference endpoint, and
+  nothing else gets out.
+- **Credentials**: your API key never enters the sandbox. The gateway holds it and resolves it only
+  for requests the provider allows, so a key bound to `api.anthropic.com` cannot be exfiltrated
+  anywhere else. What that does *not* mean: OpenShell's binary rules match parent processes, so
+  every command the agent's Bash tool runs — a descendant of `claude` — inherits claude's egress
+  and can *use* the placeholder against the provider's endpoint. The key cannot be extracted, but
+  it can be proxied by confined code; that is the documented floor of the confinement, and the
+  reason the provider profile the factory ships allows `api.anthropic.com` only (never the stock
+  profile, whose `statsig`/`sentry` endpoints would be exfiltration channels) and the reason the
+  allowlist stays small.
+
+There is no skip-permissions flag to abuse: enforcement is in the kernel, not in the agent CLI's own
+prompting, so it fails closed no matter what the model tries.
+
+What it still does **not** do: the gateway host itself is trusted (it is part of the boundary, not
+inside it); it is not a multi-tenant boundary between runs; and the run's diff is still yours to
+review — a sandboxed run can still write a plausible-looking wrong change inside its workspace.
+
+The default policy is deliberately small, and `--policy <file>` **replaces it entirely** — never
+merges with it. The file you pass is the whole policy; nothing hidden can creep in through
+default-and-override interaction. The default allowlist starts slightly loose (it includes read-only
+PyPI access so eval environments can be built inside the sandbox) and is tightened based on how the
+target gets used — loosening later is compatible, silently tightening would break running workflows.
+
 ---
 
 ## Command reference
@@ -82,12 +117,12 @@ factory contained {ls|attach|rm|sync|setup|verify|bundle|help} [name]
 
 `help` prints the same text as `--help`, so whichever you reach for works.
 
-**Both targets**
+**All targets**
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--target local\|k8s` | `local` | Which runtime |
-| `--division` | off | Enable the container-manufacturing plane for that target |
+| `--target local\|k8s\|openshell` | `local` | Which runtime |
+| `--division` | off | Enable the container-manufacturing plane (local, k8s — not openshell) |
 | `--name NAME` | derived | Runtime name |
 | `--env KEY=VALUE` | — | Extra environment, repeatable |
 | `--forward VAR` | — | Forward a named host variable, repeatable |
@@ -107,6 +142,13 @@ factory contained {ls|attach|rm|sync|setup|verify|bundle|help} [name]
 | `--namespace NS` | current context | Never hardcoded |
 | `--context NAME` | your current one | Which kubeconfig context every cluster command uses |
 | `--storage-class SC` | cluster default | Workspace PVC |
+
+**Openshell only**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--policy PATH` | factory default | Replace the sandbox policy (full replacement, never merged) |
+| `--gateway NAME` | the active one | Which registered OpenShell gateway to talk to |
 
 A flag used against the wrong target fails at parse time naming the target it belongs to — never
 silently ignored. Runtime flags go **before** the subcommand; anything flag-shaped after it is an
@@ -183,17 +225,22 @@ Run without `--target`, and at a terminal, `setup` asks which runtime you are pr
 $ factory contained setup
 
 ━━ What are you setting up? ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   Pass --target local or --target k8s to skip this question.
+   Pass --target local, k8s or openshell to skip this question.
 
   1) local  a podman container on this machine
   2) k8s    a pod on a cluster
-  3) both
+  3) both  local and cluster
+  4) openshell  a policy-governed sandbox, for runs whose input you do not trust
 
 Choice [1]:
 ```
 
-Pass `--target local` or `--target k8s` to skip the question. `setup` is idempotent — re-running
-changes nothing that is already correct, and it is the supported way to repair a partial setup.
+`openshell` is option 4, appended rather than inserted, so `3` has always meant `both` and
+still does.
+
+Pass `--target local`, `--target k8s` or `--target openshell` to skip the question. `setup` is
+idempotent — re-running changes nothing that is already correct, and it is the supported way to
+repair a partial setup.
 
 ### Starting a run
 
@@ -663,6 +710,100 @@ stops the run before any tokens are spent and leaves the container up so you can
 
 ---
 
+## The openshell target
+
+`--target openshell` runs the factory inside an [OpenShell](https://github.com/NVIDIA/OpenShell)
+sandbox — the target to reach for when the run's **input is not trusted**: an arbitrary issue, a
+spec from a stranger, a codebase you were sent. See [Choosing a target](#choosing-a-target) for
+what changes about the security story; this section is how it works day to day.
+
+```bash
+factory contained setup --target openshell     # guided: CLI, SDK extra, gateway, provider
+factory contained verify --target openshell    # each failure with its fix
+factory contained --target openshell -- ceo ~/code/untrusted-project --headless
+```
+
+The `--headless` on `ceo` is required: a sandbox has no terminal (tmux needs a PTY; a sandbox
+cannot allocate one), so `ceo` is refused at parse time without `--headless` (or `--bg`, or
+`--auto-approve` — design mode needs `--auto-approve` as it does everywhere else). The check
+is per command, because the commands differ in what makes them interactive: `resume` and
+`tmux` are refused outright (they *are* a terminal), while `run` and `agent` are headless by
+default and only refused with `--tmux-persist`. The run is a detached process; `attach`
+follows its log.
+
+Setup automates nothing — every step either installs software (yours to choose) or touches
+credential material (the `claude-code` provider, which the factory describes but never creates
+for you). One trap it does name, because the failure names neither the gateway nor the VM: on
+macOS/WSL with Docker Desktop, the sandbox supervisor runs in the VM's host network and cannot
+reach a gateway bound to `127.0.0.1` — sandboxes then die at startup with
+`ControlSupervisorStartFailed`. Point the docker driver at the host instead, in
+`~/.config/openshell/gateway.toml`:
+
+```toml
+[openshell.drivers.docker]
+grpc_endpoint = "https://host.docker.internal:17670"
+```
+
+The provider step is a **single import of the profile the factory ships** — the stock profile's
+own header asks for a copy-edit ("drop `statsig.anthropic.com` and `sentry.io`, name the
+resolved claude path"), and `factory/contained/openshell_claude_code.yaml` is that edit, made
+once in the repo instead of by hand on every machine. Binary rules match parent processes, so
+untrusted code descended from `claude` could otherwise reach the telemetry endpoints —
+sentry.io is a multi-tenant ingest service, i.e. an exfiltration channel — and the kernel
+matches `/proc/<pid>/exe`, which follows the npm symlink, so the stock `/usr/local/bin/claude`
+binary path never matches and inference egress is silently denied. `verify` reads the
+gateway's profile back and fails unless it matches the shipped one, so an import of the stock
+profile does not pass:
+
+```console
+$ factory contained setup --target openshell
+
+━━ OpenShell runtime ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   openshell CLI present; nothing to do.
+   openshell SDK importable; nothing to do.
+   Register a local gateway, if you have not:
+     openshell gateway add --name local --local
+     openshell gateway select local
+   macOS/WSL with Docker Desktop: the sandbox supervisor cannot reach a
+   gateway bound to 127.0.0.1. If sandboxes die at startup, point the
+   docker driver at the host instead, in ~/.config/openshell/gateway.toml:
+     [openshell.drivers.docker]
+     grpc_endpoint = "https://host.docker.internal:17670"
+   Inference is never automated — it touches credential material:
+     openshell profile import -f <factory install>/factory/contained/openshell_claude_code.yaml --global
+     openshell provider create --name claude-code --type claude-code --from-existing
+```
+
+The Python SDK is an optional dependency: `uv sync --extra contained-openshell`. Without it, the
+target fails with that fix rather than a traceback, and `verify` reports it as a prerequisite.
+
+A run is the same sequence as the cluster target — self-contained workspace copy, secret scan,
+one tarball upload, provenance assertions before the first agent call, then the run starts and
+the CLI returns. One difference from the other targets: the run is **not** in tmux, because a
+sandbox cannot allocate the pseudo-terminal every tmux window needs (denied by the Landlock
+filesystem allowlist). Instead the run is a detached process that writes its output to
+`.factory/run.log` inside the project, its pid to `.factory/run.pid`, and its exit code to
+`.factory/run.exit` — so `attach` follows the log (`Ctrl-C` detaches, and cannot disturb the
+run); `sync` downloads the workspace back, log included; `rm` deletes the sandbox and keeps your
+local workspace copy.
+
+**The policy.** The default grants the workspace read-write, read-only access to the runtime
+image's `/opt/factory` install, `uv` access to PyPI — and nothing else. (`pip` is deliberately
+absent: OpenShell matches binaries by the kernel-resolved executable, and pip runs as the
+Python interpreter, so a pip path never matches — install with `uv pip`.) Inference egress
+comes from the attached `claude-code` provider, not the policy: the gateway synthesizes its own
+rule for the provider's endpoints, and restating them in the policy is a create-time error.
+`--policy <file>` replaces it entirely, in OpenShell's documented YAML format; the file you pass
+is the whole policy. The default allowlist is code (a builder in
+`factory/contained/openshell.py`, snapshot-tested), so changing what untrusted code can reach is
+a reviewed diff, not a config edit nobody saw.
+
+Only PyPI is allowlisted, and only for `uv`. npm, GitHub, and every other registry are denied —
+a non-Python project (or a run that needs to push branches and open PRs) needs a `--policy`
+file that says so, which is the point: egress for untrusted code should be a reviewed decision.
+
+---
+
 ## Environment
 
 | Variable | Purpose |
@@ -726,6 +867,8 @@ that run first, or run this one without `--division`.
 | Local division | `factory/contained/division.py` |
 | Pre-answering Claude Code's first-run prompts | `factory/contained/claude_state.py` |
 | Cluster division | `factory/contained/k8s_division.py` |
+| All OpenShell SDK/CLI knowledge, default policy | `factory/contained/openshell.py` |
+| OpenShell prerequisite checks | `factory/contained/openshell_prereq.py` |
 | Prereq bundle | `factory/contained/bundle.py` |
 | Object-by-object review | `factory/contained/k8s_review.py` |
 | Secret scan | `factory/contained/secrets.py` |
@@ -734,6 +877,7 @@ that run first, or run this one without `--division`.
 | Reading the command line | `factory/cli/contained_args.py` |
 | One local container | `factory/cli/contained_local.py` |
 | One cluster pod | `factory/cli/contained_k8s.py` |
+| One OpenShell sandbox | `factory/cli/contained_openshell.py` |
 
 The CLI modules **compose** commands and do not execute them, which is what makes
 `FACTORY_CONTAINED_DRY_RUN=1` print the same argv the real path runs rather than a separate

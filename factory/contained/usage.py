@@ -20,7 +20,7 @@ from factory.contained.workspace import contained_home
 
 log = structlog.get_logger()
 
-TARGETS = ("local", "k8s")
+TARGETS = ("local", "k8s", "openshell")
 
 
 def _record_path():

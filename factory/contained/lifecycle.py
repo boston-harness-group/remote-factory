@@ -21,6 +21,7 @@ from pathlib import Path
 
 import structlog
 
+from factory.contained.errors import ContainedError
 from factory.contained.runtimes import LifecycleError, Runtime
 from factory.contained.workspace import (
     Workspace,
@@ -146,10 +147,38 @@ def _run_state(name: str, container_state: str) -> str:
     return "running" if "0" in result.stdout.split() else "finished"
 
 
+def openshell_runtimes(gateway: str | None = None) -> list[Runtime]:
+    """Every OpenShell sandbox the factory created, running or not.
+
+    Selection is the factory's own label — OpenShell's list RPC takes a `label_selector`, so
+    discovery works exactly like the podman target's rather than by name-prefix matching.
+    """
+    from factory.contained import openshell as os_mod
+
+    try:
+        entries = os_mod.list_runtimes(gateway)
+    except ContainedError as exc:
+        raise LifecycleError(str(exc)) from exc
+    return [
+        Runtime(
+            name=str(entry["name"]),
+            target="openshell",
+            project=str(entry["project"]),
+            # The sandbox's phase says the *sandbox* is up; whether the *run* is still going
+            # is a different question (the sandbox deliberately outlives its run), answered
+            # per-runtime only when something asks, because it costs an exec round trip.
+            state=str(entry["phase"]),
+            created=None,
+            source=str(entry["source"]) if entry.get("source") else None,
+        )
+        for entry in entries
+    ]
+
+
 def list_runtimes(
-    target: str | None = None, namespace: str | None = None
+    target: str | None = None, namespace: str | None = None, gateway: str | None = None
 ) -> tuple[list[Runtime], list[str], list[str]]:
-    """Runtimes for one target, or both when `target` is None.
+    """Runtimes for one target, or all when `target` is None.
 
     Returns the runtimes, notes about a target that genuinely failed, and the names of targets that
     were simply not configured. Those last two are different facts: "your cluster is unreachable" is
@@ -187,6 +216,21 @@ def list_runtimes(
                 if target == "k8s":
                     raise
                 notes.append(f"k8s: {exc}")
+    if target in (None, "openshell"):
+        from factory.contained.usage import uses
+
+        # Same rule as the cluster: only consult the gateway when there is reason to think it
+        # is wanted, or `ls` on a laptop that never set it up waits on a connection error
+        # about a target the user never asked for.
+        if target is None and not uses("openshell"):
+            unconfigured.append("openshell")
+        else:
+            try:
+                runtimes += openshell_runtimes(gateway)
+            except LifecycleError as exc:
+                if target == "openshell":
+                    raise
+                notes.append(f"openshell: {exc}")
     return runtimes, notes, unconfigured
 
 
@@ -252,14 +296,16 @@ def _not_ours(name: str) -> int:
     return 1
 
 
-def attach(name: str, target: str, namespace: str | None = None) -> int:
+def attach(
+    name: str, target: str, namespace: str | None = None, gateway: str | None = None
+) -> int:
     """Attach to the run's tmux session, blocking until the user detaches or it ends.
 
     `subprocess.call` forks and waits rather than exec'ing — this process resumes when the tmux
     client exits — but for the user at the terminal, that client *is* their terminal in the
     meantime: `Ctrl-b d` detaches without stopping the run.
     """
-    runtimes, _, _ = list_runtimes(target, namespace)
+    runtimes, _, _ = list_runtimes(target, namespace, gateway)
     runtime = resolve_runtime(name, runtimes)
     if runtime is None:
         return _not_ours(name)
@@ -289,12 +335,16 @@ def attach(name: str, target: str, namespace: str | None = None) -> int:
         from factory.contained.k8s import build_pod_attach_argv
 
         return subprocess.call(build_pod_attach_argv(name, namespace))
+    if runtime.target == "openshell":
+        from factory.contained.openshell import build_attach_argv as build_sandbox_attach
+
+        return subprocess.call(build_sandbox_attach(name, gateway=gateway))
     return subprocess.call(build_attach_argv(name))
 
 
 def remove(
     name: str, target: str, namespace: str | None = None, *,
-    assume_yes: bool, interactive: bool | None = None,
+    assume_yes: bool, interactive: bool | None = None, gateway: str | None = None,
 ) -> int:
     """Delete a factory-created runtime.
 
@@ -302,7 +352,7 @@ def remove(
     active" — not a hard refusal). `--yes` skips the prompt for automation. When stdin is not a TTY
     and `--yes` was not passed, this refuses rather than hanging on an answer that will never come.
     """
-    runtimes, _, _ = list_runtimes(target, namespace)
+    runtimes, _, _ = list_runtimes(target, namespace, gateway)
     runtime = resolve_runtime(name, runtimes)
     if runtime is None:
         return _not_ours(name)
@@ -325,6 +375,22 @@ def remove(
         from factory.contained.k8s import remove_cluster_runtime
 
         return remove_cluster_runtime(name, namespace=namespace, assume_yes=assume_yes)
+    if runtime.target == "openshell":
+        from factory.contained.openshell import remove_runtime as remove_sandbox_runtime
+
+        try:
+            remove_sandbox_runtime(name, gateway=gateway)
+        except ContainedError as exc:
+            print(f"contained: {exc}", file=sys.stderr)
+            return 1
+        print(f"{name}: sandbox deleted.")
+        ws = workspace_for(name)
+        if ws is not None:
+            print(f"{name}: deleted. Your work is kept — it is not removed with the runtime.")
+            print(merge_hint(ws))
+            print()
+            print(cleanup_hint(ws))
+        return 0
 
     # podman echoes the name it removed; we print our own report on the next line, and the doubled
     # name reads like a stutter.
@@ -429,9 +495,11 @@ def workspace_for(name: str) -> Workspace | None:
     return Workspace(source=source, path=path, kind="worktree", branch=branch)
 
 
-def sync(name: str, target: str, namespace: str | None = None) -> int:
+def sync(
+    name: str, target: str, namespace: str | None = None, gateway: str | None = None
+) -> int:
     """Report how to get the workspace back. Nothing is ever merged automatically."""
-    runtimes, _, _ = list_runtimes(target, namespace)
+    runtimes, _, _ = list_runtimes(target, namespace, gateway)
     runtime = resolve_runtime(name, runtimes)
     if runtime is None:
         return _not_ours(name)
@@ -439,6 +507,8 @@ def sync(name: str, target: str, namespace: str | None = None) -> int:
         from factory.contained.k8s import sync_cluster_runtime
 
         return sync_cluster_runtime(name, namespace=namespace)
+    if runtime.target == "openshell":
+        return _sync_openshell(name, gateway)
     ws = workspace_for(name)
     if ws is None:
         print(
@@ -453,16 +523,55 @@ def sync(name: str, target: str, namespace: str | None = None) -> int:
     return 0
 
 
+def _sync_openshell(name: str, gateway: str | None = None) -> int:
+    """Fetch the sandbox's workspace back as one tarball, mirroring the cluster sync output.
+
+    The download is run rather than merely suggested — unlike the cluster target, whose `oc cp`
+    command the user is told to run, the openshell CLI is already a prerequisite of this target
+    and the destination is ours to choose. The merge is still never automatic.
+    """
+    from factory.contained.openshell import build_download_argv, run_cli
+
+    destination = contained_home() / name
+    destination.mkdir(parents=True, exist_ok=True)
+    # The project directory name is not recoverable from the sandbox listing alone (labels
+    # carry a path hash, not a name), so the download covers the workspace root; the tarball
+    # the run uploaded unpacked to `<root>/<project>`, so `<root>` is the faithful inverse.
+    argv = build_download_argv(name, ".", destination, gateway=gateway)
+    result = run_cli(argv, timeout=1800)
+    if result.returncode != 0:
+        print(
+            f"contained: downloading the workspace failed: {result.stderr.strip()[:300]}",
+            file=sys.stderr,
+        )
+        return 1
+    # What the download left behind decides what the instructions say — a guessed
+    # "tar xzf *.tar.gz" for a directory download is a command that cannot run. The
+    # destination is also where the local workspace copy lives, which the hint below leans on.
+    archives = sorted(destination.glob("*.tar.gz"))
+    if archives:
+        print(f"{name}: workspace fetched to {archives[0]}.")
+        print(f"  Unpack:  tar xzf {archives[0]} -C <dir>")
+    else:
+        print(f"{name}: workspace fetched to {destination}.")
+        print(f"  Review:  ls {destination}")
+    ws = workspace_for(name)
+    if ws is not None:
+        print(merge_hint(ws))
+    return 0
+
+
 def dispatch_lifecycle(args: argparse.Namespace) -> int:
     """Route a parsed `factory contained` lifecycle subcommand to its handler."""
     name = getattr(args, "name", None)
     target = getattr(args, "target", "local")
     namespace = getattr(args, "namespace", None)
+    gateway = getattr(args, "gateway", None)
     try:
         if args.subcommand == "ls":
-            # No target filter: one table covering both, because a user asking "what is running?"
-            # does not want to ask it twice.
-            runtimes, notes, unconfigured = list_runtimes(None, namespace)
+            # No target filter: one table covering all targets, because a user asking "what is
+            # running?" does not want to ask it three times.
+            runtimes, notes, unconfigured = list_runtimes(None, namespace, gateway)
             print(render_table(runtimes, notes, unconfigured))
             # A target that failed to list is a failure, not an empty fleet — a script wrapping
             # `ls` must not read a dead engine as "nothing running".
@@ -477,7 +586,7 @@ def dispatch_lifecycle(args: argparse.Namespace) -> int:
                 )
                 return 2
             if args.subcommand == "attach":
-                return attach(name, target, namespace)
+                return attach(name, target, namespace, gateway)
             if args.subcommand == "rm":
                 return remove(
                     name,
@@ -485,8 +594,9 @@ def dispatch_lifecycle(args: argparse.Namespace) -> int:
                     namespace,
                     assume_yes=bool(getattr(args, "yes", False)),
                     interactive=sys.stdin.isatty(),
+                    gateway=gateway,
                 )
-            return sync(name, target, namespace)
+            return sync(name, target, namespace, gateway)
     except LifecycleError as exc:
         print(f"contained: {exc}", file=sys.stderr)
         return 1

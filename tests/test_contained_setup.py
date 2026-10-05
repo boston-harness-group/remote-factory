@@ -69,11 +69,18 @@ def test_the_chooser_is_skipped_when_a_target_was_named(capsys: pytest.CaptureFi
     ask.assert_not_called()
 
 
-@pytest.mark.parametrize(("answer", "expect_k8s"), [("1", False), ("2", True), ("3", True)])
+@pytest.mark.parametrize(
+    ("answer", "expect_k8s"),
+    [("1", False), ("2", True), ("3", True), ("4", False)],
+)
 def test_the_chooser_maps_each_answer_to_a_target(answer: str, expect_k8s: bool) -> None:
+    """`3` is `both` and `4` is `openshell`: openshell was appended rather than inserted, so
+    anything scripted against this menu (a piped answer, a documented `echo 3`) keeps meaning
+    what it always meant."""
     with (
         patch("builtins.input", return_value=answer),
         patch("factory.contained.k8s_setup.setup_k8s", return_value=0) as k8s,
+        patch("factory.contained.setup._setup_openshell", return_value=None),
     ):
         run_setup(None, interactive=True)
     assert k8s.called is expect_k8s

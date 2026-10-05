@@ -47,6 +47,24 @@ jobs:
           files: coverage.xml
           fail_ci_if_error: false
 
+  # The openshell SDK is an optional extra, so the main matrix runs its tests against fakes.
+  # Every hard create-time rejection found in live verification (names, labels, endpoint
+  # ambiguity, GID 0) was drift the fakes accepted — this job installs the real SDK and runs
+  # the same suite, so the skip-if-absent contract test actually exercises real protos.
+  openshell-sdk:
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install dependencies (with the contained-openshell extra)
+        run: uv sync --all-groups --extra contained-openshell
+      - name: Run the openshell suite against the real SDK
+        run: uv run pytest tests/test_contained_openshell.py -v --tb=short
+
   quality:
     runs-on: ubuntu-latest
     permissions:

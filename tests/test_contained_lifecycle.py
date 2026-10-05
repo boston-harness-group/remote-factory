@@ -215,7 +215,8 @@ def test_a_cluster_the_user_has_used_but_cannot_reach_becomes_a_note() -> None:
 def test_a_machine_with_no_kubeconfig_reports_the_cluster_unconfigured_not_broken() -> None:
     with patch("factory.contained.lifecycle.local_runtimes", return_value=[]), \
          patch("factory.contained.usage.uses", return_value=True), \
-         patch("factory.contained.k8s.has_cluster_context", return_value=False):
+         patch("factory.contained.k8s.has_cluster_context", return_value=False), \
+         patch("factory.contained.lifecycle.openshell_runtimes", return_value=[]):
         runtimes, notes, unconfigured = list_runtimes(None)
     assert notes == []
     assert unconfigured == ["k8s"]
@@ -668,7 +669,7 @@ def test_attach_and_sync_route_to_their_handlers() -> None:
         args = _args(subcommand=subcommand, target="local", namespace=None, name="rta-abc123")
         with patch(f"factory.contained.lifecycle.{target}", return_value=0) as handler:
             assert dispatch_lifecycle(args) == 0
-        handler.assert_called_once_with("rta-abc123", "local", None)
+        handler.assert_called_once_with("rta-abc123", "local", None, None)
 
 
 def test_an_unrouted_subcommand_exits_two_rather_than_silently_succeeding(
