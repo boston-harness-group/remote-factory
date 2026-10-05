@@ -9,6 +9,7 @@ construction, the SDK, and the CLI are patched at their seams (`openshell.connec
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -163,19 +164,67 @@ def test_local_flags_are_rejected_on_openshell() -> None:
 # --------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("command", ["ceo", "run", "resume", "tmux"])
-def test_interactive_payloads_are_rejected_without_headless(command: str) -> None:
+@pytest.mark.parametrize(
+    "command",
+    ["ceo", "resume", "tmux"],
+)
+def test_interactive_payloads_are_rejected_without_an_opt_out(command: str) -> None:
     """An OpenShell run is a detached process writing a log — it has no terminal for an
     interactive CEO to sit at, and a design-mode gate would wait forever on an answer nobody
     can give. Refused at parse time, the way `--division` is, rather than three provisioning
-    steps in."""
+    steps in. `ceo` (interactive by default), `run`/`agent` with --tmux-persist, and
+    `resume`/`tmux` (which *are* a terminal) are each refused for their own reason."""
     with pytest.raises(SystemExit):
         interpret(["--target", "openshell", "--", command, "/tmp/project"])
 
 
-def test_headless_opts_the_interactive_check_out() -> None:
-    args = interpret(["--target", "openshell", "--", "ceo", "/tmp/project", "--headless"])
-    assert args.factory_args[0] == "ceo"
+@pytest.mark.parametrize("command", ["resume", "tmux"])
+def test_terminal_commands_have_no_opt_out(command: str, capsys: pytest.CaptureFixture[str]) -> None:
+    """`resume` and `tmux` need a PTY by their nature, so no flag makes them acceptable —
+    and the refusal must say so rather than suggesting a flag the command does not accept:
+    advice like `re-run with --headless` would pass the check and then die inside the
+    sandbox, because neither command takes --headless."""
+    with pytest.raises(SystemExit):
+        interpret(["--target", "openshell", "--", command, "/tmp/project", "--headless"])
+    err = capsys.readouterr().err
+    assert f"There is no headless form of `{command}`" in err
+    # The only --headless in the message belongs to the suggested `ceo` replacement, never
+    # to the refused command itself.
+    assert f"-- {command} <path> --headless" not in err
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # `run` is headless by default — refusing it was a false refusal, and worse, the
+        # error's --headless advice would then die inside the sandbox: `run` accepts no
+        # such flag.
+        ["run", "/tmp/project"],
+        ["agent", "researcher", "--task", "t", "--project", "/tmp/project"],
+        # `ceo` opts out three ways, not one.
+        ["ceo", "/tmp/project", "--headless"],
+        ["ceo", "/tmp/project", "--bg"],
+        ["ceo", "/tmp/project", "--mode", "design", "--auto-approve"],
+    ],
+)
+def test_headless_forms_are_not_refused(payload: list[str]) -> None:
+    """Every payload that runs without a terminal passes the check untouched — the false
+    refusals (run, agent, ceo --bg, ceo --auto-approve) each burned a full provisioning
+    cycle before failing, or never failed at all."""
+    args = interpret(["--target", "openshell", "--", *payload])
+    assert args.factory_args == payload
+
+
+@pytest.mark.parametrize("command", ["run", "agent"])
+def test_persist_flags_make_headless_commands_interactive(
+    command: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`run` and `agent` are headless by default; --tmux-persist is the one way to make
+    them interactive, and the refusal must name dropping it — not a --headless these
+    commands do not accept."""
+    with pytest.raises(SystemExit):
+        interpret(["--target", "openshell", "--", command, "/tmp/project", "--tmux-persist"])
+    assert "Drop --tmux-persist" in capsys.readouterr().err
 
 
 def test_non_interactive_payloads_pass_untouched() -> None:
@@ -203,6 +252,7 @@ def test_every_cli_composer_carries_the_selected_gateway() -> None:
     from factory.contained.openshell import (
         build_attach_argv,
         build_download_argv,
+        build_profile_export_argv,
         build_provider_list_argv,
         build_upload_argv,
     )
@@ -213,6 +263,7 @@ def test_every_cli_composer_carries_the_selected_gateway() -> None:
         build_download_argv("rta-abc123", ".", Path("/tmp/dest"), gateway="gw"),
         build_attach_argv("rta-abc123", gateway="gw"),
         build_provider_list_argv("gw"),
+        build_profile_export_argv("claude-code", gateway="gw"),
     ):
         assert argv[:3] == ["openshell", "--gateway", "gw"], argv
     for argv in (
@@ -494,6 +545,146 @@ def test_every_check_degrades_to_a_fix_carrying_failure(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------------------------
+# The provider profile: shipped, and read back
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_shipped_provider_profile_is_the_stock_profile_plus_two_edits() -> None:
+    """Snapshot of openshell_claude_code.yaml: exactly one endpoint (api.anthropic.com —
+    the stock profile's telemetry endpoints are inherited egress for everything the Bash
+    tool runs, i.e. exfiltration channels for untrusted code), and the binary the runtime
+    image actually executes (the kernel matches /proc/<pid>/exe, which follows the npm
+    symlink, so /usr/local/bin/claude never matches). If the image's claude install moves,
+    this snapshot is what forces the profile to move with it."""
+    from factory.contained.openshell import load_provider_profile, provider_profile_path
+
+    assert provider_profile_path().exists()
+    profile = load_provider_profile()
+    assert profile["id"] == "claude-code"
+    endpoints = {(e["host"], e["port"]) for e in profile["endpoints"]}
+    assert endpoints == {("api.anthropic.com", 443)}
+    assert profile["binaries"] == [
+        "/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+    ]
+    env_vars = [v for c in profile["credentials"] for v in c["env_vars"]]
+    assert "ANTHROPIC_API_KEY" in env_vars
+
+
+def test_the_provider_fix_names_the_shipped_profile_and_never_a_manual_edit() -> None:
+    """PROVIDER_FIX is a single import of the file the factory ships — no curl, no $EDITOR.
+    A fix that edits by hand is a mitigation that exists only on the machines that followed
+    the instructions correctly."""
+    from factory.contained.openshell import PROVIDER_FIX, provider_profile_path
+
+    assert f"openshell profile import -f {provider_profile_path()}" in PROVIDER_FIX
+    assert "$EDITOR" not in PROVIDER_FIX
+    assert "curl" not in PROVIDER_FIX
+
+
+@dataclass
+class _ProcResult:
+    returncode: int
+    stdout: str = ""
+
+
+class _NoopClient:
+    def close(self) -> None:
+        pass
+
+
+def _provider_check_with(
+    providers_json: str, profile_json: str | None, profile_rc: int = 0
+):
+    """Run `_provider_check` against a stubbed gateway: one provider listing, optionally one
+    profile export. `None` for the profile means the export failed outright."""
+    import factory.contained.openshell_prereq as prereq
+
+    def fake_run(argv, *, timeout=30):
+        if "provider" in argv and "list" in argv:
+            return _ProcResult(0, providers_json)
+        if "profile" in argv and "export" in argv:
+            if profile_json is None:
+                return _ProcResult(profile_rc, "")
+            return _ProcResult(profile_rc, profile_json)
+        raise AssertionError(f"unexpected argv: {argv}")
+
+    with patch.object(prereq, "_run", side_effect=fake_run), \
+         patch.object(openshell, "connect", return_value=_NoopClient()):
+        return prereq._provider_check(None)
+
+
+def test_a_stock_profile_import_does_not_pass_the_provider_check() -> None:
+    """The check reads the gateway's profile back and compares it with the shipped one —
+    importing the stock profile (telemetry endpoints still allowed) must fail, because the
+    endpoint list is the security mitigation and a name-only check cannot see it."""
+    stock = {
+        "id": "claude-code",
+        "endpoints": [
+            {"host": "api.anthropic.com", "port": 443},
+            {"host": "statsig.anthropic.com", "port": 443},
+            {"host": "sentry.io", "port": 443},
+        ],
+        "binaries": ["/usr/bin/claude", "/usr/local/bin/claude"],
+    }
+    check = _provider_check_with(
+        '{"providers": [{"name": "claude-code", "type": "claude-code"}]}',
+        json.dumps(stock),
+    )
+    assert not check.ok
+    assert "statsig.anthropic.com" in check.detail
+    assert "sentry.io" in check.detail
+    assert "binaries" in check.detail          # the unresolved symlink path is named too
+
+
+def test_the_matching_profile_passes_and_reports_its_shape() -> None:
+    """A profile that matches the shipped one — endpoints and binaries both — passes, with
+    a detail that states what was verified, never the credential material."""
+    from factory.contained.openshell import load_provider_profile
+
+    live = load_provider_profile()
+    check = _provider_check_with(
+        '{"providers": [{"name": "claude-code", "type": "claude-code"}]}',
+        json.dumps(live),
+    )
+    assert check.ok
+    assert "api.anthropic.com only" in check.detail
+
+
+def test_the_check_follows_the_provider_to_its_actual_profile() -> None:
+    """A provider's type is the profile it was created from — the profile named
+    'claude-code' is not necessarily the one in use, so the readback follows the provider's
+    own reference rather than assuming the name."""
+    from factory.contained.openshell import load_provider_profile
+
+    live = load_provider_profile()
+    check = _provider_check_with(
+        '{"providers": [{"name": "claude-code", "type": "claude-code-vm2"}]}',
+        json.dumps(live),
+    )
+    assert check.ok
+    assert "claude-code-vm2" in check.detail
+
+
+def test_an_unreadable_profile_fails_with_the_fix() -> None:
+    """A provider whose profile cannot be read back is a failure carrying the import
+    command, not a pass on the strength of the name alone."""
+    check = _provider_check_with(
+        '{"providers": [{"name": "claude-code", "type": "claude-code"}]}',
+        None,
+        profile_rc=1,
+    )
+    assert not check.ok
+    assert check.fix
+
+
+def test_a_missing_provider_still_fails_with_the_import_fix() -> None:
+    check = _provider_check_with('{"providers": []}', None)
+    assert not check.ok
+    assert "no provider named 'claude-code'" in check.detail
+    assert check.fix
+
+
+# --------------------------------------------------------------------------------------------
 # Listing and lifecycle seams
 # --------------------------------------------------------------------------------------------
 
@@ -536,6 +727,22 @@ def test_listing_selects_on_the_factory_label_and_maps_phases() -> None:
     assert entries[0]["name"] == "rta-abc123"
     assert entries[0]["phase"] == "running"
     assert entries[0]["project"] == "abc"
+
+    # The full mapping, phase number -> word. 3 (error) once vanished into a trailing
+    # comment on the `running` entry, so an errored sandbox listed as "unknown" — every
+    # phase the factory can observe is asserted here to keep that from regressing.
+    for number, word in (
+        (1, "provisioning"),
+        (2, "running"),
+        (3, "error"),
+        (4, "deleting"),
+        (6, "stopping"),
+        (7, "stopped"),
+        (8, "starting"),
+        (9, "completed"),
+        (99, "unknown"),
+    ):
+        assert openshell._phase_name(number) == word, f"phase {number}"
 
 
 def test_a_launch_failure_is_distinguished_from_a_command_failure() -> None:

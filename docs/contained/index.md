@@ -89,7 +89,7 @@ sent. Inside an OpenShell sandbox, agent-authored code is confined at the **kern
   every command the agent's Bash tool runs — a descendant of `claude` — inherits claude's egress
   and can *use* the placeholder against the provider's endpoint. The key cannot be extracted, but
   it can be proxied by confined code; that is the documented floor of the confinement, and the
-  reason the provider profile is copy-edited to allow `api.anthropic.com` only (never the stock
+  reason the provider profile the factory ships allows `api.anthropic.com` only (never the stock
   profile, whose `statsig`/`sentry` endpoints would be exfiltration channels) and the reason the
   allowlist stays small.
 
@@ -723,10 +723,13 @@ factory contained verify --target openshell    # each failure with its fix
 factory contained --target openshell -- ceo ~/code/untrusted-project --headless
 ```
 
-The `--headless` is required: a sandbox has no terminal (tmux needs a PTY; a sandbox cannot
-allocate one), so interactive commands — `ceo`, `run`, `resume`, `tmux` — are refused at parse
-time without it, and design mode additionally needs `--auto-approve` as it does everywhere
-else. The run is a detached process; `attach` follows its log.
+The `--headless` on `ceo` is required: a sandbox has no terminal (tmux needs a PTY; a sandbox
+cannot allocate one), so `ceo` is refused at parse time without `--headless` (or `--bg`, or
+`--auto-approve` — design mode needs `--auto-approve` as it does everywhere else). The check
+is per command, because the commands differ in what makes them interactive: `resume` and
+`tmux` are refused outright (they *are* a terminal), while `run` and `agent` are headless by
+default and only refused with `--tmux-persist`. The run is a detached process; `attach`
+follows its log.
 
 Setup automates nothing — every step either installs software (yours to choose) or touches
 credential material (the `claude-code` provider, which the factory describes but never creates
@@ -741,14 +744,16 @@ reach a gateway bound to `127.0.0.1` — sandboxes then die at startup with
 grpc_endpoint = "https://host.docker.internal:17670"
 ```
 
-The provider step is a **copy-edit-import**, not an import of the stock profile — the stock
-profile's own header says to copy and edit it. Two edits are mandatory: drop the
-`statsig.anthropic.com` and `sentry.io` endpoints (binary rules match parent processes, so
-untrusted code descended from claude could otherwise reach them — sentry.io is a multi-tenant
-ingest service, i.e. an exfiltration channel), and name the *resolved* claude path
-(`readlink -f "$(command -v claude)"` — the kernel matches `/proc/<pid>/exe`, which follows
-symlinks, so the stock `/usr/local/bin/claude` never matches and inference egress is silently
-denied):
+The provider step is a **single import of the profile the factory ships** — the stock profile's
+own header asks for a copy-edit ("drop `statsig.anthropic.com` and `sentry.io`, name the
+resolved claude path"), and `factory/contained/openshell_claude_code.yaml` is that edit, made
+once in the repo instead of by hand on every machine. Binary rules match parent processes, so
+untrusted code descended from `claude` could otherwise reach the telemetry endpoints —
+sentry.io is a multi-tenant ingest service, i.e. an exfiltration channel — and the kernel
+matches `/proc/<pid>/exe`, which follows the npm symlink, so the stock `/usr/local/bin/claude`
+binary path never matches and inference egress is silently denied. `verify` reads the
+gateway's profile back and fails unless it matches the shipped one, so an import of the stock
+profile does not pass:
 
 ```console
 $ factory contained setup --target openshell
@@ -765,11 +770,7 @@ $ factory contained setup --target openshell
      [openshell.drivers.docker]
      grpc_endpoint = "https://host.docker.internal:17670"
    Inference is never automated — it touches credential material:
-     curl -fsSL https://raw.githubusercontent.com/NVIDIA/OpenShell/main/providers/claude-code.yaml -o /tmp/claude-code.yaml
-       # edit the copy: drop the statsig.anthropic.com and sentry.io endpoints, and point
-       # the binary at `readlink -f "$(command -v claude)"` (the kernel resolves symlinks)
-       $EDITOR /tmp/claude-code.yaml
-     openshell profile import -f /tmp/claude-code.yaml --global
+     openshell profile import -f <factory install>/factory/contained/openshell_claude_code.yaml --global
      openshell provider create --name claude-code --type claude-code --from-existing
 ```
 

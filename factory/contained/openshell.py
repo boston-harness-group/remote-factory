@@ -88,9 +88,9 @@ RUN_LOG = ".factory/run.log"
 RUN_PID = ".factory/run.pid"
 RUN_EXIT = ".factory/run.exit"
 
-# The provider setup, as the copy-edit-import flow the stock profile's own header asks for
-# ("Copy and edit this file rather than importing it unchanged"). Two edits are mandatory, not
-# cosmetic:
+# The provider profile the factory ships: the stock OpenShell profile with the two edits its
+# own header asks for, made in `openshell_claude_code.yaml` next to this module instead of by
+# hand on every machine. Two edits are mandatory, not cosmetic:
 #
 # - **Drop `statsig.anthropic.com` and `sentry.io`.** OpenShell binary rules match "the
 #   executable that opens the connection *or any of its parent processes*", so every command
@@ -98,16 +98,35 @@ RUN_EXIT = ".factory/run.exit"
 #   placeholder resolves for them too (profiles are endpoint-scoped, not yet binary-scoped).
 #   sentry.io is a multi-tenant ingest service, which makes it an exfiltration channel if
 #   untrusted code can reach it.
-# - **Name the resolved claude path.** The kernel matches `/proc/<pid>/exe`, which follows
-#   symlinks — `command -v claude` is a symlink to the npm-packaged binary, so the stock
-#   profile's `/usr/local/bin/claude` never matches and inference egress is silently denied.
+# - **Name the resolved claude path in the runtime image.** The kernel matches
+#   `/proc/<pid>/exe`, which follows symlinks — `command -v claude` is a symlink to the
+#   npm-packaged binary, so the stock profile's `/usr/local/bin/claude` never matches and
+#   inference egress is silently denied.
+#
+# The file is the single source the verify check compares the gateway's profile against, so
+# the shipped profile and the check cannot disagree.
+PROVIDER_PROFILE_FILENAME = "openshell_claude_code.yaml"
+
+
+def provider_profile_path() -> Path:
+    """Where the shipped claude-code profile lives in *this* install — editable checkout or
+    wheel alike. Printed in `PROVIDER_FIX` (the import command names a real file) and read
+    by the verify check (its endpoints and binaries are the expectation)."""
+    return Path(__file__).with_name(PROVIDER_PROFILE_FILENAME)
+
+
+def load_provider_profile() -> dict:
+    """The shipped profile as a mapping — the expectation the verify check holds the
+    gateway's copy to. Parsed here rather than restated in code so the file is the one
+    source of truth for both the import command and the check."""
+    import yaml
+
+    with open(provider_profile_path()) as f:
+        return yaml.safe_load(f)
+
+
 PROVIDER_FIX = (
-    "curl -fsSL https://raw.githubusercontent.com/NVIDIA/OpenShell/main/providers/"
-    "claude-code.yaml -o /tmp/claude-code.yaml\n"
-    "  # edit the copy: drop the statsig.anthropic.com and sentry.io endpoints, and point\n"
-    "  # the binary at `readlink -f \"$(command -v claude)\"` (the kernel resolves symlinks)\n"
-    "  $EDITOR /tmp/claude-code.yaml\n"
-    "  openshell profile import -f /tmp/claude-code.yaml --global\n"
+    f"openshell profile import -f {provider_profile_path()} --global\n"
     "  openshell provider create --name claude-code --type claude-code --from-existing"
 )
 SDK_FIX = "uv sync --extra contained-openshell   # or: uv pip install openshell"
@@ -327,10 +346,10 @@ def build_default_policy():
       restating those endpoints here is not redundancy but a hard create-time failure: the
       gateway's ambiguity validation rejects two rules for the same endpoint whose metadata
       differs (`transparent_tcp_eligible`), and the synthesized rule cannot be matched
-      field-for-field from a user policy. The provider profile is the copy-edited one
-      (`PROVIDER_FIX`): api.anthropic.com for the resolved claude binary, and *nothing else* —
-      which matters because binary rules match parent processes, so those endpoints are
-      reachable by every command the agent's Bash tool runs.
+      field-for-field from a user policy. The provider profile is the shipped one
+      (`openshell_claude_code.yaml`): api.anthropic.com for the resolved claude binary, and
+      *nothing else* — which matters because binary rules match parent processes, so those
+      endpoints are reachable by every command the agent's Bash tool runs.
     - Process identity is stated explicitly — `run_as_user`/`run_as_group` 1001 — because an
       omitted identity falls back to the image's OCI `USER` (1001 with primary GID 0), and the
       gateway hard-rejects any workload identity containing GID 0. The runtime image's
@@ -459,6 +478,16 @@ def build_download_argv(
 def build_provider_list_argv(gateway: str | None = None) -> list[str]:
     """Compose the provider listing the provider check reads (shape only, never material)."""
     return _cli(gateway, "provider", "list", "--output", "json")
+
+
+def build_profile_export_argv(profile_id: str, gateway: str | None = None) -> list[str]:
+    """Compose the profile readback the provider check compares against the shipped profile.
+
+    JSON rather than the human `profile describe` rendering, so the check parses a stable
+    shape instead of scraping prose; the export carries endpoints and binaries, never
+    credential material.
+    """
+    return _cli(gateway, "profile", "export", profile_id, "--output", "json")
 
 
 def build_attach_argv(name: str, gateway: str | None = None) -> list[str]:
@@ -620,7 +649,8 @@ def _phase_name(phase: int) -> str:
         0: "unknown",
         1: "provisioning",
         2: "running",       # READY: the idle main process is up; the run's own state is in
-                            # `.factory/run.{log,pid,exit}` — `attach` shows it        3: "error",
+                            # `.factory/run.{log,pid,exit}` — `attach` shows it
+        3: "error",
         4: "deleting",
         5: "unknown",
         6: "stopping",

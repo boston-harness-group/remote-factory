@@ -41,14 +41,25 @@ _LOCAL_ONLY = ("mount",)
 _K8S_ONLY = ("namespace", "storage_class", "context")
 _OPENSHELL_ONLY = ("policy", "gateway")
 
-# Factory commands whose CEO runs interactively (a `claude` subprocess with inherited stdio, or
-# a terminal multiplexer). An OpenShell sandbox has no PTY for any of them: the run is a
-# detached `nohup` process writing a log (a sandbox cannot allocate `/dev/ptmx` — OpenShell
-# #749), so an interactive payload would sit at prompts nobody can answer, burning tokens on
-# the way. `--headless` is the fix; design mode also needs `--auto-approve`, which its own
-# validation requires. Everything else (study, agent, diff, backlog, ...) is non-interactive
-# and passes untouched.
-_INTERACTIVE_COMMANDS = frozenset({"ceo", "run", "resume", "tmux"})
+# Interactive payloads are refused for the openshell target — but per command, because the
+# commands differ in what makes them interactive and in how to opt out:
+#
+#   ceo      interactive by default (a `claude` subprocess with inherited stdio); opts out
+#            via --headless (pipe mode), --bg (background session) or --auto-approve
+#            (headless design mode — its own validation requires the flag with --headless).
+#   run      headless by default (the CEO is invoked in pipe mode); only --tmux-persist
+#            makes it interactive. NOTE: `run` accepts no --headless — suggesting one would
+#            pass this check and then die inside the sandbox with an argparse error.
+#   agent    same shape as `run`: headless by default, interactive only with --tmux-persist.
+#   resume   inherently interactive (Claude --resume with no headless form) — refused
+#            outright, with no flag suggested because none exists.
+#   tmux     a tmux session is a PTY by definition, and a sandbox cannot allocate one
+#            (OpenShell #749) — refused outright.
+#
+# Everything else (study, diff, backlog, ...) is non-interactive and passes untouched.
+_CEO_HEADLESS_FLAGS = ("--headless", "--bg", "--auto-approve")
+_TERMINAL_COMMANDS = frozenset({"resume", "tmux"})
+_PERSIST_COMMANDS = frozenset({"run", "agent"})
 
 # Flags are described here rather than in argparse's own listing: which target a flag belongs to is
 # the thing a user most needs to know, and a flat alphabetical list hides it.
@@ -63,7 +74,8 @@ Targets:
   k8s     a pod on a Kubernetes/OpenShift cluster. For long, unattended runs.
   openshell  (experimental) a policy-governed sandbox. For runs whose input you
           do not trust. The run is unattended: a sandbox has no terminal, so
-          interactive commands (ceo, run, resume, tmux) need --headless.
+          ceo needs --headless (or --bg/--auto-approve); resume and tmux are
+          refused; run/agent only need attention with --tmux-persist.
 
 Subcommands:
   setup                  Install what is missing, then check it
@@ -219,24 +231,49 @@ def _reject_interactive_payload(parser: argparse.ArgumentParser, args: argparse.
     The payload after `--` is verbatim by contract, and this is the one narrow exception — the
     same precedent as refusing `--division`: a command that cannot possibly succeed in the
     target is named at parse time rather than three provisioning steps in, after the workspace
-    was copied and the sandbox created. Only the *first word* is looked at, and only for the
-    commands whose defining property is interactivity; `--headless` anywhere in the payload
-    opts out, because that is exactly what the flag is for.
+    was copied and the sandbox created. Only the *first word* is looked at, per command,
+    because the commands differ in what makes them interactive and in which flag opts out —
+    a refusal that suggests a flag the command does not accept would pass this check and then
+    die inside the sandbox.
     """
     if args.target != "openshell" or args.subcommand or not args.factory_args:
         return
-    if args.factory_args[0] not in _INTERACTIVE_COMMANDS:
-        return
-    if "--headless" in args.factory_args:
-        return
     command = args.factory_args[0]
-    parser.error(
-        f"`factory {command}` runs interactively, and an OpenShell sandbox has no terminal for "
-        f"it — the run is a detached process writing .factory/run.log.\n"
-        f"  Re-run with --headless:  factory contained --target openshell -- {command} "
-        f"<path> --headless\n"
-        f"  (design mode also needs --auto-approve, which --headless requires there)"
-    )
+
+    if command in _TERMINAL_COMMANDS:
+        # A PTY is the command's whole point (tmux) or its only form (resume): no flag can
+        # make it work without a terminal, so the message says so rather than suggesting a
+        # flag the command does not accept — advice that would pass this check and then die
+        # inside the sandbox.
+        parser.error(
+            f"`factory {command}` needs a terminal, and an OpenShell sandbox has none — the "
+            f"run is a detached process writing .factory/run.log.\n"
+            f"  There is no headless form of `{command}`. Start a fresh headless run instead:\n"
+            f"  factory contained --target openshell -- ceo <path> --headless"
+        )
+        return
+
+    if command == "ceo" and not any(flag in args.factory_args for flag in _CEO_HEADLESS_FLAGS):
+        parser.error(
+            "`factory ceo` runs interactively by default, and an OpenShell sandbox has no "
+            "terminal for it — the run is a detached process writing .factory/run.log.\n"
+            "  Re-run with --headless:  factory contained --target openshell -- ceo "
+            "<path> --headless\n"
+            "  (--bg and --auto-approve also opt out; design mode needs --auto-approve, "
+            "which --headless requires there)"
+        )
+        return
+
+    if command in _PERSIST_COMMANDS and "--tmux-persist" in args.factory_args:
+        # `run` and `agent` are headless by default — only --tmux-persist makes them
+        # interactive, and neither accepts a --headless to be told otherwise.
+        parser.error(
+            f"`factory {command} --tmux-persist` runs interactively in a tmux window, and an "
+            f"OpenShell sandbox has no terminal for it — the run is a detached process "
+            f"writing .factory/run.log.\n"
+            f"  Drop --tmux-persist:  factory contained --target openshell -- {command} "
+            f"<path> runs headless by default"
+        )
 
 
 def _reject_subcommand_typo(parser: argparse.ArgumentParser, rest: list[str]) -> None:

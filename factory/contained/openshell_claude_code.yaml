@@ -1,0 +1,46 @@
+# The factory's claude-code provider profile for the openshell target — the stock
+# OpenShell profile (https://github.com/NVIDIA/OpenShell/blob/main/providers/claude-code.yaml)
+# with the two edits its own header asks for, made here once instead of by hand:
+#
+# - **Only api.anthropic.com.** The stock profile also allows statsig.anthropic.com and
+#   sentry.io for the CLI's telemetry. OpenShell binary rules match parent processes, so
+#   every command the agent's Bash tool runs — a descendant of claude — inherits that
+#   egress, and sentry.io is a multi-tenant ingest service, i.e. an exfiltration channel
+#   for untrusted code. This target exists to confine untrusted code.
+# - **The binary is the resolved path in the factory-runtime image**, not
+#   /usr/local/bin/claude: the kernel matches /proc/<pid>/exe, which follows the npm
+#   symlink, so the stock path never matches and inference egress is silently denied. If
+#   the image's claude install ever moves, this path moves with it — change both in one
+#   PR (the snapshot test in tests/test_contained_openshell.py is what forces that).
+#
+# `factory contained verify --target openshell` reads the gateway's profile back and
+# fails unless it matches this file's endpoints and binaries — an import of the stock
+# profile does not pass.
+#
+# Import (idempotent — re-importing overwrites a stock import, which is the fix for a
+# profile that still allows the telemetry endpoints):
+#   openshell profile import -f <this file> --global
+#   openshell provider create --name claude-code --type claude-code --from-existing
+
+id: claude-code
+display_name: Claude Code
+description: Claude Code CLI
+category: agent
+inference_capable: true
+credentials:
+  - name: api_key
+    description: Anthropic API key used by Claude Code
+    env_vars: [ANTHROPIC_API_KEY, CLAUDE_API_KEY]
+    required: true
+    auth_style: header
+    header_name: x-api-key
+discovery:
+  credentials: [api_key]
+endpoints:
+  - host: api.anthropic.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries:
+  - /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe

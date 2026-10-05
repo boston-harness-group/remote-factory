@@ -5,9 +5,10 @@ that resolves it, and nothing here may raise — a machine with nothing installe
 what is missing, not a traceback.
 
 One check deserves its reasoning written down: **the provider check reports shape, not
-material** — it asks the gateway whether a provider named `claude-code` exists, never for its
-credentials. The whole point of this target is that inference credentials stay in the gateway;
-a prerequisite check that printed them would defeat it in the name of verifying it.
+material** — it asks the gateway whether a provider named `claude-code` exists and reads its
+*profile* back (endpoints and binaries), never for its credentials. The whole point of this
+target is that inference credentials stay in the gateway; a prerequisite check that printed
+them would defeat it in the name of verifying it.
 """
 
 from __future__ import annotations
@@ -123,7 +124,17 @@ def _image_check() -> Check:
 
 
 def _provider_check(gateway: str | None) -> Check:
-    """Whether the gateway holds a claude-code provider — shape only, never material."""
+    """Whether the gateway holds a claude-code provider *and* its profile is the factory's.
+
+    Shape only, never material — but shape is not just the provider's name: the security
+    mitigation for this target lives in the profile's endpoint list (api.anthropic.com and
+    nothing else — the stock profile also allows the CLI's telemetry channels, which
+    inherited egress turns into exfiltration routes), and its binaries must name the
+    resolved claude path in the runtime image (the kernel matches /proc/<pid>/exe, which
+    follows the npm symlink, so the stock /usr/local/bin/claude never matches and inference
+    egress is silently denied). The gateway's profile is read back through the CLI and
+    compared against the shipped one, so an import of the stock profile does not pass.
+    """
     try:
         from factory.contained import openshell as os_mod
 
@@ -144,7 +155,7 @@ def _provider_check(gateway: str | None) -> Check:
         from factory.contained.openshell import build_provider_list_argv
 
         result = _run(build_provider_list_argv(gateway))
-        known = False
+        profile_id = None
         if result is not None and result.returncode == 0:
             import json
 
@@ -153,25 +164,93 @@ def _provider_check(gateway: str | None) -> Check:
             except json.JSONDecodeError:
                 payload = []
             entries = payload if isinstance(payload, list) else payload.get("providers", [])
-            known = any(
-                str(entry.get("name", "")) == "claude-code"
-                for entry in entries
-                if isinstance(entry, dict)
-            )
-        if not known:
+            for entry in entries:
+                if isinstance(entry, dict) and str(entry.get("name", "")) == "claude-code":
+                    # A provider's type is the profile it was created from — the profile
+                    # named 'claude-code' is not necessarily the one in use.
+                    profile_id = str(entry.get("type", "")) or None
+                    break
+        if profile_id is None:
             return Check(
                 name="openshell_provider",
                 ok=False,
                 detail="no provider named 'claude-code' is configured in the gateway",
                 fix=PROVIDER_FIX,
             )
-        return Check(
-            name="openshell_provider",
-            ok=True,
-            detail="provider 'claude-code' configured (credentials stay in the gateway)",
-        )
+
+        return _profile_shape_check(gateway, profile_id)
     finally:
         client.close()
+
+
+def _profile_shape_check(gateway: str | None, profile_id: str) -> Check:
+    """Compare the gateway's profile with the shipped one — endpoints and binaries.
+
+    A separate function because both outcomes (provider missing, profile differing) share
+    the same fix, and because the readback is one more subprocess the shape check owns.
+    """
+    from factory.contained.openshell import build_profile_export_argv, load_provider_profile
+
+    result = _run(build_profile_export_argv(profile_id, gateway))
+    if result is None or result.returncode != 0:
+        return Check(
+            name="openshell_provider",
+            ok=False,
+            detail=f"provider 'claude-code' exists but its profile {profile_id!r} could not "
+            "be read back from the gateway",
+            fix=PROVIDER_FIX,
+        )
+    import json
+
+    try:
+        live = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        live = {}
+
+    expected = load_provider_profile()
+    problems: list[str] = []
+
+    expected_endpoints = {
+        (str(e.get("host")), int(e.get("port", 0))) for e in expected.get("endpoints", [])
+    }
+    live_endpoints = {
+        (str(e.get("host")), int(e.get("port", 0))) for e in live.get("endpoints", [])
+    }
+    if live_endpoints != expected_endpoints:
+        extra = ", ".join(f"{h}:{p}" for h, p in sorted(live_endpoints - expected_endpoints))
+        missing = ", ".join(f"{h}:{p}" for h, p in sorted(expected_endpoints - live_endpoints))
+        # A deliberate custom inference endpoint also lands here — that is the point: the
+        # check states what the gateway allows rather than guessing intent, and the fix is
+        # the shipped profile. Anything beyond api.anthropic.com is worth a human decision.
+        what = f"profile {profile_id!r} differs from the factory's"
+        if extra:
+            what += f" (allows {extra})"
+        if missing:
+            what += f" (missing {missing})"
+        problems.append(what)
+
+    expected_binaries = set(expected.get("binaries", []))
+    live_binaries = set(live.get("binaries", []))
+    if not expected_binaries <= live_binaries:
+        problems.append(
+            f"profile {profile_id!r} binaries do not include the runtime image's claude "
+            f"path ({', '.join(sorted(expected_binaries))})"
+        )
+
+    if problems:
+        return Check(
+            name="openshell_provider",
+            ok=False,
+            detail="; ".join(problems),
+            fix=PROVIDER_FIX,
+        )
+
+    return Check(
+        name="openshell_provider",
+        ok=True,
+        detail=f"provider 'claude-code' on profile {profile_id!r} — api.anthropic.com only, "
+        "credentials stay in the gateway",
+    )
 
 
 def openshell_checks(gateway: str | None = None) -> list[Check]:
