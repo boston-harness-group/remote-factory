@@ -851,7 +851,8 @@ class WorkflowExecutor:
         if node.split != "all":
             task_instances = [
                 (item, inst) for item, inst in task_instances
-                if item.metadata.get("split") == node.split
+                if (inst.split if inst is not None else item.metadata.get("split"))
+                == node.split
             ]
         if node.shuffle:
             seed = (
@@ -867,10 +868,12 @@ class WorkflowExecutor:
             task_instances = task_instances[:node.limit]
 
         if len(task_instances) == 0:
-            log.warning(
-                "data_source_empty",
-                node_id=node_id,
-                source=str(node.source_path or node.task_ref or "inline"),
+            raise ValueError(
+                f"DataNode '{node_id}' resolved 0 items after filtering "
+                f"(source={node.source_path or node.task_ref or 'inline'}, "
+                f"split={node.split!r}). "
+                f"Check filter configuration — empty item sets produce "
+                f"false-positive scores."
             )
 
         if len(task_instances) > node.max_items:
@@ -947,7 +950,21 @@ class WorkflowExecutor:
                         item_project_path = wt_dir
 
                     if resolved_task is not None and inst is not None:
-                        resolved_task.setup(inst, item_project_path)
+                        try:
+                            resolved_task.setup(inst, item_project_path)
+                        except Exception as setup_exc:
+                            log.warning(
+                                "data_item_setup_failed",
+                                item_id=item.id,
+                                error=str(setup_exc),
+                            )
+                            return {
+                                "item_id": item.id,
+                                "success": False,
+                                "score": 0.0,
+                                "passed": False,
+                                "error": "setup_failed",
+                            }
                         item = DataItem(
                             id=inst.id,
                             path=str(inst.path) if inst.path else None,

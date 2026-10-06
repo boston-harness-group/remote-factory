@@ -1163,9 +1163,9 @@ class TestNonexistentSourcePathRaises:
         assert "source_path not found" in result.halt_reason
 
 
-class TestEmptySourceWarns:
-    def test_empty_inline_warns(self, tmp_path: Path) -> None:
-        """Zero items after filtering should log a warning."""
+class TestEmptySourceRaises:
+    def test_empty_inline_raises(self, tmp_path: Path) -> None:
+        """Zero items after filtering should raise ValueError."""
         from factory.workflow.executor import WorkflowExecutor
 
         # Use split filter to exclude all items
@@ -1185,11 +1185,9 @@ class TestEmptySourceWarns:
             start_node="data",
         )
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
-        # This should succeed but with 0 items (and log a warning)
         result = asyncio.run(executor.execute())
-        assert result.success
-        parsed = json.loads(result.node_outputs["data"])
-        assert len(parsed) == 0
+        assert result.halted
+        assert "resolved 0 items" in result.halt_reason
 
 
 class TestMalformedJsonlLineIsolated:

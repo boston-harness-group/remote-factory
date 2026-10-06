@@ -466,9 +466,19 @@ class InnerLoop:
         t0 = time.monotonic()
         workflow = self.workflow
 
-        all_instances = list(self.task.instances())
-
+        # Default to train split when holdout_ids are configured and no
+        # subset_selector is set, to prevent holdout leakage into training.
         subset_selector = getattr(self, "_subset_selector", None)
+        _defn = getattr(self.task, "_definition", None)
+        _holdout_ids = (
+            getattr(getattr(_defn, "instances_config", None), "holdout_ids", None)
+            if _defn is not None
+            else None
+        )
+        if subset_selector is None and _holdout_ids:
+            all_instances = list(self.task.instances(split="train"))
+        else:
+            all_instances = list(self.task.instances())
         if subset_selector is not None:
             selected_ids = subset_selector.select(
                 [inst.id for inst in all_instances]
@@ -518,7 +528,22 @@ class InnerLoop:
 
         for inst in all_instances:
             try:
-                self.task.setup(inst, self.project_dir)
+                try:
+                    self.task.setup(inst, self.project_dir)
+                except Exception as setup_exc:
+                    log.warning(
+                        "instance_setup_failed",
+                        instance_id=inst.id,
+                        error=str(setup_exc),
+                    )
+                    instance_results.append({
+                        "instance_id": inst.id,
+                        "passed": False,
+                        "score": 0.0,
+                        "error": "setup_failed",
+                    })
+                    scores.append(0.0)
+                    continue
 
                 prompt_text = self.task.prompt(inst)
 
