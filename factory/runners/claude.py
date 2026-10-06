@@ -97,6 +97,26 @@ def _claude_bin() -> str:
     return os.environ.get("FACTORY_CLAUDE_BIN") or "claude"
 
 
+def _claude_model() -> str:
+    """Return the model to pass to internal `claude -p` LLM calls.
+
+    Internal callers (outer-loop prompt rewriters, knob expanders, the
+    reflector) historically hardcoded the "opus" alias. On gateways that
+    only serve specific models (e.g. LiteLLM proxies), an explicit
+    `--model opus` both overrides the user's configured default and 403s.
+    Respect the standard model overrides first:
+
+    1. FACTORY_MODEL — factory's own model knob (env var / config.toml)
+    2. ANTHROPIC_MODEL — the claude CLI's own default-model env var
+    3. "opus" — the historical default
+    """
+    return (
+        os.environ.get("FACTORY_MODEL")
+        or os.environ.get("ANTHROPIC_MODEL")
+        or "opus"
+    )
+
+
 class ClaudeRunner:
     """Runner implementation for Claude Code CLI."""
 

@@ -641,10 +641,10 @@ class OuterLoopReflector:
             "Output ONLY the JSON object."
         )
 
-        from factory.runners.claude import _claude_bin
+        from factory.runners.claude import _claude_bin, _claude_model
 
         try:
-            cmd = [_claude_bin(), "-p", prompt, "--model", "opus",
+            cmd = [_claude_bin(), "-p", prompt, "--model", _claude_model(),
                    "--append-system-prompt", "Output only valid JSON.",
                    "--output-format", "text"]
             data: dict[str, object] | None = None
@@ -653,6 +653,16 @@ class OuterLoopReflector:
                     cmd, capture_output=True, text=True, timeout=120,
                 )
                 raw = proc.stdout.strip()
+                if proc.returncode != 0 or raw.lstrip()[:200].startswith(
+                    ("API Error", "Failed to authenticate")
+                ):
+                    # CLI-level failure (auth/model 403, ...): retrying the
+                    # same command won't help — bail out immediately.
+                    log.warning(
+                        "llm_reflect_cli_error",
+                        returncode=proc.returncode, head=raw[:120],
+                    )
+                    return
                 if not raw or "{" not in raw:
                     if attempt < 2:
                         log.info("llm_reflect_retry", attempt=attempt + 1, raw_head=raw[:80] if raw else "EMPTY")
