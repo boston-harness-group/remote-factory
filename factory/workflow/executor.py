@@ -80,6 +80,7 @@ class ExecutionResult:
         self.completed_files: set[str] = set()
         self.node_outputs: dict[str, str] = {}
         self.duration_ms: float = 0.0
+        self.item_results: list[dict[str, Any]] = []
 
 
 class WorkflowExecutor:
@@ -1061,6 +1062,9 @@ class WorkflowExecutor:
         tasks = [run_item(pair, idx) for idx, pair in enumerate(task_instances)]
         results = await asyncio.gather(*tasks)
         item_results = list(results)
+
+        # Expose per-item results for the inner loop to aggregate scores
+        self.result.item_results = item_results
 
         # Clean up worktrees
         for wt_path, wt_branch_name in worktrees_to_clean:

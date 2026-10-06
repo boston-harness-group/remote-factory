@@ -805,6 +805,9 @@ class TestStepWithDataNode:
 
         mock_result = ExecutionResult()
         mock_result.success = True
+        mock_result.item_results = [
+            {"item_id": "i", "score": 1.0, "passed": True, "success": True},
+        ]
 
         loop = InnerLoop(project_dir=tmp_path, workflow=wf)
 
@@ -1071,12 +1074,10 @@ class TestStepWithDataNodeVerifyScores:
 
         mock_result = ExecutionResult()
         mock_result.success = True
-        mock_result.node_outputs = {
-            "data": json.dumps([
-                {"item_id": "a", "score": 0.8, "success": True},
-                {"item_id": "b", "score": 0.4, "success": True},
-            ])
-        }
+        mock_result.item_results = [
+            {"item_id": "a", "score": 0.8, "passed": True, "success": True},
+            {"item_id": "b", "score": 0.4, "passed": False, "success": True},
+        ]
 
         loop = InnerLoop(project_dir=tmp_path, workflow=wf)
 
@@ -1089,8 +1090,8 @@ class TestStepWithDataNodeVerifyScores:
 
         assert record.score_end == pytest.approx(0.6)
 
-    def test_falls_back_to_binary_without_scores(self, tmp_path: Path) -> None:
-        """Without per-item scores in output, falls back to exec_result.success."""
+    def test_falls_back_to_zero_without_item_results(self, tmp_path: Path) -> None:
+        """Without item_results (executor crashed early), falls back to 0.0."""
         from unittest.mock import AsyncMock
 
         from factory.inner_loop import InnerLoop
@@ -1100,7 +1101,7 @@ class TestStepWithDataNodeVerifyScores:
 
         mock_result = ExecutionResult()
         mock_result.success = True
-        mock_result.node_outputs = {}
+        mock_result.item_results = []
 
         loop = InnerLoop(project_dir=tmp_path, workflow=wf)
 
@@ -1111,7 +1112,7 @@ class TestStepWithDataNodeVerifyScores:
         ):
             record = loop._step_with_data_node()
 
-        assert record.score_end == 1.0
+        assert record.score_end == 0.0
 
 
 # ── PR #1483 Review Fixes — additional tests ─────────────────────
@@ -1378,8 +1379,8 @@ class TestCurrentItemJsonWritten:
 
 
 class TestDirectScoreLookup:
-    def test_finds_score_by_data_node_id(self, tmp_path: Path) -> None:
-        """Score lookup uses DataNode ID directly, not sniffing."""
+    def test_finds_score_from_item_results(self, tmp_path: Path) -> None:
+        """Score is extracted from item_results, not node_outputs JSON."""
         from unittest.mock import AsyncMock
 
         from factory.inner_loop import InnerLoop
@@ -1389,12 +1390,9 @@ class TestDirectScoreLookup:
 
         mock_result = ExecutionResult()
         mock_result.success = True
-        mock_result.node_outputs = {
-            "data": json.dumps([
-                {"item_id": "i", "score": 0.75, "passed": True},
-            ]),
-            "some_other_node": json.dumps({"unrelated": "data"}),
-        }
+        mock_result.item_results = [
+            {"item_id": "i", "score": 0.75, "passed": True, "success": True},
+        ]
 
         loop = InnerLoop(project_dir=tmp_path, workflow=wf)
 
@@ -1419,12 +1417,10 @@ class TestInstanceResultsPopulated:
 
         mock_result = ExecutionResult()
         mock_result.success = True
-        mock_result.node_outputs = {
-            "data": json.dumps([
-                {"item_id": "a", "score": 0.9, "passed": True},
-                {"item_id": "b", "score": 0.3, "passed": False},
-            ])
-        }
+        mock_result.item_results = [
+            {"item_id": "a", "score": 0.9, "passed": True, "success": True},
+            {"item_id": "b", "score": 0.3, "passed": False, "success": True},
+        ]
 
         loop = InnerLoop(project_dir=tmp_path, workflow=wf)
 
@@ -1643,11 +1639,9 @@ class TestStepWithDataNodeCoverage:
 
         mock_result = ExecutionResult()
         mock_result.success = True
-        mock_result.node_outputs = {
-            "data": json.dumps([
-                {"item_id": "i", "score": 0.85, "passed": True},
-            ])
-        }
+        mock_result.item_results = [
+            {"item_id": "i", "score": 0.85, "passed": True, "success": True},
+        ]
 
         loop = InnerLoop(project_dir=tmp_path, workflow=wf)
 
@@ -1674,7 +1668,7 @@ class TestStepWithDataNodeCoverage:
 
         mock_result = ExecutionResult()
         mock_result.success = False
-        mock_result.node_outputs = {}
+        mock_result.item_results = []
 
         loop = InnerLoop(project_dir=tmp_path, workflow=wf)
 

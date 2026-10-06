@@ -722,3 +722,186 @@ class TestInnerLoopTrainDefault:
 
         # With subset_selector present, instances() should be called without split
         task.instances.assert_called_once_with()
+
+
+# ── Fix 8: DataNode path uses real verify scores instead of binary scoring ──
+
+
+class _ScoringTask:
+    """Task that returns configurable per-instance scores."""
+
+    def __init__(self, scores: dict[str, float]) -> None:
+        self._scores = scores
+
+    def instances(self, **kwargs: Any):
+        for iid in self._scores:
+            yield TaskInstance(id=iid)
+
+    def setup(self, instance: Any, workspace: Path) -> None:
+        pass
+
+    def prompt(self, instance: Any) -> str:
+        return f"prompt for {instance.id}"
+
+    def verify(self, instance: Any, workspace: Path) -> VerifyResult:
+        s = self._scores.get(instance.id, 0.0)
+        return VerifyResult(passed=s >= 0.5, score=s)
+
+
+def _make_data_node_workflow() -> Workflow:
+    """Build a minimal DataNode workflow for testing."""
+    return Workflow(
+        name="dn_score_test",
+        nodes={
+            "data": DataNode(
+                id="data",
+                task_ref="fake:Task",
+                subgraph_entry="sub",
+                subgraph_exit="sub",
+            ),
+            "sub": FnNode(id="sub", command="echo x"),
+        },
+        edges=[],
+        start_node="data",
+    )
+
+
+def _mock_exec_result(
+    success: bool,
+    item_results: list[dict[str, Any]],
+) -> MagicMock:
+    """Build a mock ExecutionResult with item_results populated."""
+    from factory.workflow.executor import ExecutionResult
+
+    r = ExecutionResult()
+    r.success = success
+    r.halted = not success
+    r.halt_reason = "" if success else "partial failure"
+    r.nodes_executed = 3
+    r.duration_ms = 200.0
+    r.item_results = item_results
+    r.node_outputs = {}
+    return r
+
+
+class TestDataNodeVerifyScores:
+    """Fix: _step_with_data_node must use real task.verify() scores,
+    not binary 1.0/0.0 from exec_result_wf.success."""
+
+    def test_datanode_path_uses_verify_scores(self, tmp_path: Path) -> None:
+        """Real verify scores (0.85, 0.72, 0.93) → mean ≈ 0.8333, not 1.0."""
+        from factory.inner_loop import InnerLoop
+
+        (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
+        wf = _make_data_node_workflow()
+
+        item_results = [
+            {"item_id": "a", "score": 0.85, "passed": True, "success": True},
+            {"item_id": "b", "score": 0.72, "passed": True, "success": True},
+            {"item_id": "c", "score": 0.93, "passed": True, "success": True},
+        ]
+        mock_result = _mock_exec_result(success=True, item_results=item_results)
+
+        with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
+            async def _fake_exec():
+                return mock_result
+
+            mock_exec = MagicMock()
+            mock_exec.execute = MagicMock(side_effect=_fake_exec)
+            MockExecutor.return_value = mock_exec
+
+            loop = InnerLoop(project_dir=tmp_path, workflow=wf)
+            record = loop._step_with_data_node()
+
+        expected = (0.85 + 0.72 + 0.93) / 3
+        assert record.score_end is not None
+        assert abs(record.score_end - expected) < 1e-6
+        # Must NOT be binary 1.0
+        assert record.score_end != 1.0
+
+    def test_datanode_path_scores_when_executor_fails(self, tmp_path: Path) -> None:
+        """Even when exec_result_wf.success=False (partial failure),
+        real scores are used instead of falling back to 0.0."""
+        from factory.inner_loop import InnerLoop
+
+        (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
+        wf = _make_data_node_workflow()
+
+        item_results = [
+            {"item_id": "a", "score": 0.85, "passed": True, "success": True},
+            {"item_id": "b", "score": 0.0, "passed": False, "success": False},
+            {"item_id": "c", "score": 0.72, "passed": True, "success": True},
+        ]
+        mock_result = _mock_exec_result(success=False, item_results=item_results)
+
+        with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
+            async def _fake_exec():
+                return mock_result
+
+            mock_exec = MagicMock()
+            mock_exec.execute = MagicMock(side_effect=_fake_exec)
+            MockExecutor.return_value = mock_exec
+
+            loop = InnerLoop(project_dir=tmp_path, workflow=wf)
+            record = loop._step_with_data_node()
+
+        expected = (0.85 + 0.0 + 0.72) / 3
+        assert record.score_end is not None
+        assert abs(record.score_end - expected) < 1e-6
+        # Must NOT be binary 0.0
+        assert record.score_end != 0.0
+
+    def test_datanode_path_instance_results_populated(self, tmp_path: Path) -> None:
+        """instance_results on CycleRecord contains per-item data."""
+        from factory.inner_loop import InnerLoop
+
+        (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
+        wf = _make_data_node_workflow()
+
+        item_results = [
+            {"item_id": "x", "score": 0.9, "passed": True, "success": True},
+            {"item_id": "y", "score": 0.3, "passed": False, "success": True},
+        ]
+        mock_result = _mock_exec_result(success=True, item_results=item_results)
+
+        with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
+            async def _fake_exec():
+                return mock_result
+
+            mock_exec = MagicMock()
+            mock_exec.execute = MagicMock(side_effect=_fake_exec)
+            MockExecutor.return_value = mock_exec
+
+            loop = InnerLoop(project_dir=tmp_path, workflow=wf)
+            record = loop._step_with_data_node()
+
+        assert record.instance_results is not None
+        assert len(record.instance_results) == 2
+        by_id = {r["instance_id"]: r for r in record.instance_results}
+        assert by_id["x"]["score"] == 0.9
+        assert by_id["x"]["passed"] is True
+        assert by_id["y"]["score"] == 0.3
+        assert by_id["y"]["passed"] is False
+
+    def test_datanode_path_fallback_when_no_item_results(self, tmp_path: Path) -> None:
+        """When item_results is empty (executor crashed early), score → 0.0."""
+        from factory.inner_loop import InnerLoop
+
+        (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
+        wf = _make_data_node_workflow()
+
+        mock_result = _mock_exec_result(success=False, item_results=[])
+
+        with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
+            async def _fake_exec():
+                return mock_result
+
+            mock_exec = MagicMock()
+            mock_exec.execute = MagicMock(side_effect=_fake_exec)
+            MockExecutor.return_value = mock_exec
+
+            loop = InnerLoop(project_dir=tmp_path, workflow=wf)
+            record = loop._step_with_data_node()
+
+        assert record.score_end == 0.0
+        assert record.instance_results is None

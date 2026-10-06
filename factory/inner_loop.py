@@ -755,34 +755,46 @@ class InnerLoop:
             return record
 
         duration_s = time.monotonic() - t0
-        score = 1.0 if exec_result_wf.success else 0.0
-        instance_results = None
+        import statistics
 
-        # Direct lookup: find DataNode ID and read its output
-        data_node_id: str | None = None
-        for nid, n in self.workflow.nodes.items():
-            if isinstance(n, DataNode):
-                data_node_id = nid
-                break
+        from factory.models import AggregateMethod, InnerLoopConfig
 
-        if data_node_id is not None and data_node_id in exec_result_wf.node_outputs:
-            try:
-                parsed = json.loads(exec_result_wf.node_outputs[data_node_id])
-                if isinstance(parsed, list) and parsed:
-                    scores = [r["score"] for r in parsed if "score" in r]
-                    if scores:
-                        score = sum(scores) / len(scores)
-                    instance_results = [
-                        {
-                            "instance_id": item.get("item_id", ""),
-                            "score": item.get("score", 0.0),
-                            "passed": item.get("passed", False),
-                        }
-                        for item in parsed
-                        if isinstance(item, dict)
-                    ]
-            except (json.JSONDecodeError, TypeError, KeyError):
-                pass
+        # Extract per-item scores from ExecutionResult.item_results
+        # (populated by _execute_data with real task.verify() scores).
+        raw_items = exec_result_wf.item_results
+        instance_results: list[dict[str, Any]] | None = None
+        scores: list[float] = []
+
+        if raw_items:
+            instance_results = []
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    continue
+                item_score = float(item.get("score", 0.0))
+                scores.append(item_score)
+                instance_results.append({
+                    "instance_id": item.get("item_id", ""),
+                    "score": item_score,
+                    "passed": item.get("passed", False),
+                })
+
+        # Aggregate using the same configurable method as _step_with_task
+        config = InnerLoopConfig()
+        aggregate_method = config.aggregate
+
+        if not scores:
+            # No item results (executor crashed before reaching DataNode)
+            score = 0.0
+        elif aggregate_method == AggregateMethod.mean:
+            score = statistics.mean(scores)
+        elif aggregate_method == AggregateMethod.median:
+            score = statistics.median(scores)
+        elif aggregate_method == AggregateMethod.max:
+            score = max(scores)
+        elif aggregate_method == AggregateMethod.all_pass:
+            score = 1.0 if all(s >= 1.0 for s in scores) else 0.0
+        else:
+            score = statistics.mean(scores)
 
         record = CycleRecord(
             cycle_number=self._step_count + 1,
