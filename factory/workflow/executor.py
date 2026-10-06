@@ -100,6 +100,7 @@ class WorkflowExecutor:
         allowed_instance_ids: set[str] | None = None,
         validate: bool = True,
         auto_write_outputs: bool = True,
+        task: Any = None,  # factory.task.Task — use Any to avoid circular import
     ) -> None:
         if validate:
             from factory.workflow.validation import validate_workflow
@@ -117,6 +118,7 @@ class WorkflowExecutor:
         self.dry_run = dry_run
         self.auto_approve = auto_approve
         self._allowed_instance_ids = allowed_instance_ids
+        self._task = task
         if agent_fn is not None:
             self._agent_fn = agent_fn
         else:
@@ -841,6 +843,10 @@ class WorkflowExecutor:
                     for idx, row in enumerate(reader):
                         task_instances.append((DataItem(id=str(idx), metadata=dict(row)), None))
 
+        # Fallback: use InnerLoop's task when DataNode has no task_ref
+        if resolved_task is None and self._task is not None:
+            resolved_task = self._task
+
         # Apply authoritative instance filter from SwarmEngine (train/val firewall)
         if self._allowed_instance_ids is not None:
             task_instances = [
@@ -949,6 +955,15 @@ class WorkflowExecutor:
                         )
                         worktrees_to_clean.append((wt_dir, wt_branch))
                         item_project_path = wt_dir
+
+                    # Create TaskInstance from DataItem when task came from
+                    # InnerLoop (self._task) but items are inline/source_path
+                    if resolved_task is not None and inst is None:
+                        inst = _TaskInstance(
+                            id=item.id,
+                            path=Path(item.path) if item.path else None,
+                            metadata=item.metadata or {},
+                        )
 
                     if resolved_task is not None and inst is not None:
                         try:

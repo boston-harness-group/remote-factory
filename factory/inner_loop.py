@@ -729,6 +729,7 @@ class InnerLoop:
                 self.workflow,
                 self.project_dir,
                 allowed_instance_ids=allowed_instance_ids,
+                task=self.task,  # Pass task for verify() on non-task_ref DataNodes
             )
             exec_result_wf = asyncio.run(executor.execute())
         except ValueError as exc:

@@ -905,3 +905,147 @@ class TestDataNodeVerifyScores:
 
         assert record.score_end == 0.0
         assert record.instance_results is None
+
+
+# ── Fix 9: Executor calls task.verify() for non-task_ref DataNodes ──────
+
+
+class _InlineVerifyTask:
+    """Task whose verify() returns a configurable score."""
+
+    def __init__(self, score: float = 0.85) -> None:
+        self._score = score
+        self.verify_calls: list[str] = []
+        self.setup_calls: list[str] = []
+
+    def instances(self, **kwargs: Any):
+        yield TaskInstance(id="inline1")
+
+    def setup(self, instance: Any, workspace: Path) -> None:
+        self.setup_calls.append(instance.id)
+
+    def prompt(self, instance: Any) -> str:
+        return f"prompt for {instance.id}"
+
+    def verify(self, instance: Any, workspace: Path) -> VerifyResult:
+        self.verify_calls.append(instance.id)
+        return VerifyResult(passed=self._score >= 0.5, score=self._score)
+
+
+class TestExecutorUsesInnerLoopTaskForVerify:
+    """Fix: When executor has task= and DataNode uses inline_items (no task_ref),
+    task.verify() should be called and its score used (not binary 1.0/0.0)."""
+
+    def test_executor_uses_inner_loop_task_for_verify(self, tmp_path: Path) -> None:
+        from factory.workflow.executor import WorkflowExecutor
+
+        fake_task = _InlineVerifyTask(score=0.85)
+
+        wf = Workflow(
+            name="inline_verify_test",
+            nodes={
+                "data": DataNode(
+                    id="data",
+                    inline_items=[
+                        DataItem(id="item_a", prompt="do a"),
+                        DataItem(id="item_b", prompt="do b"),
+                    ],
+                    subgraph_entry="sub",
+                    subgraph_exit="sub",
+                ),
+                "sub": FnNode(id="sub", command="echo x"),
+            },
+            edges=[],
+            start_node="data",
+        )
+
+        executor = WorkflowExecutor(wf, tmp_path, dry_run=True, task=fake_task)
+        result = asyncio.run(executor.execute())
+
+        assert result.success
+        parsed = json.loads(result.node_outputs["data"])
+        assert len(parsed) == 2
+        # Scores should be 0.85 from verify(), not binary 1.0
+        assert all(r["score"] == 0.85 for r in parsed)
+        assert all(r["passed"] is True for r in parsed)
+        # verify() was called for each item
+        assert sorted(fake_task.verify_calls) == ["item_a", "item_b"]
+        # setup() was called for each item
+        assert sorted(fake_task.setup_calls) == ["item_a", "item_b"]
+
+
+class TestExecutorTaskRefTakesPriority:
+    """When DataNode has task_ref AND executor has task=,
+    the DataNode's task_ref should be used (not the fallback)."""
+
+    def test_executor_task_ref_takes_priority(self, tmp_path: Path) -> None:
+        from factory.workflow.executor import WorkflowExecutor
+
+        # task_ref task returns 0.7
+        task_ref_task = _ScoringTask(scores={"inst_x": 0.7, "inst_y": 0.7})
+        # fallback task returns 0.85
+        fallback_task = _InlineVerifyTask(score=0.85)
+
+        wf = Workflow(
+            name="priority_test",
+            nodes={
+                "data": DataNode(
+                    id="data",
+                    task_ref="fake.module:PriorityTask",
+                    subgraph_entry="sub",
+                    subgraph_exit="sub",
+                ),
+                "sub": FnNode(id="sub", command="echo x"),
+            },
+            edges=[],
+            start_node="data",
+        )
+
+        with patch("factory.task.TaskRef.resolve", return_value=task_ref_task):
+            executor = WorkflowExecutor(
+                wf, tmp_path, dry_run=True, task=fallback_task,
+            )
+            result = asyncio.run(executor.execute())
+
+        assert result.success
+        parsed = json.loads(result.node_outputs["data"])
+        # Should use task_ref's verify (0.7), not fallback (0.85)
+        assert all(r["score"] == 0.7 for r in parsed)
+        # Fallback task's verify should NOT have been called
+        assert fallback_task.verify_calls == []
+
+
+class TestExecutorNoTaskStaysBinary:
+    """When no task is passed and DataNode has no task_ref,
+    scores remain binary (1.0 for success, 0.0 for failure)."""
+
+    def test_executor_no_task_stays_binary(self, tmp_path: Path) -> None:
+        from factory.workflow.executor import WorkflowExecutor
+
+        wf = Workflow(
+            name="binary_score_test",
+            nodes={
+                "data": DataNode(
+                    id="data",
+                    inline_items=[
+                        DataItem(id="x", prompt="go"),
+                        DataItem(id="y", prompt="go"),
+                    ],
+                    subgraph_entry="sub",
+                    subgraph_exit="sub",
+                ),
+                "sub": FnNode(id="sub", command="echo x"),
+            },
+            edges=[],
+            start_node="data",
+        )
+
+        # No task= passed
+        executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
+        result = asyncio.run(executor.execute())
+
+        assert result.success
+        parsed = json.loads(result.node_outputs["data"])
+        # Binary scoring: all succeed → 1.0
+        assert all(r["score"] == 1.0 for r in parsed)
+        assert all(r["verify_details"] == {} for r in parsed)
