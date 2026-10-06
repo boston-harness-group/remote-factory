@@ -25,6 +25,9 @@ class TestClaudeModelResolution:
     def test_defaults_to_opus(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("FACTORY_MODEL", raising=False)
         monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        monkeypatch.setattr(
+            "factory.user_config._get_cached_config", lambda: {"defaults": {}}
+        )
         assert _claude_model() == "opus"
 
     def test_factory_model_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -37,7 +40,21 @@ class TestClaudeModelResolution:
     ) -> None:
         monkeypatch.delenv("FACTORY_MODEL", raising=False)
         monkeypatch.setenv("ANTHROPIC_MODEL", "anthropic-default")
+        monkeypatch.setattr(
+            "factory.user_config._get_cached_config", lambda: {"defaults": {}}
+        )
         assert _claude_model() == "anthropic-default"
+
+    def test_config_toml_model_used_when_env_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("FACTORY_MODEL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        monkeypatch.setattr(
+            "factory.user_config._get_cached_config",
+            lambda: {"defaults": {"model": "glm-5.3"}},
+        )
+        assert _claude_model() == "glm-5.3"
 
 
 class TestPromptRewriterCliErrors:
@@ -142,6 +159,31 @@ class TestReflectorCliErrors:
         # fast-fail: exactly one attempt, no 3x retry loop
         assert mock_run.call_count == 1
         # nothing was extracted from the error text
+        assert report.prompt_improvements == []
+
+    def test_llm_reflect_retries_transient_errors(self) -> None:
+        """Nonzero exit with non-error output (429/529, network blip) must
+        still go through the retry-with-backoff loop, not fast-fail."""
+        from factory.outer_loop.reflector import OuterLoopReflector, ReflectionReport
+        from tests.test_outer_loop.test_reflector import _make_record, _make_step
+
+        reflector = OuterLoopReflector(k=1, llm_reflect=True)
+        recs_top = [("w1", 0.9, _make_record(0.9, [_make_step("builder")]))]
+        recs_bottom = [("l1", 0.1, _make_record(0.1, [_make_step("builder", succeeded=False)]))]
+        report = ReflectionReport()
+
+        proc = MagicMock()
+        proc.stdout = ""  # transient failure: nonzero exit, no output
+        proc.returncode = 1
+
+        with patch(
+            "factory.outer_loop.reflector.subprocess.run", return_value=proc
+        ) as mock_run:
+            with patch("factory.outer_loop.reflector.time.sleep"):
+                reflector._llm_reflect(recs_top, recs_bottom, [], report)
+
+        # transient errors are retried, not fast-failed
+        assert mock_run.call_count == 3
         assert report.prompt_improvements == []
 
     def test_llm_reflect_uses_resolved_model(self, monkeypatch: pytest.MonkeyPatch) -> None:

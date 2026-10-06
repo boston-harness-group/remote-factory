@@ -602,19 +602,6 @@ _ROLE_PROMPT_TEMPLATES: dict[AgentRole, str] = {
 PromptRewriter = Callable[[str, str, str | None], str | None]
 
 
-def _cli_output_ok(returncode: int, stdout: str) -> bool:
-    """Guard against accepting CLI error text as LLM output.
-
-    `claude -p` prints auth/API errors to stdout (sometimes with exit 0),
-    e.g. "Failed to authenticate. API Error: 403 ...". Without this check
-    the error message can be captured as a rewritten prompt or knob value.
-    """
-    if returncode != 0:
-        return False
-    head = stdout.lstrip()[:200]
-    return not head.startswith(("API Error", "Failed to authenticate"))
-
-
 def default_prompt_rewriter(
     node_id: str,
     current_prompt: str,
@@ -633,7 +620,7 @@ def default_prompt_rewriter(
         f"any contradictory or redundant instructions. "
         f"Output ONLY the new prompt text, nothing else."
     )
-    from factory.runners.claude import _claude_bin, _claude_model
+    from factory.runners.claude import _claude_bin, _claude_model, _cli_output_ok
 
     try:
         proc = subprocess.run(
@@ -680,7 +667,7 @@ async def async_prompt_rewriter(
         f"any contradictory or redundant instructions. "
         f"Output ONLY the new prompt text, nothing else."
     )
-    from factory.runners.claude import _claude_bin, _claude_model
+    from factory.runners.claude import _claude_bin, _claude_model, _cli_output_ok
 
     try:
         proc = await _asyncio.create_subprocess_exec(
@@ -805,7 +792,7 @@ def default_knob_expander(
         f"Write ONLY the new value (a short name if it's a prompt knob, "
         f"or a number if it's a threshold). Nothing else."
     )
-    from factory.runners.claude import _claude_bin, _claude_model
+    from factory.runners.claude import _claude_bin, _claude_model, _cli_output_ok
 
     try:
         proc = subprocess.run(
