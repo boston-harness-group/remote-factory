@@ -620,16 +620,22 @@ def default_prompt_rewriter(
         f"any contradictory or redundant instructions. "
         f"Output ONLY the new prompt text, nothing else."
     )
-    from factory.runners.claude import _claude_bin
+    from factory.runners.claude import _claude_bin, _claude_model, _cli_output_ok
 
     try:
         proc = subprocess.run(
-            [_claude_bin(), "-p", prompt, "--model", "opus",
+            [_claude_bin(), "-p", prompt, "--model", _claude_model(),
              "--append-system-prompt", "Output only the prompt text.",
              "--max-turns", "1", "--output-format", "text"],
             capture_output=True, text=True, timeout=120,
         )
         result = proc.stdout.strip()
+        if not _cli_output_ok(proc.returncode, result):
+            log.warning(
+                "prompt_rewriter_cli_error", node=node_id,
+                returncode=proc.returncode, head=result[:120],
+            )
+            return None
         if result:
             log.info("prompt_rewritten", node=node_id, len=len(result))
         else:
@@ -661,11 +667,11 @@ async def async_prompt_rewriter(
         f"any contradictory or redundant instructions. "
         f"Output ONLY the new prompt text, nothing else."
     )
-    from factory.runners.claude import _claude_bin
+    from factory.runners.claude import _claude_bin, _claude_model, _cli_output_ok
 
     try:
         proc = await _asyncio.create_subprocess_exec(
-            _claude_bin(), "-p", prompt, "--model", "opus",
+            _claude_bin(), "-p", prompt, "--model", _claude_model(),
             "--append-system-prompt", "Output only the prompt text.",
             "--max-turns", "1", "--output-format", "text",
             stdout=_asyncio.subprocess.PIPE,
@@ -673,6 +679,13 @@ async def async_prompt_rewriter(
         )
         stdout, _ = await _asyncio.wait_for(proc.communicate(), timeout=120.0)
         result = stdout.decode().strip() if stdout else ""
+        returncode = proc.returncode if proc.returncode is not None else -1
+        if not _cli_output_ok(returncode, result):
+            log.warning(
+                "prompt_rewriter_cli_error", node=node_id,
+                returncode=returncode, head=result[:120],
+            )
+            return None
         if result:
             log.info("prompt_rewritten", node=node_id, len=len(result))
         else:
@@ -779,16 +792,22 @@ def default_knob_expander(
         f"Write ONLY the new value (a short name if it's a prompt knob, "
         f"or a number if it's a threshold). Nothing else."
     )
-    from factory.runners.claude import _claude_bin
+    from factory.runners.claude import _claude_bin, _claude_model, _cli_output_ok
 
     try:
         proc = subprocess.run(
-            [_claude_bin(), "-p", prompt, "--model", "opus",
+            [_claude_bin(), "-p", prompt, "--model", _claude_model(),
              "--append-system-prompt", "Output only the value, no explanation.",
              "--max-turns", "1", "--output-format", "text"],
             capture_output=True, text=True, timeout=120,
         )
         result = proc.stdout.strip()
+        if not _cli_output_ok(proc.returncode, result):
+            log.warning(
+                "knob_expander_cli_error", knob=knob_name,
+                returncode=proc.returncode, head=result[:120],
+            )
+            return None
         if not result:
             log.warning("knob_expander_empty", knob=knob_name)
             return None

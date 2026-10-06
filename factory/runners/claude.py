@@ -97,6 +97,52 @@ def _claude_bin() -> str:
     return os.environ.get("FACTORY_CLAUDE_BIN") or "claude"
 
 
+def _claude_model() -> str:
+    """Return the model to pass to internal `claude -p` LLM calls.
+
+    Internal callers (outer-loop prompt rewriters, knob expanders, the
+    reflector) historically hardcoded the "opus" alias. On gateways that
+    only serve specific models (e.g. LiteLLM proxies), an explicit
+    `--model opus` both overrides the user's configured default and 403s.
+    Respect the standard model overrides first:
+
+    1. FACTORY_MODEL — factory's own model knob (env var / config.toml
+       `[defaults] model`, resolved like the rest of the CLI)
+    2. ANTHROPIC_MODEL — the claude CLI's own default-model env var
+    3. "opus" — the historical default
+    """
+    from factory.user_config import resolve
+
+    return (
+        resolve("model", env_var="FACTORY_MODEL")
+        or os.environ.get("ANTHROPIC_MODEL")
+        or "opus"
+    )
+
+
+# `claude -p` prints auth/API errors to stdout (sometimes with exit 0),
+# e.g. "Failed to authenticate. API Error: 403 ...". Heuristic prefixes —
+# a sturdier fix is `--output-format json` and its structured is_error
+# field (see follow-up note in the outer-loop PR).
+_CLI_ERROR_PREFIXES = ("API Error", "Failed to authenticate")
+
+
+def _cli_error_text(stdout: str) -> bool:
+    """True if `claude -p` stdout looks like a CLI error, not model output."""
+    return stdout.lstrip()[:200].startswith(_CLI_ERROR_PREFIXES)
+
+
+def _cli_output_ok(returncode: int, stdout: str) -> bool:
+    """Guard against accepting CLI error text as LLM output.
+
+    Without this check an error message (or any failed run's output) can
+    be captured as a rewritten prompt or knob value.
+    """
+    if returncode != 0:
+        return False
+    return not _cli_error_text(stdout)
+
+
 class ClaudeRunner:
     """Runner implementation for Claude Code CLI."""
 

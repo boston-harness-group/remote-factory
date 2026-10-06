@@ -641,10 +641,10 @@ class OuterLoopReflector:
             "Output ONLY the JSON object."
         )
 
-        from factory.runners.claude import _claude_bin
+        from factory.runners.claude import _claude_bin, _claude_model, _cli_error_text
 
         try:
-            cmd = [_claude_bin(), "-p", prompt, "--model", "opus",
+            cmd = [_claude_bin(), "-p", prompt, "--model", _claude_model(),
                    "--append-system-prompt", "Output only valid JSON.",
                    "--output-format", "text"]
             data: dict[str, object] | None = None
@@ -653,6 +653,17 @@ class OuterLoopReflector:
                     cmd, capture_output=True, text=True, timeout=120,
                 )
                 raw = proc.stdout.strip()
+                if _cli_error_text(raw):
+                    # CLI-level auth/model failure (e.g. a 403 on a
+                    # single-model gateway): retrying the same command
+                    # won't help — bail out immediately. Transient errors
+                    # (429/529, network blips) exit nonzero with empty or
+                    # non-JSON output and fall through to the retry below.
+                    log.warning(
+                        "llm_reflect_cli_error",
+                        returncode=proc.returncode, head=raw[:120],
+                    )
+                    return
                 if not raw or "{" not in raw:
                     if attempt < 2:
                         log.info("llm_reflect_retry", attempt=attempt + 1, raw_head=raw[:80] if raw else "EMPTY")
