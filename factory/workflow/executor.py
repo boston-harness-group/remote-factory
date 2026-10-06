@@ -774,6 +774,14 @@ class WorkflowExecutor:
         if node.inline_items:
             task_instances = [(item, None) for item in node.inline_items]
         elif node.task_ref:
+            # Ensure .factory/tasks/ is on sys.path so importlib can find
+            # task modules in eval worktrees (rsync copies the dir but does
+            # not add it to sys.path).
+            import sys
+            tasks_dir = str(self.project_path / '.factory' / 'tasks')
+            if tasks_dir not in sys.path:
+                sys.path.insert(0, tasks_dir)
+
             from factory.task import TaskRef
             task_ref = TaskRef(ref=node.task_ref)
             resolved_task = task_ref.resolve()

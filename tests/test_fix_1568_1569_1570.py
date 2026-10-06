@@ -1049,3 +1049,112 @@ class TestExecutorNoTaskStaysBinary:
         # Binary scoring: all succeed → 1.0
         assert all(r["score"] == 1.0 for r in parsed)
         assert all(r["verify_details"] == {} for r in parsed)
+
+
+# ── Fix 10: TaskRef.resolve() sys.path for eval worktrees (#1571) ──────
+
+
+class TestTaskRefResolveWithSysPath:
+    """TaskRef.resolve() uses importlib.import_module() which requires the
+    module on sys.path.  In eval worktrees .factory/tasks/ exists but is NOT
+    on sys.path, so resolve() throws ImportError.  The executor must add the
+    tasks dir to sys.path before calling resolve().
+    """
+
+    def test_taskref_resolve_fails_without_syspath(self, tmp_path: Path) -> None:
+        """Without sys.path manipulation, TaskRef.resolve() fails on a
+        module that lives only in .factory/tasks/."""
+        import sys
+
+        from factory.task import TaskRef
+
+        tasks_dir = tmp_path / ".factory" / "tasks"
+        tasks_dir.mkdir(parents=True)
+        (tasks_dir / "eval_worktree_task.py").write_text(
+            "from factory.task import Task, TaskDefinition\n"
+            "class EvalWorktreeTask(Task):\n"
+            "    def __init__(self):\n"
+            "        super().__init__(TaskDefinition(name='eval-worktree'))\n"
+        )
+
+        # Ensure the tasks dir is NOT on sys.path
+        original_path = sys.path[:]
+        sys.path = [p for p in sys.path if str(tasks_dir) not in p]
+        try:
+            ref = TaskRef(ref="eval_worktree_task:EvalWorktreeTask")
+            with pytest.raises(ImportError):
+                ref.resolve()
+        finally:
+            sys.path = original_path
+
+    def test_taskref_resolve_succeeds_with_syspath(self, tmp_path: Path) -> None:
+        """With .factory/tasks/ on sys.path, TaskRef.resolve() succeeds."""
+        import sys
+
+        from factory.task import TaskRef
+
+        tasks_dir = tmp_path / ".factory" / "tasks"
+        tasks_dir.mkdir(parents=True)
+        (tasks_dir / "eval_worktree_task2.py").write_text(
+            "from factory.task import Task, TaskDefinition\n"
+            "class EvalWorktreeTask2(Task):\n"
+            "    def __init__(self):\n"
+            "        super().__init__(TaskDefinition(name='eval-worktree-2'))\n"
+        )
+
+        original_path = sys.path[:]
+        try:
+            sys.path.insert(0, str(tasks_dir))
+            ref = TaskRef(ref="eval_worktree_task2:EvalWorktreeTask2")
+            task = ref.resolve()
+            assert task.name == "eval-worktree-2"
+        finally:
+            sys.path = original_path
+
+    def test_executor_adds_syspath_before_resolve(self, tmp_path: Path) -> None:
+        """WorkflowExecutor._execute_data adds .factory/tasks/ to sys.path
+        before calling TaskRef.resolve()."""
+        import sys
+
+        from factory.workflow.executor import WorkflowExecutor
+
+        tasks_dir = tmp_path / ".factory" / "tasks"
+        tasks_dir.mkdir(parents=True)
+        (tasks_dir / "exec_task.py").write_text(
+            "from factory.task import Task, TaskDefinition, TaskInstance\n"
+            "class ExecTask(Task):\n"
+            "    def __init__(self):\n"
+            "        super().__init__(TaskDefinition(name='exec-task'))\n"
+            "    def instances(self, **kw):\n"
+            "        yield TaskInstance(id='inst1')\n"
+        )
+
+        wf = Workflow(
+            name="syspath_test",
+            nodes={
+                "data": DataNode(
+                    id="data",
+                    task_ref="exec_task:ExecTask",
+                    subgraph_entry="sub",
+                    subgraph_exit="sub",
+                ),
+                "sub": FnNode(id="sub", command="echo ok"),
+            },
+            edges=[],
+            start_node="data",
+        )
+
+        # Remove tasks_dir from sys.path if present
+        original_path = sys.path[:]
+        sys.path = [p for p in sys.path if str(tasks_dir) not in p]
+        try:
+            executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
+            result = asyncio.run(executor.execute())
+            assert result.success
+            parsed = json.loads(result.node_outputs["data"])
+            assert len(parsed) == 1
+            assert parsed[0]["item_id"] == "inst1"
+        finally:
+            sys.path = original_path
+            # Clean up imported module to avoid polluting other tests
+            sys.modules.pop("exec_task", None)
