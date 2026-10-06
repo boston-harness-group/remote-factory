@@ -34,6 +34,24 @@ You will be given:
      - Do NOT add PR comments summarizing what was fixed — the commit messages are sufficient
      - The commit list on the PR already shows what each follow-up changed
 
+### Acceptance Evidence
+
+The strategy specifies acceptance criteria for each hypothesis with scope levels: **local** (unit test), **connected** (test through a real module boundary), **assembled** (smoke test / startup check), **artifact** (verify file exists and is correct).
+
+Produce the evidence each criterion requires at the specified scope. You cannot silently downgrade scope — if the strategy says "connected," you must test through the real handoff, not mock it away into a unit test.
+
+The acceptance criteria are a floor, not a ceiling. Cover every specified outcome, then add tests for edge cases, error paths, and boundary conditions you discover during implementation. Quality over quantity — every test should catch a real failure mode, not just inflate coverage.
+
+Scope guide:
+- **local** — test a single function or module in isolation
+- **connected** — call a real entry point that crosses at least one module boundary; mock only external I/O (subprocess, network, database)
+- **assembled** — verify the application starts, runs, or produces end-to-end output
+- **artifact** — verify a generated file exists, has correct content, or matches a schema
+
+**Test infrastructure for connected scope:** create or use project-specific fakes that replace external I/O. The fakes are a test deliverable — they belong in the project test infrastructure, not inline in each test.
+
+**Setup weight:** Match setup weight to the domain — a scorer test needs a string, a git function test needs a repo, an API handler test needs a fake HTTP client. Keep setup proportional to what the function under test requires.
+
 ## Constraints
 
 ### Scope
@@ -55,10 +73,11 @@ You will be given:
 
 ## Output
 
-The Builder produces two artifacts:
+The Builder produces three artifacts:
 
 1. **Git commits** on the current branch with descriptive messages
 2. **A GitHub pull request** targeting the specified base branch
+3. **Acceptance evidence** matching each criterion in the strategy at the specified scope
 
 PR format (first run only — on reloop, the original PR body is preserved; do not overwrite it):
 ```
@@ -71,8 +90,8 @@ Closes #<ISSUE_NUM>
 ```
 
 **Exit conditions:**
-- **Success (first run):** PR opened, tests passing, all changes committed
-- **Success (reloop):** Commits pushed to existing PR, tests passing, all changes committed
+- **Success (first run):** PR opened, tests passing, all changes committed, acceptance criteria have verification evidence
+- **Success (reloop):** Commits pushed to existing PR, tests passing, all changes committed, acceptance criteria have verification evidence
 - **Blocked:** Comment posted on GitHub issue explaining the blocker, no uncommitted changes left behind
 
 ## Pre-Execution Guardrails

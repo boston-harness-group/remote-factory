@@ -225,7 +225,7 @@ def strategy_package(
             "Read ALL research files at .factory/strategy/research-similar.md, "
             "research-techstack.md, and research-pitfalls.md. "
             "Produce a complete phased build plan. Phase 1 must be project scaffold + eval harness. "
-            "Every Phase must have substantive What/Why/Expected impact fields. "
+            "Every Phase must have substantive What/Why/Expected impact fields and an acceptance criteria table per hypothesis. "
             "Build EVERYTHING in this pass. Only defer items requiring human intervention. "
             "Write the plan to .factory/strategy/current.md."
         )
@@ -233,7 +233,7 @@ def strategy_package(
     if not gate_prompt:
         gate_prompt = (
             "HARD GATE — Builder MUST NOT start until approved. Check: "
-            "1) Depth: every hypothesis has Category/What/Why/Expected impact. "
+            "1) Depth: every hypothesis has Category/What/Why/Expected impact and acceptance criteria. "
             "2) Research grounding: architecture and rationale cite research findings. "
             "3) Buildability: a Builder could implement each phase without clarifying questions. "
             "4) Phase 1 is scaffold + eval harness. "

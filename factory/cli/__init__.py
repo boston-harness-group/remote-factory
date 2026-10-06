@@ -100,6 +100,9 @@ from factory.cli.spec import (
     cmd_spec_update as cmd_spec_update,
     cmd_spec_validate as cmd_spec_validate,
 )
+from factory.cli.testing import (
+    cmd_check_patch_targets as cmd_check_patch_targets,
+)
 from factory.cli.store import (
     cmd_begin as cmd_begin,
     cmd_diff as cmd_diff,

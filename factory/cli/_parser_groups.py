@@ -330,6 +330,17 @@ def add_validation_recovery_parsers(sub: argparse._SubParsersAction) -> None:  #
 
     sub.add_parser("registry-list", help="List all registered factory-managed projects")
 
+    p = sub.add_parser(
+        "check-patch-targets",
+        help="Check a test file for over-mocking (advisory)",
+    )
+    p.add_argument("test_file", help="Path to the test file to analyse")
+    p.add_argument(
+        "--project-name",
+        default=None,
+        help="Project package name (auto-detected from pyproject.toml if omitted)",
+    )
+
 
 def add_entry_point_parsers(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
     p = sub.add_parser("agent", help="Invoke a specialist agent with a task")
