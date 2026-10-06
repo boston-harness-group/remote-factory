@@ -96,6 +96,10 @@ def _validate_data_dependencies(
                 pred_node = workflow.nodes.get(pred_id)
                 if pred_node:
                     available_writes |= pred_node.writes
+                    # DataNode implicitly writes .factory/current_item.json
+                    # before running its subgraph (executor.py L1012).
+                    if type(pred_node).__name__ == 'DataNode':
+                        available_writes.add('.factory/current_item.json')
             missing = node.reads - available_writes
             if missing:
                 issues.append(
