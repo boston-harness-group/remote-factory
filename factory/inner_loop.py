@@ -289,7 +289,7 @@ class InnerLoop:
                 self.workflow is not None
                 and any(isinstance(n, DataNode) for n in self.workflow.nodes.values())
             )
-        return self._has_data_node
+        return bool(self._has_data_node)
 
     def _ensure_ephemeral_mode(self) -> str:
         """Register self.workflow as an ephemeral mode for CEO subprocess discovery.
