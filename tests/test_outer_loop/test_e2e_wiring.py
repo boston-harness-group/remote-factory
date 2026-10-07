@@ -699,22 +699,12 @@ class TestEngineRunE2E:
     def test_no_validation_rejection_xfail(self) -> None:
         """Test 13: remove_node on a DataNode subgraph node produces a valid workflow.
 
-        We directly test that remove_node on the 'process' node (a subgraph
-        node referenced by DataNode's subgraph_entry/exit) produces a valid
-        workflow graph.  Currently it either returns None (refusing to act)
-        or produces an invalid graph with broken subgraph references.
-
-        When issue 1574 is fixed (NODE_REMOVE protects DataNode subgraph
-        nodes), this will produce a valid result and the xfail becomes
-        XPASS → the marker can be removed.
+        Either refusing the removal (returning None) or rewiring to a valid
+        graph satisfies issue 1574.  Currently remove_node produces an
+        invalid graph.
         """
         from factory.outer_loop.mutations import remove_node
 
         wf = _make_datanode_workflow()
         result = remove_node(wf, "process", frozen_nodes={"data"})
-        if result is not None:
-            mutated_wf, _record = result
-            issues = mutated_wf.validate_graph()
-            assert not issues, f"remove_node produced invalid workflow: {issues}"
-        else:
-            pytest.fail("remove_node returned None for unfrozen process node")
+        assert result is None or not result[0].validate_graph()
