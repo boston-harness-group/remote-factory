@@ -760,10 +760,8 @@ class InnerLoop:
 
         from factory.models import AggregateMethod, InnerLoopConfig
 
-        # Extract per-item scores from ExecutionResult.item_results
-        # (populated by _execute_data with real task.verify() scores).
         raw_items = exec_result_wf.item_results
-        instance_results: list[dict[str, Any]] | None = None
+        instance_results = None
         scores: list[float] = []
 
         if raw_items:

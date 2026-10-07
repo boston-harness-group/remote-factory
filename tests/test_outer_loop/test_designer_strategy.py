@@ -42,28 +42,28 @@ class TestDesignerExecutorStrategy:
 
 
 class TestDesignerCeoStrategy:
-    """When execution_strategy='ceo-skill' or 'ceo-tool', Designer produces no prompt_template."""
+    """Designer populates prompt_template for all execution strategies."""
 
-    def test_minimal_ceo_skill_no_prompt_template(self) -> None:
+    def test_minimal_ceo_skill_has_prompt_template(self) -> None:
         designer = DesignerAgent()
         wf = designer.design_minimal("test", execution_strategy="ceo-skill")
         for nid, node in wf.nodes.items():
             if isinstance(node, AgentNode):
-                assert node.prompt_template == "", f"AgentNode '{nid}' should have empty prompt_template"
+                assert node.prompt_template != "", f"AgentNode '{nid}' should have non-empty prompt_template"
 
-    def test_minimal_ceo_tool_no_prompt_template(self) -> None:
+    def test_minimal_ceo_tool_has_prompt_template(self) -> None:
         designer = DesignerAgent()
         wf = designer.design_minimal("test", execution_strategy="ceo-tool")
         for nid, node in wf.nodes.items():
             if isinstance(node, AgentNode):
-                assert node.prompt_template == "", f"AgentNode '{nid}' should have empty prompt_template"
+                assert node.prompt_template != "", f"AgentNode '{nid}' should have non-empty prompt_template"
 
-    def test_thorough_ceo_skill_no_prompt_template(self) -> None:
+    def test_thorough_ceo_skill_has_prompt_template(self) -> None:
         designer = DesignerAgent()
         wf = designer.design_thorough("test", execution_strategy="ceo-skill")
         for nid, node in wf.nodes.items():
             if isinstance(node, AgentNode):
-                assert node.prompt_template == ""
+                assert node.prompt_template != "", f"AgentNode '{nid}' should have non-empty prompt_template"
 
 
 class TestDesignerDefaultStrategy:
