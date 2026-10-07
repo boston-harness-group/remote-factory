@@ -540,3 +540,202 @@ class TestStandalone:
         assert score_map.get("i6") == pytest.approx(0.95), (
             f"i6 score should be 0.95, got {score_map.get('i6')}"
         )
+
+
+# ── Tests 11-13: high-value E2E tests ────────────────────────────
+
+
+class TestEngineRunE2E:
+    """Tests 11-13: full engine.run, evaluator halt, and xfail NODE_REMOVE."""
+
+    def test_engine_run_holdout_evaluation(self, tmp_path: Path) -> None:
+        """Test 11: engine.run() with real pipeline produces holdout scores.
+
+        Uses aggregate=mean so that partial passes yield a non-zero score
+        (unlike all_pass which demands every instance passes).  Verifies
+        that the OuterLoopResult carries val_score > 0.5, completes at
+        least one generation, and returns a bool overfit_flag.
+        """
+        project = tmp_path / "holdout_run_project"
+        project.mkdir()
+        _bootstrap_git_project(project)
+
+        # Override aggregate to mean so holdout scores reflect partial success
+        config_path = project / ".factory" / "config.json"
+        config_path.write_text(json.dumps({"inner_loop": {"aggregate": "mean"}}))
+
+        wf = _make_datanode_workflow()
+
+        swarm_config = SwarmConfig(
+            benchmark="wiring",
+            budget=2,
+            population_size=1,
+            tournament_size=1,
+            mutation_rate=0.0,
+            designer_count=0,
+            training_instances=["i1", "i2", "i3", "i4"],
+            holdout_instances=["i5", "i6"],
+            frozen_node_ids=["data"],
+        )
+        task = WiringTask(str(project))
+        swarm_config.set_task(task)
+
+        evaluator = SwarmEvaluator(
+            swarm_config,
+            inner_loop_factory=True,
+            project_dir=project,
+        )
+
+        engine = SwarmEngine(
+            swarm_config,
+            evaluator,
+            project_dir=project,
+        )
+
+        result = engine.run(wf, project_dir=str(project))
+
+        # val_score should reflect holdout instances i5 (0.90) and i6 (0.95)
+        # minus parsimony penalty (0.01 * 2 nodes = 0.02), mean(0.90, 0.95)=0.925 - 0.02=0.905
+        assert result.val_score > 0.5, (
+            f"Expected val_score > 0.5 from holdout eval, got {result.val_score}"
+        )
+        assert result.generations_completed >= 1, (
+            f"Expected at least 1 generation, got {result.generations_completed}"
+        )
+        assert isinstance(result.overfit_flag, bool), (
+            f"overfit_flag should be a bool, got {type(result.overfit_flag)}"
+        )
+
+    def test_halt_reason_through_evaluator(self, tmp_path: Path) -> None:
+        """Test 12: DataNode with split='test' → 0 items → score 0.0.
+
+        Exercises the evaluator pipeline with a DataNode whose split filter
+        matches zero task instances (WiringTask has only 'train' and 'val'
+        splits, never 'test').  The executor raises ValueError("0 items"),
+        which the inner loop catches, and the evaluator surfaces score=0.0
+        with error details.
+        """
+        project = tmp_path / "halt_project"
+        project.mkdir()
+        _bootstrap_git_project(project)
+
+        # Build workflow with split='test' → 0 items after filtering
+        # (WiringTask instances are split into train/val only, no 'test')
+        wf = Workflow(
+            name="halt-e2e",
+            nodes={
+                "data": DataNode(
+                    id="data",
+                    task_ref="wiring_task_copied:WiringTask",
+                    subgraph_entry="process",
+                    subgraph_exit="process",
+                    split="test",
+                ),
+                "process": FnNode(id="process", command="echo ok"),
+            },
+            edges=[],
+            start_node="data",
+        )
+
+        swarm_config = SwarmConfig(
+            benchmark="wiring",
+            budget=4,
+            population_size=2,
+            tournament_size=2,
+            mutation_rate=0.0,
+            training_instances=["i1", "i2"],
+            holdout_instances=[],
+            frozen_node_ids=["data"],
+        )
+        task = WiringTask(str(project))
+        swarm_config.set_task(task)
+
+        evaluator = SwarmEvaluator(
+            swarm_config,
+            inner_loop_factory=True,
+            project_dir=project,
+        )
+
+        result = evaluator.evaluate(wf, str(project), ["i1", "i2"])
+
+        assert result.score == 0.0, (
+            f"Expected score 0.0 for 0-item DataNode, got {result.score}"
+        )
+        # Check for halt_reason in details if available
+        if result.details:
+            details_str = json.dumps(result.details, default=str)
+            # The halt can surface as an error or a halt_reason in the details
+            has_halt_info = (
+                "0 items" in details_str
+                or "halt" in details_str.lower()
+                or result.details.get("error")
+            )
+            assert has_halt_info, (
+                f"Expected halt/error info in details for 0-item split, "
+                f"got: {result.details}"
+            )
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="NODE_REMOVE deletes subgraph nodes, issue 1574",
+    )
+    def test_no_validation_rejection_xfail(self, tmp_path: Path) -> None:
+        """Test 13: mutation_rate=1.0 with no frozen nodes → no valid offspring.
+
+        With frozen_node_ids=[] and mutation_rate=1.0, all offspring are
+        produced via mutations.  On a DataNode workflow, NODE_REMOVE targets
+        the 'process' subgraph node (the only non-frozen candidate), which
+        breaks the DataNode's subgraph_entry/exit references.
+        validate_and_repair rejects these, so no mutation ever produces a
+        valid offspring → total_candidates_evaluated stays at 1 (seed only).
+
+        When issue 1574 is fixed (NODE_REMOVE protects DataNode subgraph
+        nodes), mutations will succeed and this assertion will pass,
+        causing the xfail to become XPASS → the marker can be removed.
+        """
+        project = tmp_path / "xfail_project"
+        project.mkdir()
+        _bootstrap_git_project(project)
+
+        # Override aggregate to mean
+        config_path = project / ".factory" / "config.json"
+        config_path.write_text(json.dumps({"inner_loop": {"aggregate": "mean"}}))
+
+        wf = _make_datanode_workflow()
+
+        swarm_config = SwarmConfig(
+            benchmark="wiring",
+            budget=4,
+            population_size=2,
+            tournament_size=2,
+            mutation_rate=1.0,       # every offspring is mutated
+            designer_count=0,
+            training_instances=["i1", "i2", "i3", "i4"],
+            holdout_instances=["i5", "i6"],
+            frozen_node_ids=[],      # nothing frozen — mutations can break subgraphs
+        )
+        task = WiringTask(str(project))
+        swarm_config.set_task(task)
+
+        evaluator = SwarmEvaluator(
+            swarm_config,
+            inner_loop_factory=True,
+            project_dir=project,
+        )
+
+        engine = SwarmEngine(
+            swarm_config,
+            evaluator,
+            project_dir=project,
+        )
+
+        result = engine.run(wf, project_dir=str(project))
+
+        # This WILL fail: with NODE_REMOVE unable to safely mutate DataNode
+        # subgraphs, no mutations succeed → only the seed is evaluated.
+        # total_candidates_evaluated == 1 (seed only), not > 1.
+        assert result.total_candidates_evaluated > 1, (
+            f"Expected mutations to produce valid offspring, but "
+            f"total_candidates_evaluated={result.total_candidates_evaluated} "
+            f"(seed only). NODE_REMOVE breaks DataNode subgraph nodes."
+        )
