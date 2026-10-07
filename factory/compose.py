@@ -279,6 +279,18 @@ def compose(workflow: Any, task: Any, project_dir: str | Path) -> Any:
 
     from factory.inner_loop import InnerLoop
 
+    inner_loop_config = None
+    config_path = Path(project_dir) / '.factory' / 'config.json'
+    if config_path.exists():
+        import json
+        try:
+            fc = json.loads(config_path.read_text())
+            if fc.get('inner_loop'):
+                from factory.models import InnerLoopConfig
+                inner_loop_config = InnerLoopConfig(**fc['inner_loop'])
+        except (json.JSONDecodeError, OSError):
+            pass
+
     mode_name = getattr(workflow, "name", "composed")
     return InnerLoop(
         project_dir=Path(project_dir),
@@ -286,4 +298,5 @@ def compose(workflow: Any, task: Any, project_dir: str | Path) -> Any:
         evaluator=evaluator,
         workflow=workflow,
         task=task,
+        inner_loop_config=inner_loop_config,
     )

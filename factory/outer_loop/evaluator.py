@@ -397,6 +397,7 @@ class SwarmEvaluator:
                     execution_strategy=getattr(
                         self._config, "execution_strategy", "executor"
                     ),
+                    inner_loop_config=None,
                 )
             record = loop.step()
 
@@ -445,6 +446,8 @@ class SwarmEvaluator:
                 adapted = eval_result_from_verify_results(verify_results)
                 details["verify"] = adapted.details
 
+            if record.eval_details and isinstance(record.eval_details, dict):
+                details.update(record.eval_details)
             record.eval_details = details
 
             return EvalResult(
