@@ -28,8 +28,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fixtures"))
 
 from wiring_task_wt import WiringTask  # noqa: E402
 
-pytestmark = pytest.mark.e2e
-
 from factory.outer_loop.engine import SwarmEngine
 from factory.outer_loop.evaluator import SwarmEvaluator
 from factory.outer_loop.models import EvalResult, SwarmConfig
@@ -45,6 +43,8 @@ from factory.workflow.primitives import (
     VerdictType,
     Workflow,
 )
+
+pytestmark = pytest.mark.e2e
 
 
 # ── Helpers ────────────────────────────────────────────────────────
