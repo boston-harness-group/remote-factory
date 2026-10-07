@@ -154,7 +154,7 @@ class _SharedState:
             budget=6,
             population_size=2,
             tournament_size=2,
-            mutation_rate=0.0,  # no mutations → evaluate only the seed
+            mutation_rate=0.0,  # no mutations — offspring produced by crossover/structural changes only
             training_instances=["i1", "i2", "i3", "i4"],
             holdout_instances=["i5", "i6"],
             frozen_node_ids=["data"],
@@ -180,32 +180,25 @@ class _SharedState:
         )
         pop = Population()
         ind = Population.make_individual(wf, generation=0)
+        seed_id = ind.id
         pop.add(ind)
 
         # ── Run one generation (the REAL path) ──────────────────
         cls.summary = engine.evolve_generation(pop, 0, str(project))
 
-        # ── Harvest results from the population ─────────────────
-        for individual in pop.individuals:
-            if individual.score is not None:
-                cls.pipeline_score = individual.score
-                # The inner-loop cycle record is stored in the evaluator
-                record = evaluator.get_cycle_record(individual.id)
-                if record is not None and record.instance_results:
-                    cls.instance_results.extend(record.instance_results)
+        # ── Harvest results from the seed individual only ───────
+        # Use ONLY the seed individual — offspring may fail validation and score 0.0
+        record = evaluator.get_cycle_record(seed_id)
+        if record is not None:
+            cls.pipeline_score = record.score_end
+            if record.instance_results:
+                cls.instance_results = list(record.instance_results)
 
-        # Also harvest from cycle_cache to ensure we have results
-        if not cls.instance_results:
-            # Fall back: read from cycle summary on disk
-            for d in (project / ".factory" / "outer_loop" / "runs").rglob(
-                "cycle_summary.json"
-            ):
-                try:
-                    data = json.loads(d.read_text())
-                    if "instance_results" in data:
-                        cls.instance_results.extend(data["instance_results"])
-                except (json.JSONDecodeError, OSError):
-                    pass
+        # Fallback: if get_cycle_record didn't work, get score from the individual
+        if cls.pipeline_score is None:
+            seed = next((i for i in pop.individuals if i.id == seed_id), None)
+            if seed is not None and seed.score is not None:
+                cls.pipeline_score = seed.score
 
 
 @pytest.fixture(scope="module")
