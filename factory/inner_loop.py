@@ -284,7 +284,7 @@ class InnerLoop:
         return record
 
     def _workflow_has_data_node(self) -> bool:
-        if self._has_data_node is None:
+        if getattr(self, '_has_data_node', None) is None:
             self._has_data_node = (
                 self.workflow is not None
                 and any(isinstance(n, DataNode) for n in self.workflow.nodes.values())
@@ -478,7 +478,11 @@ class InnerLoop:
             else None
         )
         if subset_selector is None and _holdout_ids:
-            all_instances = list(self.task.instances(split="train"))
+            try:
+                all_instances = list(self.task.instances(split="train"))
+            except TypeError:
+                log.warning('task_instances_no_split', task=type(self.task).__name__)
+                all_instances = list(self.task.instances())
         else:
             all_instances = list(self.task.instances())
         if subset_selector is not None:
@@ -769,7 +773,11 @@ class InnerLoop:
             else None
         )
         if subset_selector is None and _holdout_ids and self.task is not None:
-            train_ids = [inst.id for inst in self.task.instances(split='train')]
+            try:
+                train_ids = [inst.id for inst in self.task.instances(split='train')]
+            except TypeError:
+                log.warning('task_instances_no_split', task=type(self.task).__name__)
+                train_ids = [inst.id for inst in self.task.instances()]
             allowed_instance_ids = set(train_ids)
 
         if subset_selector is not None and self.task is not None:
