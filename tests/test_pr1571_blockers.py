@@ -17,7 +17,6 @@ from factory.task import (
     ScoringContract,
     TaskDefinition,
     TaskInstance,
-    VerifyResult,
 )
 from factory.workflow.primitives import (
     AgentNode,
@@ -62,7 +61,7 @@ class TestDataNodeHoldoutLeakage:
             ]
         )
 
-        from factory.workflow.primitives import DataItem, DataNode, FnNode
+        from factory.workflow.primitives import DataNode, FnNode
 
         wf = Workflow(
             name="dn_holdout_test",
