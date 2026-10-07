@@ -1158,3 +1158,112 @@ class TestTaskRefResolveWithSysPath:
             sys.path = original_path
             # Clean up imported module to avoid polluting other tests
             sys.modules.pop("exec_task", None)
+
+
+# ── Fix 11: _create_worktree copies .factory/tasks/ (#1571) ──────
+
+
+class TestCreateWorktreeCopiesTasks:
+    """_create_worktree must copy .factory/tasks/ to the eval worktree
+    so TaskRef.resolve() can find task module files."""
+
+    def test_create_worktree_copies_tasks(self, tmp_path: Path) -> None:
+        """A project with .factory/tasks/my_task.py should have that file
+        copied into the eval worktree at .factory/tasks/my_task.py."""
+        import subprocess
+
+        from factory.outer_loop.evaluator import SwarmEvaluator
+
+        # Set up a minimal git repo as the source project
+        project = tmp_path / "project"
+        project.mkdir()
+        subprocess.run(["git", "init", str(project)], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "-C", str(project), "config", "user.email", "test@test.com"],
+            capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(project), "config", "user.name", "Test"],
+            capture_output=True, check=True,
+        )
+
+        # Create .factory/tasks/my_task.py (gitignored, copied by _create_worktree)
+        tasks_dir = project / ".factory" / "tasks"
+        tasks_dir.mkdir(parents=True)
+        task_file = tasks_dir / "my_task.py"
+        task_file.write_text("class MyTask: pass\n")
+
+        # Also create outer_loop/modes and workflows to verify existing behavior
+        modes_dir = project / ".factory" / "outer_loop" / "modes"
+        modes_dir.mkdir(parents=True)
+        (modes_dir / "test_mode.json").write_text("{}")
+
+        workflows_dir = project / ".factory" / "workflows"
+        workflows_dir.mkdir(parents=True)
+        (workflows_dir / "test_wf.py").write_text("# wf\n")
+
+        # Create a dummy commit so HEAD exists
+        dummy = project / "README.md"
+        dummy.write_text("test\n")
+        subprocess.run(
+            ["git", "-C", str(project), "add", "README.md"],
+            capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(project), "commit", "-m", "init"],
+            capture_output=True, check=True,
+        )
+
+        wt_path: Path | None = None
+        try:
+            wt_path = SwarmEvaluator._create_worktree(str(project), "test")
+
+            # tasks/ copied
+            assert (wt_path / ".factory" / "tasks" / "my_task.py").exists()
+            assert (wt_path / ".factory" / "tasks" / "my_task.py").read_text() == "class MyTask: pass\n"
+
+            # existing behavior preserved: modes and workflows copied
+            assert (wt_path / ".factory" / "outer_loop" / "modes" / "test_mode.json").exists()
+            assert (wt_path / ".factory" / "workflows" / "test_wf.py").exists()
+        finally:
+            if wt_path is not None:
+                SwarmEvaluator._cleanup_worktree(str(project), wt_path)
+
+    def test_create_worktree_no_tasks_dir_still_works(self, tmp_path: Path) -> None:
+        """When .factory/tasks/ does not exist, _create_worktree should
+        still succeed (no crash on missing dir)."""
+        import subprocess
+
+        from factory.outer_loop.evaluator import SwarmEvaluator
+
+        project = tmp_path / "project"
+        project.mkdir()
+        subprocess.run(["git", "init", str(project)], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "-C", str(project), "config", "user.email", "test@test.com"],
+            capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(project), "config", "user.name", "Test"],
+            capture_output=True, check=True,
+        )
+
+        dummy = project / "README.md"
+        dummy.write_text("test\n")
+        subprocess.run(
+            ["git", "-C", str(project), "add", "README.md"],
+            capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(project), "commit", "-m", "init"],
+            capture_output=True, check=True,
+        )
+
+        wt_path: Path | None = None
+        try:
+            wt_path = SwarmEvaluator._create_worktree(str(project), "test")
+            # No .factory/tasks in source → no .factory/tasks in worktree
+            assert not (wt_path / ".factory" / "tasks").exists()
+        finally:
+            if wt_path is not None:
+                SwarmEvaluator._cleanup_worktree(str(project), wt_path)

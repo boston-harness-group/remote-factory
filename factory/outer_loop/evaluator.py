@@ -284,7 +284,7 @@ class SwarmEvaluator:
         if result.returncode != 0:
             raise RuntimeError(f"git worktree add failed: {result.stderr}")
 
-        for subdir in ["outer_loop/modes", "workflows"]:
+        for subdir in ["outer_loop/modes", "workflows", "tasks"]:
             src_dir = src / ".factory" / subdir
             dst_dir = wt_path / ".factory" / subdir
             if src_dir.exists():
