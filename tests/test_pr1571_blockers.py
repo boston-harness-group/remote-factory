@@ -8,7 +8,6 @@ Bug 3: _validate_and_fix breaks RELOOP-only gates
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
