@@ -292,6 +292,11 @@ class SwarmEngine:
                 if self._config.training_instances:
                     allowed = set(self._config.training_instances)
                     instances = [i for i in instances if i in allowed]
+                    if not instances:
+                        raise ValueError(
+                            f'training_instances {self._config.training_instances} has no overlap '
+                            f'with task train split. Check instance IDs.'
+                        )
             except TypeError:
                 # Backward compat: Task subclass overrides instances() without split param
                 log.warning(

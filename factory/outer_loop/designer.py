@@ -816,7 +816,7 @@ def _validate_and_fix(
             # Terminal gate — skip
             continue
         has_proceed = any(
-            e.condition == VerdictType.PROCEED or e.condition is None
+            e.condition in (VerdictType.PROCEED, VerdictType.RELOOP) or e.condition is None
             for e in outgoing
         )
         if not has_proceed:
@@ -824,7 +824,7 @@ def _validate_and_fix(
             # from any edge after the gate, or fall back to the gate itself
             targets_from_gate = {e.target for e in outgoing}
             # Use the first RELOOP target as a fallback PROCEED target
-            fallback_target = next(iter(targets_from_gate))
+            fallback_target = sorted(targets_from_gate)[0]
             updated_edges.append(
                 Edge(source=gate_id, target=fallback_target, condition=VerdictType.PROCEED)
             )

@@ -716,6 +716,19 @@ class InnerLoop:
         # Get allowed instance IDs from subset selector (train/val firewall)
         subset_selector = getattr(self, '_subset_selector', None)
         allowed_instance_ids: set[str] | None = None
+
+        # Default to train split when holdout_ids are configured and no
+        # subset_selector is set, to prevent holdout leakage into training.
+        _defn = getattr(self.task, '_definition', None) if self.task is not None else None
+        _holdout_ids = (
+            getattr(getattr(_defn, 'instances_config', None), 'holdout_ids', None)
+            if _defn is not None
+            else None
+        )
+        if subset_selector is None and _holdout_ids and self.task is not None:
+            train_ids = [inst.id for inst in self.task.instances(split='train')]
+            allowed_instance_ids = set(train_ids)
+
         if subset_selector is not None and self.task is not None:
             all_ids = [inst.id for inst in self.task.instances()]
             selected = subset_selector.select(all_ids)
