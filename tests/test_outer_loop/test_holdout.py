@@ -666,22 +666,23 @@ class TestDataNodeRespectsSubsetSelector:
         assert executor._allowed_instance_ids is None
 
     def test_executor_filters_task_instances_by_allowed_ids(self) -> None:
-        """_execute_data() filters task_instances when allowed_instance_ids is set."""
+        """_execute_data() filters task_instances when allowed_instance_ids is set.
+
+        The filter only applies to task_ref-backed DataNodes (inline_items use
+        synthetic IDs that wouldn't match task instance IDs).  We mock
+        TaskRef.resolve() to return a DummyTaskWithSplit so the executor sees
+        real task instances without needing an importable module.
+        """
         import asyncio
+        from unittest.mock import patch
 
         from factory.workflow.executor import WorkflowExecutor
-        from factory.workflow.primitives import DataItem, DataNode
+        from factory.workflow.primitives import DataNode
 
-        # Create a DataNode workflow with inline items (simpler than task_ref for testing)
+        # DataNode backed by task_ref — triggers the allowed_instance_ids filter
         data_node = DataNode(
             id="data",
-            inline_items=[
-                DataItem(id="s1", metadata={}),
-                DataItem(id="s2", metadata={}),
-                DataItem(id="s3", metadata={}),
-                DataItem(id="h1", metadata={}),
-                DataItem(id="h2", metadata={}),
-            ],
+            task_ref="dummy",
             subgraph_entry="process",
             subgraph_exit="process",
         )
@@ -689,28 +690,32 @@ class TestDataNodeRespectsSubsetSelector:
         wf = Workflow(
             name="test_datanode_filter",
             nodes={"data": data_node, "process": process_node},
-            edges=[Edge(source="data", target="process")],
+            edges=[],
             start_node="data",
         )
 
         # Only allow train IDs
         train_ids = {"s1", "s2", "s3"}
-        executor = WorkflowExecutor(
-            wf, "/tmp/test", dry_run=True, allowed_instance_ids=train_ids,
-            validate=False,
-        )
-        result = asyncio.run(executor.execute())
+
+        # Mock TaskRef.resolve() to return our DummyTaskWithSplit
+        dummy_task = DummyTaskWithSplit()
+        with patch("factory.task.TaskRef") as MockTaskRef:
+            MockTaskRef.return_value.resolve.return_value = dummy_task
+            executor = WorkflowExecutor(
+                wf, "/tmp/test", dry_run=True, allowed_instance_ids=train_ids,
+                validate=False,
+            )
+            result = asyncio.run(executor.execute())
 
         # The executor should have processed exactly the train items
         assert result.success
-        # Verify via node_outputs: DataNode output should only contain train items
-        if "data" in result.node_outputs:
-            import json
-            output = json.loads(result.node_outputs["data"])
-            executed_ids = {item["item_id"] for item in output if isinstance(item, dict)}
-            assert executed_ids == train_ids, (
-                f"Expected only train IDs {train_ids}, got {executed_ids}"
-            )
+        # Verify via item_results: only train items should appear
+        executed_ids = {
+            item["item_id"] for item in result.item_results if isinstance(item, dict)
+        }
+        assert executed_ids == train_ids, (
+            f"Expected only train IDs {train_ids}, got {executed_ids}"
+        )
 
     def test_executor_no_filter_when_allowed_ids_none(self) -> None:
         """_execute_data() processes all items when allowed_instance_ids is None."""
@@ -789,6 +794,7 @@ class TestDataNodeRespectsSubsetSelector:
         loop.frozen_nodes = set()
         loop._step_count = 0
         loop._history = []
+        loop._inner_loop_config = None
         loop._subset_selector = FixedSubsetSelector(train_ids)
 
         # Capture the WorkflowExecutor constructor call
@@ -805,6 +811,8 @@ class TestDataNodeRespectsSubsetSelector:
         mock_result.nodes_executed = 1
         mock_result.halted = False
         mock_result.duration_ms = 100
+        mock_result.item_results = []
+        mock_result.halt_reason = None
 
         with (
             patch.object(WorkflowExecutor, "__init__", mock_init),
@@ -866,6 +874,7 @@ class TestDataNodeRespectsSubsetSelector:
         loop.frozen_nodes = set()
         loop._step_count = 0
         loop._history = []
+        loop._inner_loop_config = None
         loop._subset_selector = FixedSubsetSelector(empty_ids)
 
         # Capture the WorkflowExecutor constructor call
@@ -882,6 +891,8 @@ class TestDataNodeRespectsSubsetSelector:
         mock_result.nodes_executed = 1
         mock_result.halted = False
         mock_result.duration_ms = 100
+        mock_result.item_results = []
+        mock_result.halt_reason = None
 
         with (
             patch.object(WorkflowExecutor, "__init__", mock_init),
