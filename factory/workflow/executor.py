@@ -855,8 +855,11 @@ class WorkflowExecutor:
         if resolved_task is None and self._task is not None:
             resolved_task = self._task
 
-        # Apply authoritative instance filter from SwarmEngine (train/val firewall)
-        if self._allowed_instance_ids is not None:
+        # Apply authoritative instance filter from SwarmEngine (train/val firewall).
+        # Only filter when the DataNode uses task_ref — inline_items and
+        # source_path produce synthetic IDs ('0', '1', ...) that don't match
+        # task instance IDs, so filtering would drop everything.
+        if self._allowed_instance_ids is not None and node.task_ref:
             task_instances = [
                 (item, inst) for item, inst in task_instances
                 if item.id in self._allowed_instance_ids

@@ -143,6 +143,7 @@ class InnerLoop:
         task: Any | None = None,
         instance: Any | None = None,
         execution_strategy: str = "executor",
+        inner_loop_config: Any | None = None,
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
         self.factory_dir = self.project_dir / ".factory"
@@ -156,6 +157,7 @@ class InnerLoop:
         self.task = task
         self.instance = instance
         self.execution_strategy = execution_strategy
+        self._inner_loop_config = inner_loop_config
         self._step_count = 0
         self._history: list[CycleRecord] = []
         self._has_data_node: bool | None = None
@@ -585,8 +587,11 @@ class InnerLoop:
                 })
                 scores.append(0.0)
 
-        config = InnerLoopConfig()
-        aggregate_method = config.aggregate
+        aggregate_method = (
+            self._inner_loop_config.aggregate
+            if self._inner_loop_config
+            else InnerLoopConfig().aggregate
+        )
 
         if not scores:
             aggregate_score = 0.0
@@ -657,8 +662,23 @@ class InnerLoop:
         assert self.workflow is not None
 
         if self.execution_strategy in ('ceo-skill', 'ceo-tool'):
+            import statistics
+
+            from factory.models import AggregateMethod, InnerLoopConfig
+
             # CEO subprocess path — same as non-DataNode workflows
             engine = 'tool' if self.execution_strategy == 'ceo-tool' else 'skill'
+
+            # Holdout firewall: warn if holdout_ids are configured (CEO subprocess
+            # doesn't support instance filtering)
+            _defn = getattr(self.task, '_definition', None) if self.task is not None else None
+            _holdout = (
+                getattr(getattr(_defn, 'instances_config', None), 'holdout_ids', None)
+                if _defn else None
+            )
+            if _holdout and self.task is not None:
+                log.warning('ceo_strategy_no_holdout_firewall', holdout_ids=_holdout)
+
             # Build a prompt that tells the CEO about the DataNode workflow
             prompt_text = (
                 'Execute this workflow which contains a DataNode for data iteration. '
@@ -681,6 +701,29 @@ class InnerLoop:
                         score = float(summary['score'])
                 except (json.JSONDecodeError, OSError):
                     pass
+
+            # Use real scores from instance_results when available
+            if instance_results:
+                item_scores = [
+                    r.get('score', 0.0) for r in instance_results
+                    if isinstance(r, dict)
+                ]
+                if item_scores:
+                    aggregate_method = (
+                        self._inner_loop_config.aggregate
+                        if self._inner_loop_config
+                        else InnerLoopConfig().aggregate
+                    )
+                    if aggregate_method == AggregateMethod.mean:
+                        score = statistics.mean(item_scores)
+                    elif aggregate_method == AggregateMethod.median:
+                        score = statistics.median(item_scores)
+                    elif aggregate_method == AggregateMethod.max:
+                        score = max(item_scores)
+                    elif aggregate_method == AggregateMethod.all_pass:
+                        score = 1.0 if all(s >= 1.0 for s in item_scores) else 0.0
+                    else:
+                        score = statistics.mean(item_scores)
 
             record = CycleRecord(
                 cycle_number=self._step_count + 1,
@@ -764,6 +807,7 @@ class InnerLoop:
             )
             record.frozen_nodes = sorted(self.frozen_nodes)
             record.mutable_node_ids = sorted(self.mutable_nodes())
+            record.eval_details = {'halt_reason': str(exc)}
             self._step_count += 1
             self._history.append(record)
             return record
@@ -791,8 +835,11 @@ class InnerLoop:
                 })
 
         # Aggregate using the same configurable method as _step_with_task
-        config = InnerLoopConfig()
-        aggregate_method = config.aggregate
+        aggregate_method = (
+            self._inner_loop_config.aggregate
+            if self._inner_loop_config
+            else InnerLoopConfig().aggregate
+        )
 
         if not scores:
             # No item results (executor crashed before reaching DataNode)
@@ -821,6 +868,10 @@ class InnerLoop:
         )
         record.frozen_nodes = sorted(self.frozen_nodes)
         record.mutable_node_ids = sorted(self.mutable_nodes())
+
+        # Propagate halt_reason from executor to CycleRecord
+        if exec_result_wf.halt_reason:
+            record.eval_details = {'halt_reason': exec_result_wf.halt_reason}
 
         self._write_cycle_summary(
             returncode=0 if exec_result_wf.success else 1,

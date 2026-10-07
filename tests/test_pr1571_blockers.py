@@ -3,6 +3,10 @@
 Bug 1: holdout leakage in _step_with_data_node
 Bug 2: empty training set intersection silently becomes 'all'
 Bug 3: _validate_and_fix breaks RELOOP-only gates
+Bug 4: aggregation hardcoded to mean
+Bug 5: CEO-strategy DataNode path has no firewall
+Bug 6: halt_reason never reaches CycleRecord
+Bug 7: allowed_instance_ids filter drops all inline/source_path items
 """
 
 from __future__ import annotations
@@ -20,7 +24,10 @@ from factory.task import (
 from factory.workflow.primitives import (
     AgentNode,
     AgentRole,
+    DataItem,
+    DataNode,
     Edge,
+    FnNode,
     GateNode,
     VerdictType,
     Workflow,
@@ -278,4 +285,307 @@ class TestValidateAndFixDeterministicTarget:
         # And it should be the sorted-first target
         assert results[0] == "builder_a", (
             f"Expected sorted()[0]='builder_a', got '{results[0]}'"
+        )
+
+
+# ── Bug 4: aggregation hardcoded to mean ──────────────────────────────────
+
+
+class TestAggregateMethodRespected:
+    """InnerLoop with inner_loop_config.aggregate=max should use max, not mean."""
+
+    def test_aggregate_method_respected(self, tmp_path: Path) -> None:
+        from factory.inner_loop import InnerLoop
+        from factory.models import AggregateMethod, InnerLoopConfig
+
+        (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
+
+        config = InnerLoopConfig(aggregate=AggregateMethod.max)
+
+        wf = Workflow(
+            name="agg_test",
+            nodes={
+                "data": DataNode(
+                    id="data",
+                    task_ref="fake:Task",
+                    subgraph_entry="sub",
+                    subgraph_exit="sub",
+                ),
+                "sub": FnNode(id="sub", command="echo x"),
+            },
+            edges=[],
+            start_node="data",
+        )
+
+        task = MagicMock()
+        task._definition = TaskDefinition(
+            name="agg-task",
+            scoring=ScoringContract(method="exit_code"),
+        )
+        task.instances.return_value = [
+            TaskInstance(id="i1"),
+            TaskInstance(id="i2"),
+        ]
+
+        loop = InnerLoop(
+            project_dir=tmp_path,
+            mode="test",
+            task=task,
+            workflow=wf,
+            inner_loop_config=config,
+        )
+
+        with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
+            mock_exec = MagicMock()
+
+            async def _fake_exec():
+                r = MagicMock()
+                r.success = True
+                r.halted = False
+                r.halt_reason = ""
+                r.nodes_executed = 1
+                r.duration_ms = 100.0
+                r.item_results = [
+                    {"item_id": "i1", "score": 0.5, "passed": True, "success": True},
+                    {"item_id": "i2", "score": 0.9, "passed": True, "success": True},
+                ]
+                return r
+
+            mock_exec.execute = MagicMock(side_effect=_fake_exec)
+            MockExecutor.return_value = mock_exec
+
+            record = loop._step_with_data_node()
+
+        # With max aggregation: score should be 0.9, not mean 0.7
+        assert record.score_end == 0.9, (
+            f"Expected max aggregate 0.9, got {record.score_end}"
+        )
+
+
+# ── Bug 5: CEO path uses instance_results scores ─────────────────────────
+
+
+class TestCeoPathUsesInstanceResultsScores:
+    """CEO path should use real scores from instance_results, not binary."""
+
+    def test_ceo_path_uses_instance_results_scores(self, tmp_path: Path) -> None:
+        import json
+
+        from factory.inner_loop import InnerLoop
+
+        (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
+
+        wf = Workflow(
+            name="ceo_score_test",
+            nodes={
+                "data": DataNode(
+                    id="data",
+                    task_ref="fake:Task",
+                    subgraph_entry="sub",
+                    subgraph_exit="sub",
+                ),
+                "sub": FnNode(id="sub", command="echo x"),
+            },
+            edges=[],
+            start_node="data",
+        )
+
+        task = MagicMock()
+        task._definition = TaskDefinition(
+            name="ceo-task",
+            scoring=ScoringContract(method="exit_code"),
+        )
+        task.instances.return_value = [TaskInstance(id="i1")]
+
+        loop = InnerLoop(
+            project_dir=tmp_path,
+            mode="test",
+            task=task,
+            workflow=wf,
+            execution_strategy="ceo-skill",
+        )
+
+        # Write a cycle_summary.json with instance_results containing real scores
+        summary_dir = tmp_path / ".factory" / "outer_loop" / "runs" / "test"
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        summary = {
+            "score": 1.0,  # binary score from CEO
+            "instance_results": [
+                {"instance_id": "i1", "score": 0.75, "passed": True},
+                {"instance_id": "i2", "score": 0.85, "passed": True},
+            ],
+        }
+        (summary_dir / "cycle_summary.json").write_text(json.dumps(summary))
+
+        # Mock _run_ceo_subprocess to return success
+        from factory.inner_loop import _SubprocessExecutionResult
+
+        mock_result = _SubprocessExecutionResult(
+            success=True, halted=False, halt_reason="",
+            nodes_executed=1, duration_ms=100,
+        )
+
+        with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result):
+            record = loop._step_with_data_node()
+
+        # Score should be mean of real scores (0.75, 0.85) = 0.8, not binary 1.0
+        assert abs(record.score_end - 0.8) < 0.01, (
+            f"Expected mean of instance scores ~0.8, got {record.score_end}"
+        )
+
+
+# ── Bug 6: halt_reason in CycleRecord ────────────────────────────────────
+
+
+class TestHaltReasonInCycleRecord:
+    """When executor halts, halt_reason should appear in record.eval_details."""
+
+    def test_halt_reason_in_cycle_record(self, tmp_path: Path) -> None:
+        from factory.inner_loop import InnerLoop
+
+        (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
+
+        wf = Workflow(
+            name="halt_test",
+            nodes={
+                "data": DataNode(
+                    id="data",
+                    task_ref="fake:Task",
+                    subgraph_entry="sub",
+                    subgraph_exit="sub",
+                ),
+                "sub": FnNode(id="sub", command="echo x"),
+            },
+            edges=[],
+            start_node="data",
+        )
+
+        task = MagicMock()
+        task._definition = TaskDefinition(
+            name="halt-task",
+            scoring=ScoringContract(method="exit_code"),
+        )
+        task.instances.return_value = [TaskInstance(id="i1")]
+
+        loop = InnerLoop(
+            project_dir=tmp_path,
+            mode="test",
+            task=task,
+            workflow=wf,
+        )
+
+        with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
+            mock_exec = MagicMock()
+
+            async def _fake_exec():
+                r = MagicMock()
+                r.success = False
+                r.halted = True
+                r.halt_reason = "node 'builder' failed: timeout"
+                r.nodes_executed = 0
+                r.duration_ms = 5000.0
+                r.item_results = []
+                return r
+
+            mock_exec.execute = MagicMock(side_effect=_fake_exec)
+            MockExecutor.return_value = mock_exec
+
+            record = loop._step_with_data_node()
+
+        assert record.eval_details is not None, "eval_details should be set on halt"
+        assert record.eval_details.get("halt_reason") == "node 'builder' failed: timeout"
+
+    def test_halt_reason_from_validation_error(self, tmp_path: Path) -> None:
+        """When WorkflowExecutor raises ValueError, halt_reason is in eval_details."""
+        from factory.inner_loop import InnerLoop
+
+        (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
+
+        wf = Workflow(
+            name="val_err_test",
+            nodes={
+                "data": DataNode(
+                    id="data",
+                    task_ref="fake:Task",
+                    subgraph_entry="sub",
+                    subgraph_exit="sub",
+                ),
+                "sub": FnNode(id="sub", command="echo x"),
+            },
+            edges=[],
+            start_node="data",
+        )
+
+        task = MagicMock()
+        task._definition = TaskDefinition(
+            name="val-err-task",
+            scoring=ScoringContract(method="exit_code"),
+        )
+        task.instances.return_value = [TaskInstance(id="i1")]
+
+        loop = InnerLoop(
+            project_dir=tmp_path,
+            mode="test",
+            task=task,
+            workflow=wf,
+        )
+
+        with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
+            MockExecutor.side_effect = ValueError("empty prompt_template")
+
+            record = loop._step_with_data_node()
+
+        assert record.score_end == 0.0
+        assert record.eval_details is not None
+        assert "empty prompt_template" in record.eval_details["halt_reason"]
+
+
+# ── Bug 7: inline items skip allowed_instance_ids filter ─────────────────
+
+
+class TestInlineItemsSkipAllowedFilter:
+    """DataNode with inline_items should NOT be filtered by allowed_instance_ids."""
+
+    async def test_inline_items_skip_allowed_filter(self, tmp_path: Path) -> None:
+        from factory.testing import FakeAgent
+        from factory.workflow.executor import WorkflowExecutor
+
+        wf = Workflow(
+            name="inline_filter_test",
+            nodes={
+                "data": DataNode(
+                    id="data",
+                    inline_items=[
+                        DataItem(id="0", metadata={"text": "hello"}),
+                        DataItem(id="1", metadata={"text": "world"}),
+                    ],
+                    subgraph_entry="builder",
+                    subgraph_exit="builder",
+                ),
+                "builder": AgentNode(
+                    id="builder",
+                    role=AgentRole.BUILDER,
+                    prompt_template="build",
+                ),
+            },
+            edges=[],
+            start_node="data",
+        )
+
+        agent = FakeAgent(wf)
+        executor = WorkflowExecutor(
+            wf,
+            tmp_path,
+            agent_fn=agent,
+            validate=False,
+            auto_write_outputs=False,
+            # Set allowed_instance_ids that DON'T match inline IDs '0','1'
+            allowed_instance_ids={"t1", "t2"},
+        )
+        result = await executor.execute()
+
+        # Inline items should NOT be filtered out — both should execute
+        assert result.success, f"Execution should succeed, halt_reason={result.halt_reason}"
+        assert len(result.item_results) == 2, (
+            f"Expected 2 inline items to pass through filter, got {len(result.item_results)}"
         )
