@@ -37,7 +37,10 @@ def _make_simple_workflow(name: str = "test_wf") -> Workflow:
         nodes={
             "study": FnNode(id="study", command="echo study", writes={".factory/obs.md"}),
             "builder": AgentNode(
-                id="builder", role=AgentRole.BUILDER, reads={".factory/obs.md"},
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="Build the project at {project_path}.",
+                reads={".factory/obs.md"},
             ),
             "gate": GateNode(id="gate", evaluator_type="fn"),
         },
@@ -386,3 +389,61 @@ class TestCycleRecordCache:
         assert len(lines) == 1
         entry = json.loads(lines[0])
         assert entry["score"] == 0.75
+
+
+class TestGraphValidationPreCheck:
+    """Tests for CHECK 4: graph validation in evaluate()."""
+
+    def test_invalid_workflow_rejected(self) -> None:
+        """Workflow failing validate_graph() is rejected with score 0."""
+        config = _make_config()
+        evaluator = SwarmEvaluator(config)
+        # Create workflow with empty prompt — fails validation
+        wf = Workflow(
+            name="bad",
+            nodes={
+                "a": AgentNode(id="a", role=AgentRole.BUILDER),
+            },
+            edges=[],
+            start_node="a",
+        )
+        result = evaluator.evaluate(wf, "/tmp/test", ["t1"])
+        assert result.score == 0.0
+        assert result.details.get("rejected") == "graph_validation_failed"
+        assert "validation_errors" in result.details
+
+    def test_valid_workflow_passes_through(self) -> None:
+        """Valid workflow is not rejected by graph validation."""
+        config = _make_config()
+
+        def mock_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
+            return EvalResult(score=0.0, benchmark_score=0.7, hygiene_score=0.8)
+
+        evaluator = SwarmEvaluator(config, evaluator_fn=mock_eval)
+        wf = _make_simple_workflow()
+        result = evaluator.evaluate(wf, "/tmp/test", ["t1"])
+        assert result.score > 0
+        assert result.details.get("rejected") is None
+
+    def test_graph_validation_before_evaluator_fn(self) -> None:
+        """Graph validation rejects before the evaluator function is ever called."""
+        config = _make_config()
+        call_count = 0
+
+        def counting_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
+            nonlocal call_count
+            call_count += 1
+            return EvalResult(score=0.0, benchmark_score=0.5)
+
+        evaluator = SwarmEvaluator(config, evaluator_fn=counting_eval)
+        wf = Workflow(
+            name="bad",
+            nodes={
+                "a": AgentNode(id="a", role=AgentRole.BUILDER),
+            },
+            edges=[],
+            start_node="a",
+        )
+        result = evaluator.evaluate(wf, "/tmp/test", ["t1"])
+        assert result.score == 0.0
+        assert call_count == 0, "Evaluator fn should not be called for invalid workflow"

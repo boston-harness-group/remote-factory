@@ -251,6 +251,22 @@ class SwarmEvaluator:
             log.warning("frozen_node_violated", workflow=workflow.name)
             return EvalResult(score=0.0, details={"rejected": "frozen_node_violated"})
 
+        # CHECK 4: graph validation — reject structurally/semantically broken workflows
+        validation_issues = workflow.validate_graph()
+        if validation_issues:
+            log.warning(
+                "graph_validation_failed",
+                workflow=workflow.name,
+                issues=validation_issues,
+            )
+            return EvalResult(
+                score=0.0,
+                details={
+                    "rejected": "graph_validation_failed",
+                    "validation_errors": validation_issues,
+                },
+            )
+
         if self._inner_loop_factory is not None:
             return self._evaluate_via_inner_loop(
                 workflow, project_dir, instances, individual_id

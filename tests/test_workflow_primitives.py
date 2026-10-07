@@ -284,6 +284,162 @@ class TestWorkflow:
             name="test",
             nodes={
                 "a": FnNode(id="a", command="echo a", writes={"a.txt"}),
+                "done": FnNode(id="done", command="echo done", reads={"a.txt"}),
+                "gate": GateNode(id="gate", evaluator_type="fn", reads={"a.txt"}),
+            },
+            edges=[
+                Edge(source="a", target="gate"),
+                Edge(source="gate", target="a", condition=VerdictType.RELOOP),
+                Edge(source="gate", target="done", condition=VerdictType.PROCEED),
+            ],
+            start_node="a",
+        )
+        issues = wf.validate_graph()
+        assert issues == []
+
+
+# ── Validate Agent Prompts ───────────────────────────────────────
+
+
+class TestValidateAgentPrompts:
+    """Tests for _validate_agent_prompts semantic validator."""
+
+    def test_empty_prompt_flagged(self) -> None:
+        """AgentNode with empty prompt_template produces an issue."""
+        wf = Workflow(
+            name="test",
+            nodes={
+                "a": AgentNode(id="a", role=AgentRole.RESEARCHER),
+            },
+            edges=[],
+            start_node="a",
+        )
+        issues = wf.validate_graph()
+        prompt_issues = [i for i in issues if "prompt_template" in i]
+        assert len(prompt_issues) == 1
+        assert "'a'" in prompt_issues[0]
+
+    def test_non_empty_prompt_no_issue(self) -> None:
+        """AgentNode with a prompt_template does not trigger the validator."""
+        wf = Workflow(
+            name="test",
+            nodes={
+                "a": AgentNode(
+                    id="a", role=AgentRole.RESEARCHER,
+                    prompt_template="Do research.",
+                ),
+            },
+            edges=[],
+            start_node="a",
+        )
+        issues = wf.validate_graph()
+        prompt_issues = [i for i in issues if "prompt_template" in i]
+        assert prompt_issues == []
+
+    def test_non_agent_nodes_not_flagged(self) -> None:
+        """FnNode, GateNode are not affected by the prompt validator."""
+        wf = Workflow(
+            name="test",
+            nodes={
+                "fn": FnNode(id="fn", command="echo hi"),
+                "gate": GateNode(id="gate", evaluator_type="fn"),
+            },
+            edges=[Edge(source="fn", target="gate")],
+            start_node="fn",
+        )
+        issues = wf.validate_graph()
+        prompt_issues = [i for i in issues if "prompt_template" in i]
+        assert prompt_issues == []
+
+    def test_mixed_prompts_only_empty_flagged(self) -> None:
+        """Only the AgentNode with empty prompt is flagged."""
+        wf = Workflow(
+            name="test",
+            nodes={
+                "a": AgentNode(
+                    id="a", role=AgentRole.RESEARCHER,
+                    prompt_template="Research things.",
+                    writes={"r.md"},
+                ),
+                "b": AgentNode(
+                    id="b", role=AgentRole.BUILDER,
+                    reads={"r.md"},
+                ),
+            },
+            edges=[Edge(source="a", target="b")],
+            start_node="a",
+        )
+        issues = wf.validate_graph()
+        prompt_issues = [i for i in issues if "prompt_template" in i]
+        assert len(prompt_issues) == 1
+        assert "'b'" in prompt_issues[0]
+
+    def test_multiple_empty_all_flagged(self) -> None:
+        """Multiple agents with empty prompts are all flagged."""
+        wf = Workflow(
+            name="test",
+            nodes={
+                "a": AgentNode(id="a", role=AgentRole.RESEARCHER, writes={"r.md"}),
+                "b": AgentNode(id="b", role=AgentRole.BUILDER, reads={"r.md"}),
+            },
+            edges=[Edge(source="a", target="b")],
+            start_node="a",
+        )
+        issues = wf.validate_graph()
+        prompt_issues = [i for i in issues if "prompt_template" in i]
+        assert len(prompt_issues) == 2
+
+
+# ── Validate Gate Edges ─────────────────────────────────────────
+
+
+class TestValidateGateEdges:
+    """Tests for _validate_gate_edges semantic validator."""
+
+    def test_gate_with_proceed_edge_no_issue(self) -> None:
+        """GateNode with a PROCEED edge is valid."""
+        wf = Workflow(
+            name="test",
+            nodes={
+                "a": FnNode(id="a", command="echo a", writes={"a.txt"}),
+                "gate": GateNode(id="gate", evaluator_type="fn", reads={"a.txt"}),
+                "done": FnNode(id="done", command="echo done"),
+            },
+            edges=[
+                Edge(source="a", target="gate"),
+                Edge(source="gate", target="done", condition=VerdictType.PROCEED),
+            ],
+            start_node="a",
+        )
+        issues = wf.validate_graph()
+        gate_issues = [i for i in issues if "PROCEED" in i]
+        assert gate_issues == []
+
+    def test_gate_with_unconditional_edge_no_issue(self) -> None:
+        """GateNode with an unconditional outgoing edge is valid."""
+        wf = Workflow(
+            name="test",
+            nodes={
+                "a": FnNode(id="a", command="echo a", writes={"a.txt"}),
+                "gate": GateNode(id="gate", evaluator_type="fn", reads={"a.txt"}),
+                "done": FnNode(id="done", command="echo done"),
+            },
+            edges=[
+                Edge(source="a", target="gate"),
+                Edge(source="gate", target="done"),
+            ],
+            start_node="a",
+        )
+        issues = wf.validate_graph()
+        gate_issues = [i for i in issues if "PROCEED" in i]
+        assert gate_issues == []
+
+    def test_gate_reloop_only_flagged(self) -> None:
+        """GateNode with only RELOOP edges (no PROCEED) is flagged."""
+        wf = Workflow(
+            name="test",
+            nodes={
+                "a": FnNode(id="a", command="echo a", writes={"a.txt"}),
                 "gate": GateNode(id="gate", evaluator_type="fn", reads={"a.txt"}),
             },
             edges=[
@@ -293,7 +449,64 @@ class TestWorkflow:
             start_node="a",
         )
         issues = wf.validate_graph()
-        assert issues == []
+        gate_issues = [i for i in issues if "PROCEED" in i and "gate" in i.lower()]
+        assert len(gate_issues) == 1
+
+    def test_terminal_gate_not_flagged(self) -> None:
+        """GateNode with zero outgoing edges is a valid terminal — not flagged."""
+        wf = Workflow(
+            name="test",
+            nodes={
+                "a": FnNode(id="a", command="echo a", writes={"a.txt"}),
+                "gate": GateNode(id="gate", evaluator_type="fn", reads={"a.txt"}),
+            },
+            edges=[
+                Edge(source="a", target="gate"),
+            ],
+            start_node="a",
+        )
+        issues = wf.validate_graph()
+        gate_issues = [i for i in issues if "PROCEED" in i]
+        assert gate_issues == []
+
+    def test_gate_with_both_proceed_and_reloop(self) -> None:
+        """GateNode with both PROCEED and RELOOP edges is valid."""
+        wf = Workflow(
+            name="test",
+            nodes={
+                "a": FnNode(id="a", command="echo a", writes={"a.txt"}),
+                "gate": GateNode(id="gate", evaluator_type="fn", reads={"a.txt"}),
+                "done": FnNode(id="done", command="echo done"),
+            },
+            edges=[
+                Edge(source="a", target="gate"),
+                Edge(source="gate", target="a", condition=VerdictType.RELOOP),
+                Edge(source="gate", target="done", condition=VerdictType.PROCEED),
+            ],
+            start_node="a",
+        )
+        issues = wf.validate_graph()
+        gate_issues = [i for i in issues if "PROCEED" in i and "dead-end" in i]
+        assert gate_issues == []
+
+    def test_gate_halt_only_flagged(self) -> None:
+        """GateNode with only HALT edges (no PROCEED) is flagged."""
+        wf = Workflow(
+            name="test",
+            nodes={
+                "a": FnNode(id="a", command="echo a", writes={"a.txt"}),
+                "gate": GateNode(id="gate", evaluator_type="fn", reads={"a.txt"}),
+                "err": FnNode(id="err", command="echo err"),
+            },
+            edges=[
+                Edge(source="a", target="gate"),
+                Edge(source="gate", target="err", condition=VerdictType.HALT),
+            ],
+            start_node="a",
+        )
+        issues = wf.validate_graph()
+        gate_issues = [i for i in issues if "PROCEED" in i and "gate" in i.lower()]
+        assert len(gate_issues) == 1
 
 
 # ── AgentConfig ──────────────────────────────────────────────────

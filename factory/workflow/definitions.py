@@ -188,10 +188,24 @@ def _deep_qa_subgraph(
     """
     nodes: dict[str, Any] = {}
 
+    _default_hc_prompt = (
+        "Review the builder output for health issues. "
+        "Check that tests pass, no regressions were introduced, "
+        "and the code is production-ready."
+    )
+    _default_cr_prompt = (
+        "Review the builder output for code quality. "
+        "Check style, correctness, and adherence to the strategy."
+    )
+    _default_at_prompt = (
+        "Adversarially test the builder output. "
+        "Try to find edge cases, security issues, and correctness bugs."
+    )
+
     nodes["health_checker"] = AgentNode(
         id="health_checker",
         role=AgentRole.HEALTH_CHECKER,
-        prompt_template="Run health checks on the builder output.",
+        prompt_template=_default_hc_prompt,
         reads={".factory/reviews/builder-latest.md", ".factory/strategy/current.md"},
         writes={".factory/reviews/health-check.md"},
     )
@@ -199,7 +213,7 @@ def _deep_qa_subgraph(
     nodes["code_reviewer"] = AgentNode(
         id="code_reviewer",
         role=AgentRole.CODE_REVIEWER,
-        prompt_template=code_reviewer_extra or "Review the builder output for code quality.",
+        prompt_template=code_reviewer_extra or _default_cr_prompt,
         reads={".factory/reviews/builder-latest.md", ".factory/strategy/current.md"},
         writes={".factory/reviews/code-review.md"},
     )
@@ -208,7 +222,7 @@ def _deep_qa_subgraph(
         id="adversarial_tester",
         role=AgentRole.ADVERSARIAL_TESTER,
         timeout=1800,
-        prompt_template=adversarial_extra or "Run adversarial tests on the builder output.",
+        prompt_template=adversarial_extra or _default_at_prompt,
         reads={".factory/reviews/builder-latest.md", ".factory/strategy/current.md"},
         writes={".factory/reviews/adversarial-qa.md"},
     )

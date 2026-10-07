@@ -268,6 +268,39 @@ def _validate_datanode_entry_reads(workflow: Workflow) -> None:
             )
 
 
+def _validate_agent_prompts(workflow: Workflow, issues: list[str]) -> None:
+    """Flag AgentNodes with empty prompt_template."""
+    for nid, node in workflow.nodes.items():
+        if type(node).__name__ == "AgentNode":
+            if not getattr(node, "prompt_template", None):
+                issues.append(
+                    f"AgentNode '{nid}' has empty prompt_template — "
+                    f"the agent will have no instructions at runtime"
+                )
+
+
+def _validate_gate_edges(workflow: Workflow, issues: list[str]) -> None:
+    """Flag non-terminal GateNodes that lack a PROCEED or unconditional edge."""
+    from factory.workflow.primitives import VerdictType
+
+    for nid, node in workflow.nodes.items():
+        if type(node).__name__ != "GateNode":
+            continue
+        outgoing = [e for e in workflow.edges if e.source == nid]
+        if not outgoing:
+            # Terminal gate — valid end-of-workflow sentinel
+            continue
+        has_proceed_or_unconditional = any(
+            e.condition == VerdictType.PROCEED or e.condition is None
+            for e in outgoing
+        )
+        if not has_proceed_or_unconditional:
+            issues.append(
+                f"GateNode '{nid}' has outgoing edges but no PROCEED or "
+                f"unconditional edge — the workflow will dead-end at this gate"
+            )
+
+
 def validate_workflow(workflow: Workflow) -> list[str]:
     """Validate a workflow graph. Returns a list of issues (empty = valid)."""
     issues: list[str] = []
@@ -303,6 +336,8 @@ def validate_workflow(workflow: Workflow) -> list[str]:
     _validate_fork_join_nodes(workflow, issues)
     _validate_datanode_edges(workflow, issues)
     _validate_datanode_exit(workflow, issues)
+    _validate_agent_prompts(workflow, issues)
+    _validate_gate_edges(workflow, issues)
 
     # Semantic checks
     _validate_agent_prompts(workflow, issues)
