@@ -249,7 +249,7 @@ def check_mode_task_compat(
 # ── compose() public API ────────────────────────────────────────
 
 
-def compose(workflow: Any, task: Any, project_dir: str | Path) -> Any:
+def compose(workflow: Any, task: Any, project_dir: str | Path, inner_loop_config: Any = None) -> Any:
     """Compose a workflow + task into a task-attached InnerLoop.
 
     InnerLoop.step() executes the task end-to-end when task is set:
@@ -278,18 +278,6 @@ def compose(workflow: Any, task: Any, project_dir: str | Path) -> Any:
     evaluator = task.get_evaluator()
 
     from factory.inner_loop import InnerLoop
-
-    inner_loop_config = None
-    config_path = Path(project_dir) / '.factory' / 'config.json'
-    if config_path.exists():
-        import json
-        try:
-            fc = json.loads(config_path.read_text())
-            if fc.get('inner_loop'):
-                from factory.models import InnerLoopConfig
-                inner_loop_config = InnerLoopConfig(**fc['inner_loop'])
-        except (json.JSONDecodeError, OSError):
-            pass
 
     mode_name = getattr(workflow, "name", "composed")
     return InnerLoop(

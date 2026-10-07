@@ -367,13 +367,26 @@ class SwarmEvaluator:
             else:
                 mode_name = self._inner_loop_factory(workflow) if callable(self._inner_loop_factory) else "evolve"
 
+            # Read inner_loop_config from the SOURCE project (not the worktree,
+            # which is a fresh git checkout that may lack .factory/config.json).
+            inner_loop_config = None
+            src_config_path = Path(project_dir) / '.factory' / 'config.json'
+            if src_config_path.exists():
+                try:
+                    fc = json.loads(src_config_path.read_text())
+                    if fc.get('inner_loop'):
+                        from factory.models import InnerLoopConfig
+                        inner_loop_config = InnerLoopConfig(**fc['inner_loop'])
+                except Exception:
+                    pass
+
             label = individual_id[:8] if individual_id else mode_name[:12]
             wt_path = self._create_worktree(project_dir, label)
 
             if task is not None:
                 from factory.compose import compose
 
-                loop = compose(workflow, task, wt_path)
+                loop = compose(workflow, task, wt_path, inner_loop_config=inner_loop_config)
                 loop.mode = mode_name
                 loop.frozen_nodes = frozenset(self._config.frozen_node_ids)
                 loop.test_command = self._config.test_command
@@ -397,7 +410,7 @@ class SwarmEvaluator:
                     execution_strategy=getattr(
                         self._config, "execution_strategy", "executor"
                     ),
-                    inner_loop_config=None,
+                    inner_loop_config=inner_loop_config,
                 )
             record = loop.step()
 

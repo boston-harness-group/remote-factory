@@ -218,7 +218,7 @@ class TestSwarmEvaluator:
         mock_loop.mode = "task-eval"
         mock_loop.instance_results = None
 
-        def fake_compose(workflow: object, task: object, project_dir: object) -> MagicMock:
+        def fake_compose(workflow: object, task: object, project_dir: object, **kwargs: object) -> MagicMock:
             captured_loop.append(mock_loop)
             return mock_loop
 
@@ -263,7 +263,7 @@ class TestSwarmEvaluator:
         mock_loop.mode = "task-eval"
         mock_loop.instance_results = None
 
-        def fake_compose(workflow: object, task: object, project_dir: object) -> MagicMock:
+        def fake_compose(workflow: object, task: object, project_dir: object, **kwargs: object) -> MagicMock:
             return mock_loop
 
         factory_fn = MagicMock()
