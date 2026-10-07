@@ -1163,6 +1163,136 @@ class TestTaskRefResolveWithSysPath:
 # ── Fix 11: _create_worktree copies .factory/tasks/ (#1571) ──────
 
 
+# ── Fix 12: training_instances limits task split in outer loop engine (#1571) ──
+
+
+class _FourInstanceTask:
+    """Task that returns 4 train instances for testing training_instances filtering."""
+
+    def instances(self, split: str = "all") -> list[TaskInstance]:
+        return [
+            TaskInstance(id="a"),
+            TaskInstance(id="b"),
+            TaskInstance(id="c"),
+            TaskInstance(id="d"),
+        ]
+
+    def setup(self, instance: Any, workspace: Path) -> None:
+        pass
+
+    def prompt(self, instance: Any) -> str:
+        return f"prompt for {instance.id}"
+
+    def verify(self, instance: Any, workspace: Path) -> VerifyResult:
+        return VerifyResult(passed=True, score=1.0)
+
+
+class TestTrainingInstancesLimitsTaskSplit:
+    """Fix: evolve_generation must intersect training_instances with
+    task.instances(split='train') so the config is not silently ignored."""
+
+    def test_training_instances_limits_task_split(self) -> None:
+        """When training_instances=['a', 'c'], only those two instance IDs
+        should be passed to evaluator.evaluate(), not all four."""
+        from factory.outer_loop.engine import SwarmEngine
+        from factory.outer_loop.evaluator import SwarmEvaluator
+        from factory.outer_loop.models import EvalResult, SwarmConfig
+        from factory.outer_loop.population import Population
+
+        config = SwarmConfig(
+            benchmark="test",
+            budget=100,
+            population_size=1,
+            training_instances=["a", "c"],
+        )
+        task = _FourInstanceTask()
+        config.set_task(task)
+
+        # Track which instances are passed to evaluate()
+        captured_instances: list[list[str]] = []
+
+        evaluator = MagicMock(spec=SwarmEvaluator)
+        evaluator.evaluate.side_effect = lambda wf, pd, insts, **kw: (
+            captured_instances.append(list(insts))
+            or EvalResult(score=0.5, cost_usd=0.01, benchmark_score=0.5)
+        )
+        evaluator.get_cycle_record.return_value = None
+
+        engine = SwarmEngine(config=config, evaluator=evaluator)
+
+        # Create a minimal population with one unevaluated individual
+        wf = Workflow(
+            name="test",
+            nodes={
+                "b": AgentNode(
+                    id="b",
+                    role=AgentRole.BUILDER,
+                    prompt_template="build",
+                ),
+            },
+            edges=[],
+            start_node="b",
+        )
+        pop = Population()
+        ind = Population.make_individual(wf, generation=0)
+        pop.add(ind)
+
+        engine.evolve_generation(pop, generation=0)
+
+        # The evaluator should have been called with only ['a', 'c']
+        assert len(captured_instances) >= 1
+        assert sorted(captured_instances[0]) == ["a", "c"]
+
+    def test_training_instances_empty_uses_all(self) -> None:
+        """When training_instances=[], all 4 instances from the task split
+        should be used (no filtering)."""
+        from factory.outer_loop.engine import SwarmEngine
+        from factory.outer_loop.evaluator import SwarmEvaluator
+        from factory.outer_loop.models import EvalResult, SwarmConfig
+        from factory.outer_loop.population import Population
+
+        config = SwarmConfig(
+            benchmark="test",
+            budget=100,
+            population_size=1,
+            training_instances=[],
+        )
+        task = _FourInstanceTask()
+        config.set_task(task)
+
+        captured_instances: list[list[str]] = []
+
+        evaluator = MagicMock(spec=SwarmEvaluator)
+        evaluator.evaluate.side_effect = lambda wf, pd, insts, **kw: (
+            captured_instances.append(list(insts))
+            or EvalResult(score=0.5, cost_usd=0.01, benchmark_score=0.5)
+        )
+        evaluator.get_cycle_record.return_value = None
+
+        engine = SwarmEngine(config=config, evaluator=evaluator)
+
+        wf = Workflow(
+            name="test",
+            nodes={
+                "b": AgentNode(
+                    id="b",
+                    role=AgentRole.BUILDER,
+                    prompt_template="build",
+                ),
+            },
+            edges=[],
+            start_node="b",
+        )
+        pop = Population()
+        ind = Population.make_individual(wf, generation=0)
+        pop.add(ind)
+
+        engine.evolve_generation(pop, generation=0)
+
+        assert len(captured_instances) >= 1
+        assert sorted(captured_instances[0]) == ["a", "b", "c", "d"]
+
+
 class TestCreateWorktreeCopiesTasks:
     """_create_worktree must copy .factory/tasks/ to the eval worktree
     so TaskRef.resolve() can find task module files."""
