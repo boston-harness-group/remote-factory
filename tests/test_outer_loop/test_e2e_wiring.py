@@ -13,7 +13,6 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -22,7 +21,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fixtures"))
 
 from wiring_task import WiringTask  # noqa: E402
 
-from factory.models import AggregateMethod, InnerLoopConfig
 from factory.outer_loop.engine import SwarmEngine
 from factory.outer_loop.evaluator import SwarmEvaluator
 from factory.outer_loop.models import EvalResult, SwarmConfig
@@ -323,7 +321,6 @@ class TestSharedEngineRun:
             start_node="data",
         )
 
-        executor_mod = "factory.workflow.executor"
         from factory.workflow.executor import WorkflowExecutor
 
         ex = WorkflowExecutor(wf, tmp_path, dry_run=True, validate=False)
