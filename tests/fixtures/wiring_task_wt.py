@@ -86,7 +86,15 @@ class WiringTask(Task):
 
     def verify(self, instance: TaskInstance, workspace: Path) -> VerifyResult:
         score = _SCORES.get(instance.id, 0.0)
-        return VerifyResult(passed=score > 0.0, score=score)
+        return VerifyResult(
+            passed=score > 0.0,
+            score=score,
+            details={
+                'grammar_score': round(score * 0.9, 2),
+                'readability_score': round(score * 0.85, 2),
+                'completeness_score': round(score * 0.95, 2),
+            },
+        )
 
     def get_evaluator(self) -> None:
         return None

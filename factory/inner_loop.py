@@ -832,6 +832,7 @@ class InnerLoop:
                     "instance_id": item.get("item_id", ""),
                     "score": item_score,
                     "passed": item.get("passed", False),
+                    "details": item.get("verify_details", {}),
                 }
                 if item.get("error"):
                     entry["error"] = item["error"]
@@ -1114,7 +1115,7 @@ class InnerLoop:
         summary: dict[str, Any] = {
             "mode": self.mode,
             "score": round(score, 4),
-            "scoring_method": "pytest_pass_rate" if test_score is not None else "heuristic",
+            "scoring_method": ("task_verify" if self._workflow_has_data_node() else "pytest_pass_rate") if test_score is not None else "heuristic",
             "heuristic_score": round(heuristic_score, 2),
             "cost_usd": round(total_cost, 2),
             "agents_spawned": agents_spawned,

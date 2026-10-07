@@ -246,6 +246,16 @@ class TestRealPipelineRun:
         has_fractional = any(0.0 < s < 1.0 for s in scores)
         assert has_fractional, f"No fractional scores found: {scores}"
 
+        # Verify that verify_details flow through to instance_results
+        details_found = [
+            r.get('details', {})
+            for r in shared.instance_results
+            if isinstance(r, dict) and r.get('details')
+        ]
+        assert len(details_found) > 0, 'No verify_details found in instance_results'
+        sample = details_found[0]
+        assert 'grammar_score' in sample, f'Expected grammar_score in details, got {sample}'
+
     def test_all_pass_vs_mean(
         self, shared: type[_SharedState],
     ) -> None:
