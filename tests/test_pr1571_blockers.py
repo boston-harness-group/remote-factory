@@ -115,14 +115,14 @@ class TestDataNodeHoldoutLeakage:
             assert "val2" not in allowed
 
 
-# ── Bug 2: empty training set intersection raises ValueError ─────────────
+# ── Bug 2: empty training set intersection warns and falls back ───────────
 
 
-class TestEmptyTrainingIntersectionRaises:
+class TestEmptyTrainingIntersectionWarns:
     """When training_instances has no overlap with task train split,
-    evolve_generation must raise ValueError instead of silently using empty list."""
+    evolve_generation must warn and fall back to the full train split."""
 
-    def test_empty_training_intersection_raises(self) -> None:
+    def test_empty_training_intersection_warns(self) -> None:
         from factory.outer_loop.engine import SwarmEngine
         from factory.outer_loop.evaluator import SwarmEvaluator
         from factory.outer_loop.models import SwarmConfig
@@ -137,13 +137,16 @@ class TestEmptyTrainingIntersectionRaises:
 
         # Task returns instances 'a', 'b' — no overlap with 'x', 'y'
         task = MagicMock()
-        task.instances.return_value = [
+        task.instances.side_effect = lambda split=None, **kw: [
             TaskInstance(id="a"),
             TaskInstance(id="b"),
         ]
         config.set_task(task)
 
         evaluator = MagicMock(spec=SwarmEvaluator)
+        from factory.outer_loop.models import EvalResult
+        evaluator.evaluate.return_value = EvalResult(score=0.5, cost_usd=0.01, benchmark_score=0.5)
+        evaluator.get_cycle_record.return_value = None
         engine = SwarmEngine(config=config, evaluator=evaluator)
 
         wf = Workflow(
@@ -162,8 +165,25 @@ class TestEmptyTrainingIntersectionRaises:
         ind = Population.make_individual(wf, generation=0)
         pop.add(ind)
 
-        with pytest.raises(ValueError, match="no overlap"):
+        with patch(
+            "factory.outer_loop.engine.log"
+        ) as mock_log:
+            # Should NOT raise — should warn and fall back
             engine.evolve_generation(pop, generation=0)
+
+            # Verify warning was logged
+            mock_log.warning.assert_called_once()
+            call_args = mock_log.warning.call_args
+            assert call_args[0][0] == "training_instances_no_overlap"
+            assert call_args[1]["training_instances"] == ["x", "y"]
+            assert call_args[1]["task_train_ids"] == ["a", "b"]
+
+        # Verify evaluator was called with full train split (fallback)
+        assert evaluator.evaluate.called
+        eval_call = evaluator.evaluate.call_args
+        # evaluate(wf, project_dir, instances, individual_id=ind.id)
+        # instances is the 3rd positional arg (index 2)
+        assert eval_call[0][2] == ["a", "b"]
 
 
 # ── Bug 3: _validate_and_fix handles RELOOP-only gates correctly ─────────
