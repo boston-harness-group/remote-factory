@@ -741,6 +741,7 @@ class TestDataNodeIntegration:
 
         wf = self._make_data_workflow()
         task = MagicMock()
+        task._definition = None  # prevent holdout check from cascading through MagicMock attrs
 
         mock_result = ExecutionResult()
         mock_result.success = True
