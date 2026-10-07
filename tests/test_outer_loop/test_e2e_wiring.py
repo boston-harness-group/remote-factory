@@ -553,8 +553,9 @@ class TestEngineRunE2E:
 
         Uses aggregate=mean so that partial passes yield a non-zero score
         (unlike all_pass which demands every instance passes).  Verifies
-        that the OuterLoopResult carries val_score > 0.5, completes at
-        least one generation, and returns a bool overfit_flag.
+        that the OuterLoopResult carries val_score ≈ 0.905, completes at
+        least one generation, and that holdout eval sees exactly i5/i6
+        while no earlier eval call includes those holdout instances.
         """
         project = tmp_path / "holdout_run_project"
         project.mkdir()
@@ -586,6 +587,16 @@ class TestEngineRunE2E:
             project_dir=project,
         )
 
+        # Wrap evaluator.evaluate to record which instances each call receives
+        eval_log: list[set[str]] = []
+        original_eval = evaluator.evaluate
+
+        def wrapped(wf: Workflow, pd: str, instances: list[str], **kw: Any) -> EvalResult:
+            eval_log.append(set(instances))
+            return original_eval(wf, pd, instances, **kw)
+
+        evaluator.evaluate = wrapped  # type: ignore[assignment]
+
         engine = SwarmEngine(
             swarm_config,
             evaluator,
@@ -596,14 +607,30 @@ class TestEngineRunE2E:
 
         # val_score should reflect holdout instances i5 (0.90) and i6 (0.95)
         # minus parsimony penalty (0.01 * 2 nodes = 0.02), mean(0.90, 0.95)=0.925 - 0.02=0.905
-        assert result.val_score > 0.5, (
-            f"Expected val_score > 0.5 from holdout eval, got {result.val_score}"
+        assert result.val_score == pytest.approx(0.905, abs=0.01), (
+            f"Expected val_score ≈ 0.905 from holdout eval, got {result.val_score}"
         )
         assert result.generations_completed >= 1, (
             f"Expected at least 1 generation, got {result.generations_completed}"
         )
-        assert isinstance(result.overfit_flag, bool), (
-            f"overfit_flag should be a bool, got {type(result.overfit_flag)}"
+
+        # Find the first eval call that saw holdout instances
+        holdout_ids = {"i5", "i6"}
+        holdout_idx = next(
+            (i for i, c in enumerate(eval_log) if c & holdout_ids), None,
+        )
+        assert holdout_idx is not None, (
+            f"No eval call saw holdout instances. Calls: {eval_log}"
+        )
+        # No call before holdout should have seen i5 or i6
+        for call_instances in eval_log[:holdout_idx]:
+            assert not (call_instances & holdout_ids), (
+                f"Holdout instances leaked into non-holdout eval call: {call_instances}"
+            )
+        # The holdout eval call saw exactly i5 and i6
+        assert eval_log[holdout_idx] == holdout_ids, (
+            f"Expected holdout eval to see exactly {holdout_ids}, "
+            f"got {eval_log[holdout_idx]}"
         )
 
     def test_halt_reason_through_evaluator(self, tmp_path: Path) -> None:
@@ -661,81 +688,33 @@ class TestEngineRunE2E:
         assert result.score == 0.0, (
             f"Expected score 0.0 for 0-item DataNode, got {result.score}"
         )
-        # Check for halt_reason in details if available
-        if result.details:
-            details_str = json.dumps(result.details, default=str)
-            # The halt can surface as an error or a halt_reason in the details
-            has_halt_info = (
-                "0 items" in details_str
-                or "halt" in details_str.lower()
-                or result.details.get("error")
-            )
-            assert has_halt_info, (
-                f"Expected halt/error info in details for 0-item split, "
-                f"got: {result.details}"
-            )
+        assert "0 items" in result.details.get("halt_reason", ""), (
+            f"Expected halt_reason with 0 items, got {result.details}"
+        )
 
     @pytest.mark.xfail(
         strict=True,
         reason="NODE_REMOVE deletes subgraph nodes, issue 1574",
     )
-    def test_no_validation_rejection_xfail(self, tmp_path: Path) -> None:
-        """Test 13: mutation_rate=1.0 with no frozen nodes → no valid offspring.
+    def test_no_validation_rejection_xfail(self) -> None:
+        """Test 13: remove_node on a DataNode subgraph node produces a valid workflow.
 
-        With frozen_node_ids=[] and mutation_rate=1.0, all offspring are
-        produced via mutations.  On a DataNode workflow, NODE_REMOVE targets
-        the 'process' subgraph node (the only non-frozen candidate), which
-        breaks the DataNode's subgraph_entry/exit references.
-        validate_and_repair rejects these, so no mutation ever produces a
-        valid offspring → total_candidates_evaluated stays at 1 (seed only).
+        We directly test that remove_node on the 'process' node (a subgraph
+        node referenced by DataNode's subgraph_entry/exit) produces a valid
+        workflow graph.  Currently it either returns None (refusing to act)
+        or produces an invalid graph with broken subgraph references.
 
         When issue 1574 is fixed (NODE_REMOVE protects DataNode subgraph
-        nodes), mutations will succeed and this assertion will pass,
-        causing the xfail to become XPASS → the marker can be removed.
+        nodes), this will produce a valid result and the xfail becomes
+        XPASS → the marker can be removed.
         """
-        project = tmp_path / "xfail_project"
-        project.mkdir()
-        _bootstrap_git_project(project)
-
-        # Override aggregate to mean
-        config_path = project / ".factory" / "config.json"
-        config_path.write_text(json.dumps({"inner_loop": {"aggregate": "mean"}}))
+        from factory.outer_loop.mutations import remove_node
 
         wf = _make_datanode_workflow()
-
-        swarm_config = SwarmConfig(
-            benchmark="wiring",
-            budget=4,
-            population_size=2,
-            tournament_size=2,
-            mutation_rate=1.0,       # every offspring is mutated
-            designer_count=0,
-            training_instances=["i1", "i2", "i3", "i4"],
-            holdout_instances=["i5", "i6"],
-            frozen_node_ids=[],      # nothing frozen — mutations can break subgraphs
-        )
-        task = WiringTask(str(project))
-        swarm_config.set_task(task)
-
-        evaluator = SwarmEvaluator(
-            swarm_config,
-            inner_loop_factory=True,
-            project_dir=project,
-        )
-
-        engine = SwarmEngine(
-            swarm_config,
-            evaluator,
-            project_dir=project,
-        )
-
-        result = engine.run(wf, project_dir=str(project))
-
-        # This WILL fail: with NODE_REMOVE unable to safely mutate DataNode
-        # subgraphs, no mutations succeed → only the seed is evaluated.
-        # total_candidates_evaluated == 1 (seed only), not > 1.
-        assert result.total_candidates_evaluated > 1, (
-            f"Expected mutations to produce valid offspring, but "
-            f"total_candidates_evaluated={result.total_candidates_evaluated} "
-            f"(seed only). NODE_REMOVE breaks DataNode subgraph nodes."
-        )
+        result = remove_node(wf, "process", frozen_nodes={"data"})
+        if result is not None:
+            mutated_wf, _record = result
+            issues = mutated_wf.validate_graph()
+            assert not issues, f"remove_node produced invalid workflow: {issues}"
+        else:
+            pytest.fail("remove_node returned None for unfrozen process node")
