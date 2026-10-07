@@ -47,10 +47,16 @@ from factory.workflow.primitives import (
 pytestmark = pytest.mark.e2e
 
 
+@pytest.fixture(autouse=True)
+def _no_real_claude(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent accidental real claude calls in all tests."""
+    monkeypatch.setenv("FACTORY_CLAUDE_BIN", "false")
+
+
 # ── Helpers ────────────────────────────────────────────────────────
 
 
-def _make_datanode_workflow(task_ref: str = "wiring_task_wt:WiringTask") -> Workflow:
+def _make_datanode_workflow(task_ref: str = "wiring_task_copied:WiringTask") -> Workflow:
     """Minimal DataNode + FnNode subgraph. No AgentNodes → no claude."""
     return Workflow(
         name="wiring-e2e",
@@ -93,11 +99,14 @@ def _bootstrap_git_project(project: Path) -> None:
     config = {"inner_loop": {"aggregate": "all_pass"}}
     (factory_dir / "config.json").write_text(json.dumps(config))
 
-    # 4. Copy wiring_task_wt.py into .factory/tasks/
+    # 4. Copy wiring_task_wt.py into .factory/tasks/ as wiring_task_copied.py
+    #    The module name "wiring_task_copied" is never imported at the top of this
+    #    test file.  If TaskRef.resolve() finds it, that proves the evaluator
+    #    copied .factory/tasks/ into the worktree AND the sys.path fix works.
     tasks_dir = factory_dir / "tasks"
     tasks_dir.mkdir(exist_ok=True)
     src = Path(__file__).resolve().parents[1] / "fixtures" / "wiring_task_wt.py"
-    shutil.copy(src, tasks_dir / "wiring_task_wt.py")
+    shutil.copy(src, tasks_dir / "wiring_task_copied.py")
 
     # 5. Seed file + first commit (worktree needs ≥ 1 commit)
     (project / "README.md").write_text("test project\n")
@@ -124,6 +133,8 @@ class _SharedState:
     eval_results: list[EvalResult] = []
     # Training instances the engine selected
     training_ids_used: list[str] = []
+    # Actual pipeline score from the evaluated individual
+    pipeline_score: float | None = None
 
     @classmethod
     def ensure(cls, tmp_path_factory: pytest.TempPathFactory) -> None:
@@ -177,6 +188,7 @@ class _SharedState:
         # ── Harvest results from the population ─────────────────
         for individual in pop.individuals:
             if individual.score is not None:
+                cls.pipeline_score = individual.score
                 # The inner-loop cycle record is stored in the evaluator
                 record = evaluator.get_cycle_record(individual.id)
                 if record is not None and record.instance_results:
@@ -244,20 +256,41 @@ class TestRealPipelineRun:
     def test_all_pass_vs_mean(
         self, shared: type[_SharedState],
     ) -> None:
-        """Test 3: all_pass → 0.0 (i3/i4 fail). mean would give ~0.39."""
+        """Test 3: pipeline score reflects all_pass (0.0), not mean.
+
+        The pipeline ran with aggregate=all_pass.  i3 setup fails and i4
+        scores 0.0, so all_pass → 0.0 (not all instances passed).
+        Mean of individual scores would be >0.0.  We verify the pipeline
+        actually applied all_pass by checking the score it assigned.
+        """
+        # a) Pipeline produced a score
+        assert shared.pipeline_score is not None, (
+            "pipeline_score was not captured — no evaluated individual"
+        )
+
+        # b) all_pass → 0.0 (accounting for parsimony: max(0.0, 0.0 - penalty) == 0.0)
+        assert shared.pipeline_score == pytest.approx(0.0), (
+            f"Expected pipeline_score ≈ 0.0 (all_pass), got {shared.pipeline_score}"
+        )
+
+        # c) Compute what mean would give from instance_results
         scores = [
             r.get("score", 0.0)
             for r in shared.instance_results
             if isinstance(r, dict) and "score" in r
         ]
-        if not scores:
-            pytest.skip("No scores collected — cannot verify aggregate")
-        all_pass = 1.0 if all(s >= 1.0 for s in scores) else 0.0
-        mean_score = sum(scores) / len(scores) if scores else 0.0
+        assert scores, "No instance scores collected"
+        mean_score = sum(scores) / len(scores)
 
-        assert all_pass == 0.0, f"Expected all_pass=0.0, got {all_pass}"
-        assert mean_score != all_pass, (
-            f"mean ({mean_score}) should differ from all_pass ({all_pass})"
+        # d) Mean is > 0.0 (some instances passed with nonzero scores)
+        assert mean_score > 0.0, (
+            f"Expected mean > 0.0 (partial passes), got {mean_score}"
+        )
+
+        # e) Pipeline used all_pass, not mean
+        assert shared.pipeline_score != pytest.approx(mean_score), (
+            f"pipeline_score ({shared.pipeline_score}) should differ from "
+            f"mean ({mean_score}) — proves all_pass is in effect"
         )
 
     def test_setup_failure_skips_instance(
@@ -341,6 +374,7 @@ class TestStandalone:
             budget=4,
             population_size=2,
             tournament_size=2,
+            mutation_rate=0.0,
             training_instances=["x", "y"],  # Don't match any task instance
             holdout_instances=[],
         )
