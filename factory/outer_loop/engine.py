@@ -289,6 +289,9 @@ class SwarmEngine:
         if task is not None:
             try:
                 instances = [inst.id for inst in task.instances(split="train")]
+                if self._config.training_instances:
+                    allowed = set(self._config.training_instances)
+                    instances = [i for i in instances if i in allowed]
             except TypeError:
                 # Backward compat: Task subclass overrides instances() without split param
                 log.warning(
