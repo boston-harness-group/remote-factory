@@ -434,8 +434,8 @@ class TestValidateGateEdges:
         gate_issues = [i for i in issues if "PROCEED" in i]
         assert gate_issues == []
 
-    def test_gate_reloop_only_flagged(self) -> None:
-        """GateNode with only RELOOP edges (no PROCEED) is flagged."""
+    def test_gate_reloop_only_valid(self) -> None:
+        """GateNode with only RELOOP edges is valid — loops until max iterations."""
         wf = Workflow(
             name="test",
             nodes={
@@ -450,7 +450,7 @@ class TestValidateGateEdges:
         )
         issues = wf.validate_graph()
         gate_issues = [i for i in issues if "PROCEED" in i and "gate" in i.lower()]
-        assert len(gate_issues) == 1
+        assert gate_issues == []
 
     def test_terminal_gate_not_flagged(self) -> None:
         """GateNode with zero outgoing edges is a valid terminal — not flagged."""

@@ -714,6 +714,9 @@ class TestDataNodeIntegration:
 
         mock_result = ExecutionResult()
         mock_result.success = True
+        mock_result.item_results = [
+            {"item_id": "inst-1", "score": 1.0, "passed": True},
+        ]
 
         loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=task)
 
@@ -814,6 +817,9 @@ class TestDataNodeIntegration:
 
         mock_result = ExecutionResult()
         mock_result.success = True
+        mock_result.item_results = [
+            {"item_id": "inst-1", "score": 1.0, "passed": True},
+        ]
 
         loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=task)
 

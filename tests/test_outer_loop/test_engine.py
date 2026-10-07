@@ -44,14 +44,17 @@ def _make_workflow() -> Workflow:
             ),
             "researcher": AgentNode(
                 id="researcher", role=AgentRole.RESEARCHER,
+                prompt_template="Research the project at {project_path}.",
                 reads={".factory/obs.md"}, writes={".factory/research.md"},
             ),
             "strategist": AgentNode(
                 id="strategist", role=AgentRole.STRATEGIST,
+                prompt_template="Strategize improvements for {project_path}.",
                 reads={".factory/research.md"}, writes={".factory/current.md"},
             ),
             "builder": AgentNode(
                 id="builder", role=AgentRole.BUILDER,
+                prompt_template="Build improvements for {project_path}.",
                 reads={".factory/current.md"}, writes={".factory/build.md"},
             ),
             "gate": GateNode(
