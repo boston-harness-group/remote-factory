@@ -560,7 +560,7 @@ class TestSkipReEvaluation:
                 cost_usd=0.05, complexity=3.0,
             )
 
-        config = _make_config(budget=50, population_size=2, designer_count=0)
+        config = _make_config(budget=50, population_size=2, designer_count=0, training_instances=[])
         evaluator = SwarmEvaluator(config, evaluator_fn=tracking_eval)
         engine = SwarmEngine(config, evaluator)
 
