@@ -828,11 +828,14 @@ class InnerLoop:
                     continue
                 item_score = float(item.get("score", 0.0))
                 scores.append(item_score)
-                instance_results.append({
+                entry = {
                     "instance_id": item.get("item_id", ""),
                     "score": item_score,
                     "passed": item.get("passed", False),
-                })
+                }
+                if item.get("error"):
+                    entry["error"] = item["error"]
+                instance_results.append(entry)
 
         # Aggregate using the same configurable method as _step_with_task
         aggregate_method = (

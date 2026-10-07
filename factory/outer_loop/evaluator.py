@@ -458,6 +458,7 @@ class SwarmEvaluator:
                         ))
                 adapted = eval_result_from_verify_results(verify_results)
                 details["verify"] = adapted.details
+                details["instance_results"] = record.instance_results
 
             if record.eval_details and isinstance(record.eval_details, dict):
                 details.update(record.eval_details)

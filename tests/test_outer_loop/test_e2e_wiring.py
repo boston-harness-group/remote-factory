@@ -26,7 +26,9 @@ import pytest
 # ── Make tests/fixtures importable ─────────────────────────────────
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fixtures"))
 
-from wiring_task import WiringTask  # noqa: E402
+from wiring_task_wt import WiringTask  # noqa: E402
+
+pytestmark = pytest.mark.e2e
 
 from factory.outer_loop.engine import SwarmEngine
 from factory.outer_loop.evaluator import SwarmEvaluator
@@ -48,7 +50,7 @@ from factory.workflow.primitives import (
 # ── Helpers ────────────────────────────────────────────────────────
 
 
-def _make_datanode_workflow(task_ref: str = "wiring_task:WiringTask") -> Workflow:
+def _make_datanode_workflow(task_ref: str = "wiring_task_wt:WiringTask") -> Workflow:
     """Minimal DataNode + FnNode subgraph. No AgentNodes → no claude."""
     return Workflow(
         name="wiring-e2e",
@@ -91,11 +93,11 @@ def _bootstrap_git_project(project: Path) -> None:
     config = {"inner_loop": {"aggregate": "all_pass"}}
     (factory_dir / "config.json").write_text(json.dumps(config))
 
-    # 4. Copy wiring_task.py into .factory/tasks/
+    # 4. Copy wiring_task_wt.py into .factory/tasks/
     tasks_dir = factory_dir / "tasks"
     tasks_dir.mkdir(exist_ok=True)
-    src = Path(__file__).resolve().parents[1] / "fixtures" / "wiring_task.py"
-    shutil.copy(src, tasks_dir / "wiring_task.py")
+    src = Path(__file__).resolve().parents[1] / "fixtures" / "wiring_task_wt.py"
+    shutil.copy(src, tasks_dir / "wiring_task_wt.py")
 
     # 5. Seed file + first commit (worktree needs ≥ 1 commit)
     (project / "README.md").write_text("test project\n")
@@ -215,6 +217,8 @@ class TestRealPipelineRun:
         self, shared: type[_SharedState],
     ) -> None:
         """Test 1: i5/i6 do NOT appear in instance_results from training eval."""
+        assert shared.instance_results
+        assert len(shared.instance_results) == 4  # i1, i2, i3 (setup_failed), i4
         holdout = {"i5", "i6"}
         seen_ids = {
             r.get("instance_id") or r.get("item_id", "")
@@ -259,12 +263,11 @@ class TestRealPipelineRun:
     def test_setup_failure_skips_instance(
         self, shared: type[_SharedState],
     ) -> None:
-        """Test 4: i3 setup fails → scored as 0.0, passed=False.
+        """Test 4: i3 setup fails → scored as 0.0, passed=False, error preserved.
 
         The real pipeline path: executor._execute_data catches setup
         exceptions and records {error: "setup_failed", score: 0.0}.
-        Inner loop's _step_with_data_node copies score/passed but may
-        strip the error field, so we check score + passed.
+        Inner loop preserves the error field in instance_results (item 1 fix).
         """
         i3_results = [
             r for r in shared.instance_results
@@ -278,6 +281,9 @@ class TestRealPipelineRun:
         for r in i3_results:
             assert r.get("score", -1) == 0.0, f"i3 score should be 0.0, got {r.get('score')}"
             assert r.get("passed") is False, f"i3 should not pass, got {r.get('passed')}"
+            assert r.get("error") == "setup_failed", (
+                f"i3 should have error='setup_failed', got {r.get('error')!r}"
+            )
 
     def test_halt_reason_in_eval_details(self, tmp_path: Path) -> None:
         """Test 5: DataNode with 0 items after split-filter → halted."""
@@ -308,6 +314,8 @@ class TestRealPipelineRun:
         self, shared: type[_SharedState],
     ) -> None:
         """Test 6: Only i1-i4 appear in instance_results (train split)."""
+        assert shared.instance_results
+        assert len(shared.instance_results) == 4  # i1, i2, i3 (setup_failed), i4
         train_ids = {"i1", "i2", "i3", "i4"}
         holdout_ids = {"i5", "i6"}
         seen_ids = {
@@ -362,8 +370,17 @@ class TestStandalone:
         for call in call_log:
             assert len(call) > 0, "Evaluator received empty instance list"
 
-    def test_designer_reloop_gate_not_broken(self) -> None:
-        """Test 8: GateNode with only RELOOP edge — no spurious PROCEED error."""
+    def test_designer_validate_and_fix(self) -> None:
+        """Test 8: _validate_and_fix fills empty prompts but respects RELOOP gates.
+
+        Create a workflow with BOTH an empty-prompt AgentNode AND a
+        RELOOP-only GateNode.  After _validate_and_fix:
+        - The AgentNode gets a default prompt (fix applied).
+        - The GateNode does NOT get a spurious PROCEED edge
+          (RELOOP counts as valid outgoing flow).
+        """
+        from factory.outer_loop.designer import _validate_and_fix
+
         gate = GateNode(
             id="gate",
             evaluator_type="agent",
@@ -372,10 +389,10 @@ class TestStandalone:
         builder = AgentNode(
             id="builder",
             role=AgentRole.BUILDER,
-            prompt_template="build something",
+            prompt_template="",  # empty — should be fixed
         )
         wf = Workflow(
-            name="reloop-only",
+            name="fix-test",
             nodes={"gate": gate, "builder": builder},
             edges=[
                 Edge(source="builder", target="gate"),
@@ -384,12 +401,32 @@ class TestStandalone:
             start_node="builder",
         )
 
-        from factory.workflow.validation import validate_workflow
+        seed_wf = Workflow(
+            name="seed",
+            nodes={"builder": AgentNode(
+                id="builder", role=AgentRole.BUILDER,
+                prompt_template="seed prompt",
+            )},
+            edges=[],
+            start_node="builder",
+        )
 
-        issues = validate_workflow(wf)
-        gate_issues = [i for i in issues if "PROCEED" in i and "gate" in i]
-        assert len(gate_issues) == 0, (
-            f"Validator incorrectly flagged RELOOP-only gate: {gate_issues}"
+        fixed = _validate_and_fix(wf, seed_wf)
+
+        # Fix 1 applied: empty prompt filled
+        fixed_builder = fixed.nodes["builder"]
+        assert isinstance(fixed_builder, AgentNode)
+        assert fixed_builder.prompt_template.strip(), (
+            "Empty prompt should have been filled by _validate_and_fix"
+        )
+
+        # Fix 2 NOT applied: RELOOP-only gate should NOT get a PROCEED edge
+        proceed_edges = [
+            e for e in fixed.edges
+            if e.source == "gate" and e.condition == VerdictType.PROCEED
+        ]
+        assert len(proceed_edges) == 0, (
+            f"RELOOP-only gate should not get a PROCEED edge, got: {proceed_edges}"
         )
 
     def test_inline_items_skip_id_filter(self, tmp_path: Path) -> None:
@@ -431,8 +468,18 @@ class TestStandalone:
         )
 
     def test_holdout_runs_val_instances(self, tmp_path: Path) -> None:
-        """Test 10: Evaluator with holdout_instances processes i5/i6."""
-        task = WiringTask(str(tmp_path))
+        """Test 10: Real pipeline evaluator processes holdout instances i5/i6.
+
+        Uses inner_loop_factory=True (the real pipeline path) with a
+        DataNode workflow.  Evaluates on holdout instances ["i5", "i6"]
+        and asserts real scores (0.90, 0.95) from WiringTask.verify().
+        """
+        project = tmp_path / "holdout_project"
+        project.mkdir()
+        _bootstrap_git_project(project)
+
+        wf = _make_datanode_workflow()
+
         config = SwarmConfig(
             benchmark="wiring",
             budget=4,
@@ -440,49 +487,29 @@ class TestStandalone:
             tournament_size=2,
             training_instances=["i1", "i2", "i3", "i4"],
             holdout_instances=["i5", "i6"],
+            frozen_node_ids=["data"],
         )
+        task = WiringTask(str(project))
         config.set_task(task)
 
-        holdout_calls: list[list[str]] = []
-
-        def track_eval(
-            wf: Workflow, project_dir: str, instances: list[str],
-        ) -> EvalResult:
-            holdout_calls.append(list(instances))
-            result_details: dict[str, Any] = {"instance_results": []}
-            for iid in instances:
-                for inst in task.instances(split="all"):
-                    if inst.id == iid:
-                        try:
-                            task.setup(inst, Path(project_dir))
-                            vr = task.verify(inst, Path(project_dir))
-                            result_details["instance_results"].append({
-                                "instance_id": iid,
-                                "passed": vr.passed,
-                                "score": vr.score,
-                            })
-                        except Exception:
-                            result_details["instance_results"].append({
-                                "instance_id": iid,
-                                "passed": False,
-                                "score": 0.0,
-                            })
-            return EvalResult(score=0.9, benchmark_score=0.9, details=result_details)
-
-        evaluator = SwarmEvaluator(config, evaluator_fn=track_eval)
-
-        wf = Workflow(
-            name="simple",
-            nodes={"a": FnNode(id="a", command="echo a")},
-            edges=[],
-            start_node="a",
+        evaluator = SwarmEvaluator(
+            config,
+            inner_loop_factory=True,
+            project_dir=project,
         )
-        result = evaluator.evaluate(wf, str(tmp_path), ["i5", "i6"])
 
-        assert len(holdout_calls) == 1
-        assert set(holdout_calls[0]) == {"i5", "i6"}
+        result = evaluator.evaluate(wf, str(project), ["i5", "i6"])
 
         irs = result.details.get("instance_results", [])
         evaluated_ids = {r["instance_id"] for r in irs if isinstance(r, dict)}
-        assert "i5" in evaluated_ids
-        assert "i6" in evaluated_ids
+        assert "i5" in evaluated_ids, f"i5 missing from holdout results: {irs}"
+        assert "i6" in evaluated_ids, f"i6 missing from holdout results: {irs}"
+
+        # Check real scores from WiringTask
+        score_map = {r["instance_id"]: r["score"] for r in irs if isinstance(r, dict)}
+        assert score_map.get("i5") == pytest.approx(0.90), (
+            f"i5 score should be 0.90, got {score_map.get('i5')}"
+        )
+        assert score_map.get("i6") == pytest.approx(0.95), (
+            f"i6 score should be 0.95, got {score_map.get('i6')}"
+        )
