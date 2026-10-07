@@ -7,10 +7,12 @@ Bug 4: aggregation hardcoded to mean
 Bug 5: CEO-strategy DataNode path has no firewall
 Bug 6: halt_reason never reaches CycleRecord
 Bug 7: allowed_instance_ids filter drops all inline/source_path items
+Bug 8: aggregate config from source project reaches inner loop via compose()
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -588,4 +590,95 @@ class TestInlineItemsSkipAllowedFilter:
         assert result.success, f"Execution should succeed, halt_reason={result.halt_reason}"
         assert len(result.item_results) == 2, (
             f"Expected 2 inline items to pass through filter, got {len(result.item_results)}"
+        )
+
+
+# ── Bug 8: aggregate config from source project reaches inner loop ───────
+
+
+class TestAggregateConfigReachesInnerLoop:
+    """When .factory/config.json has inner_loop.aggregate, that value must
+    reach compose() as inner_loop_config — not be silently dropped."""
+
+    def test_source_project_aggregate_reaches_inner_loop(self, tmp_path: Path) -> None:
+        from factory.cycle_analyzer import CycleRecord
+        from factory.models import AggregateMethod, InnerLoopConfig
+        from factory.outer_loop.evaluator import SwarmEvaluator
+        from factory.outer_loop.models import SwarmConfig
+
+        # Create source project with .factory/config.json containing aggregate
+        factory_dir = tmp_path / ".factory"
+        factory_dir.mkdir()
+        config = {"inner_loop": {"aggregate": "all_pass"}}
+        (factory_dir / "config.json").write_text(json.dumps(config))
+
+        # Build a minimal workflow with a DataNode so the task path is taken
+        wf = Workflow(
+            name="agg_reach_test",
+            nodes={
+                "data": DataNode(
+                    id="data",
+                    task_ref="fake:Task",
+                    subgraph_entry="sub",
+                    subgraph_exit="sub",
+                ),
+                "sub": FnNode(id="sub", command="echo x"),
+            },
+            edges=[],
+            start_node="data",
+        )
+
+        # Create a mock task for config.set_task()
+        task = MagicMock()
+        task._definition = TaskDefinition(
+            name="agg-reach-task",
+            scoring=ScoringContract(method="exit_code"),
+        )
+        task.instances.return_value = [TaskInstance(id="i1")]
+        task.get_evaluator.return_value = MagicMock()
+
+        swarm_config = SwarmConfig(benchmark="test", budget=100, population_size=1)
+        swarm_config.set_task(task)
+
+        evaluator = SwarmEvaluator(config=swarm_config, project_dir=tmp_path)
+
+        # Capture the inner_loop_config that compose() receives
+        captured: dict[str, object] = {}
+
+        def mock_compose(workflow, task, project_dir, inner_loop_config=None):
+            captured["inner_loop_config"] = inner_loop_config
+            # Return a mock loop whose step() returns a minimal CycleRecord
+            mock_loop = MagicMock()
+            mock_loop.mode = "task-eval"
+            mock_loop.step.return_value = CycleRecord(
+                cycle_number=0,
+                mode="task-eval",
+                started_at=None,
+                ended_at=None,
+                duration_s=0.1,
+                score_start=0.0,
+                score_end=1.0,
+                score_delta=1.0,
+            )
+            return mock_loop
+
+        with (
+            patch("factory.compose.compose", side_effect=mock_compose),
+            patch.object(
+                SwarmEvaluator, "_create_worktree", return_value=tmp_path
+            ),
+            patch.object(SwarmEvaluator, "_cleanup_worktree"),
+        ):
+            evaluator._evaluate_via_inner_loop(
+                workflow=wf,
+                project_dir=str(tmp_path),
+                instances=["i1"],
+                individual_id="test-id-12345678",
+            )
+
+        ilc = captured.get("inner_loop_config")
+        assert ilc is not None, "inner_loop_config should be passed to compose()"
+        assert isinstance(ilc, InnerLoopConfig)
+        assert ilc.aggregate == AggregateMethod.all_pass, (
+            f"Expected aggregate=all_pass, got {ilc.aggregate}"
         )

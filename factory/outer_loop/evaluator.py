@@ -377,8 +377,8 @@ class SwarmEvaluator:
                     if fc.get('inner_loop'):
                         from factory.models import InnerLoopConfig
                         inner_loop_config = InnerLoopConfig(**fc['inner_loop'])
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning('inner_loop_config_invalid', error=str(e), project=str(project_dir))
 
             label = individual_id[:8] if individual_id else mode_name[:12]
             wt_path = self._create_worktree(project_dir, label)
