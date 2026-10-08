@@ -348,6 +348,92 @@ class TestInvokeAgentNodeId:
         assert captured_kwargs["node_id"] == "builder"
 
 
+class TestBug1568DataNodeImplicitCurrentItemWrite:
+    """#1568: DataNode implicit current_item.json write not in validation.
+
+    DataNode implicitly writes .factory/current_item.json before running its
+    subgraph (executor.py L1012), but this implicit write is not declared in
+    DataNode.writes. So _validate_data_dependencies flags the subgraph entry's
+    read of current_item.json as unsatisfied, causing validation to fail at
+    executor construction (since PR #1545 made validate=True the default).
+    """
+
+    def test_datanode_subgraph_entry_reading_current_item_passes_validation(self):
+        """Subgraph entry reading current_item.json should NOT fail validation."""
+        entry = AgentNode(
+            id="processor",
+            role=AgentRole.BUILDER,
+            prompt_template="Process the current item from .factory/current_item.json",
+            reads={".factory/current_item.json"},
+            writes={"output.md"},
+        )
+        data = DataNode(
+            id="data",
+            inline_items=[DataItem(id="item-1", prompt="first")],
+            subgraph_entry="processor",
+            subgraph_exit="processor",
+            parallelism=1,
+        )
+        wf = Workflow(
+            name="bug-1568-repro",
+            nodes={
+                "data": data,
+                "processor": entry,
+            },
+            edges=[],
+            start_node="data",
+        )
+        issues = validate_workflow(wf)
+        current_item_issues = [
+            i for i in issues if "current_item.json" in i
+        ]
+        assert not current_item_issues, (
+            f"DataNode implicit write of current_item.json should satisfy "
+            f"subgraph entry reads. Issues: {current_item_issues}"
+        )
+
+    def test_datanode_subgraph_entry_reading_other_file_still_fails(self):
+        """Subgraph entry reading something else no predecessor writes SHOULD fail."""
+        entry = AgentNode(
+            id="processor",
+            role=AgentRole.BUILDER,
+            prompt_template="Process the data",
+            reads={".factory/current_item.json", "nonexistent_input.md"},
+            writes={"output.md"},
+        )
+        data = DataNode(
+            id="data",
+            inline_items=[DataItem(id="item-1", prompt="first")],
+            subgraph_entry="processor",
+            subgraph_exit="processor",
+            parallelism=1,
+        )
+        wf = Workflow(
+            name="bug-1568-other-read",
+            nodes={
+                "data": data,
+                "processor": entry,
+            },
+            edges=[],
+            start_node="data",
+        )
+        issues = validate_workflow(wf)
+        # current_item.json should be satisfied
+        current_item_issues = [
+            i for i in issues if "current_item.json" in i
+        ]
+        assert not current_item_issues, (
+            f"current_item.json should be satisfied: {current_item_issues}"
+        )
+        # nonexistent_input.md should still fail
+        other_issues = [
+            i for i in issues if "nonexistent_input.md" in i
+        ]
+        assert other_issues, (
+            "Reads not written by any predecessor should still fail validation"
+        )
+
+
 class TestDataNodeSwallowsSubgraphFailures:
     """DataNode error propagation gap: when ALL subgraph items fail,
     the DataNode still completed successfully and the workflow continued.

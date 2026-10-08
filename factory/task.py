@@ -310,19 +310,10 @@ class TaskDefinition(BaseModel):
                 ),
             ),
             evaluator_ref=EvaluatorRef(ref=scoring_section.get("evaluator_ref", "")),
-            instances_config=InstancesConfig(
-                format=instances_section.get("format", "directory"),
-                source=instances_section.get("source", ""),
-            ),
-            setup_config=SetupConfig(
-                command=setup_section.get("command", ""),
-            ),
-            prompt_config=PromptConfig(
-                text=prompt_section.get("text", ""),
-            ),
-            verify_config=VerifyConfig(
-                command=verify_section.get("command", ""),
-            ),
+            instances_config=InstancesConfig.model_validate(instances_section),
+            setup_config=SetupConfig.model_validate(setup_section),
+            prompt_config=PromptConfig.model_validate(prompt_section),
+            verify_config=VerifyConfig.model_validate(verify_section),
         )
 
     def to_task(self) -> Task:
@@ -370,10 +361,9 @@ def _build_verify_details(
     details: dict[str, Any] = {
         "scoring_contract": scoring_name,
         "returncode": result.returncode,
+        "stdout": result.stdout[:2000],
+        "stderr": result.stderr[:2000],
     }
-    if not passed:
-        details["stdout"] = result.stdout[:2000]
-        details["stderr"] = result.stderr[:2000]
     details.update(extra)
     return details
 
@@ -489,22 +479,35 @@ class Task:
         """What should the agent do for this instance?
 
         Default: return prompt_config.text if set, else generic prompt.
+        Substitutes {instance_id} and {instance_dir} placeholders (no quoting —
+        prompt text is not shell-executed).
         """
         text = self._definition.prompt_config.text
         if text:
-            return text
+            expanded = text.replace("{instance_id}", instance.id)
+            if instance.path is not None:
+                expanded = expanded.replace("{instance_dir}", str(instance.path))
+            return expanded
         return "Implement the feature. All tests must pass."
 
     def verify(self, instance: TaskInstance, workspace: Path) -> VerifyResult:
         """Did it work? Returns unified VerifyResult with pass/fail + score.
 
         Default: run verify_config.command and parse output.
+        Substitutes {instance_id} and {instance_dir} placeholders (shell-quoted
+        via shlex.quote() for injection safety).
         If the command outputs valid JSON with 'passed' and 'score' keys, use those.
         Otherwise fall back to exit code scoring (exit 0 = pass/1.0).
         """
+        import shlex as _shlex
+
         cmd = self._definition.verify_config.command
         if not cmd:
             return VerifyResult(passed=False, score=0.0)
+
+        cmd = cmd.replace("{instance_id}", _shlex.quote(instance.id))
+        if instance.path is not None:
+            cmd = cmd.replace("{instance_dir}", _shlex.quote(str(instance.path)))
 
         result = self.shell(cmd, cwd=workspace)
         scoring = self._definition.scoring

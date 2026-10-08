@@ -249,7 +249,7 @@ def check_mode_task_compat(
 # ── compose() public API ────────────────────────────────────────
 
 
-def compose(workflow: Any, task: Any, project_dir: str | Path) -> Any:
+def compose(workflow: Any, task: Any, project_dir: str | Path, inner_loop_config: Any = None) -> Any:
     """Compose a workflow + task into a task-attached InnerLoop.
 
     InnerLoop.step() executes the task end-to-end when task is set:
@@ -286,4 +286,5 @@ def compose(workflow: Any, task: Any, project_dir: str | Path) -> Any:
         evaluator=evaluator,
         workflow=workflow,
         task=task,
+        inner_loop_config=inner_loop_config,
     )

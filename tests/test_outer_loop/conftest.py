@@ -30,18 +30,21 @@ def simple_workflow() -> Workflow:
         "researcher": AgentNode(
             id="researcher",
             role=AgentRole.RESEARCHER,
+            prompt_template="Research the project at {project_path}.",
             reads={".factory/strategy/observations.md"},
             writes={".factory/strategy/research.md"},
         ),
         "strategist": AgentNode(
             id="strategist",
             role=AgentRole.STRATEGIST,
+            prompt_template="Strategize improvements for the project at {project_path}.",
             reads={".factory/strategy/research.md"},
             writes={".factory/strategy/current.md"},
         ),
         "builder": AgentNode(
             id="builder",
             role=AgentRole.BUILDER,
+            prompt_template="Build the solution for the project at {project_path}.",
             reads={".factory/strategy/current.md"},
             writes={".factory/reviews/builder-latest.md"},
         ),
@@ -58,6 +61,7 @@ def simple_workflow() -> Workflow:
         Edge(source="strategist", target="builder"),
         Edge(source="builder", target="gate_qa"),
         Edge(source="gate_qa", target="builder", condition=VerdictType.RELOOP),
+        Edge(source="gate_qa", target="study", condition=VerdictType.PROCEED),
     ]
     return Workflow(
         name="test_simple",

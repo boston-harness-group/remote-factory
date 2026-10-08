@@ -28,7 +28,11 @@ def _make_workflow() -> Workflow:
         name="test",
         nodes={
             "a": FnNode(id="a", command="echo a"),
-            "b": AgentNode(id="b", role=AgentRole.BUILDER),
+            "b": AgentNode(
+                id="b",
+                role=AgentRole.BUILDER,
+                prompt_template="Build the project at {project_path}.",
+            ),
         },
         edges=[Edge(source="a", target="b")],
         start_node="a",

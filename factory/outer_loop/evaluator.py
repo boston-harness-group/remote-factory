@@ -251,6 +251,22 @@ class SwarmEvaluator:
             log.warning("frozen_node_violated", workflow=workflow.name)
             return EvalResult(score=0.0, details={"rejected": "frozen_node_violated"})
 
+        # CHECK 4: graph validation — reject structurally/semantically broken workflows
+        validation_issues = workflow.validate_graph()
+        if validation_issues:
+            log.warning(
+                "graph_validation_failed",
+                workflow=workflow.name,
+                issues=validation_issues,
+            )
+            return EvalResult(
+                score=0.0,
+                details={
+                    "rejected": "graph_validation_failed",
+                    "validation_errors": validation_issues,
+                },
+            )
+
         if self._inner_loop_factory is not None:
             return self._evaluate_via_inner_loop(
                 workflow, project_dir, instances, individual_id
@@ -284,7 +300,7 @@ class SwarmEvaluator:
         if result.returncode != 0:
             raise RuntimeError(f"git worktree add failed: {result.stderr}")
 
-        for subdir in ["outer_loop/modes", "workflows"]:
+        for subdir in ["outer_loop/modes", "workflows", "tasks"]:
             src_dir = src / ".factory" / subdir
             dst_dir = wt_path / ".factory" / subdir
             if src_dir.exists():
@@ -351,13 +367,26 @@ class SwarmEvaluator:
             else:
                 mode_name = self._inner_loop_factory(workflow) if callable(self._inner_loop_factory) else "evolve"
 
+            # Read inner_loop_config from the SOURCE project (not the worktree,
+            # which is a fresh git checkout that may lack .factory/config.json).
+            inner_loop_config = None
+            src_config_path = Path(project_dir) / '.factory' / 'config.json'
+            if src_config_path.exists():
+                try:
+                    fc = json.loads(src_config_path.read_text())
+                    if fc.get('inner_loop'):
+                        from factory.models import InnerLoopConfig
+                        inner_loop_config = InnerLoopConfig(**fc['inner_loop'])
+                except Exception as e:
+                    log.warning('inner_loop_config_invalid', error=str(e), project=str(project_dir))
+
             label = individual_id[:8] if individual_id else mode_name[:12]
             wt_path = self._create_worktree(project_dir, label)
 
             if task is not None:
                 from factory.compose import compose
 
-                loop = compose(workflow, task, wt_path)
+                loop = compose(workflow, task, wt_path, inner_loop_config=inner_loop_config)
                 loop.mode = mode_name
                 loop.frozen_nodes = frozenset(self._config.frozen_node_ids)
                 loop.test_command = self._config.test_command
@@ -381,6 +410,7 @@ class SwarmEvaluator:
                     execution_strategy=getattr(
                         self._config, "execution_strategy", "executor"
                     ),
+                    inner_loop_config=inner_loop_config,
                 )
             record = loop.step()
 
@@ -428,7 +458,10 @@ class SwarmEvaluator:
                         ))
                 adapted = eval_result_from_verify_results(verify_results)
                 details["verify"] = adapted.details
+                details["instance_results"] = record.instance_results
 
+            if record.eval_details and isinstance(record.eval_details, dict):
+                details.update(record.eval_details)
             record.eval_details = details
 
             return EvalResult(

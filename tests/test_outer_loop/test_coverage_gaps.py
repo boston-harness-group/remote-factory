@@ -54,20 +54,24 @@ def _make_workflow(name: str = "test_wf") -> Workflow:
             ),
             "researcher": AgentNode(
                 id="researcher", role=AgentRole.RESEARCHER,
+                prompt_template="Research the project",
                 reads={".factory/obs.md"}, writes={".factory/research.md"},
             ),
             "strategist": AgentNode(
                 id="strategist", role=AgentRole.STRATEGIST,
+                prompt_template="Create a strategy",
                 reads={".factory/research.md"}, writes={".factory/current.md"},
             ),
             "builder": AgentNode(
                 id="builder", role=AgentRole.BUILDER,
+                prompt_template="Build the changes",
                 reads={".factory/current.md"}, writes={".factory/build.md"},
             ),
             "gate": GateNode(
                 id="gate", evaluator_type="fn",
                 reads={".factory/build.md"},
             ),
+            "done": FnNode(id="done", command="echo done"),
         },
         edges=[
             Edge(source="study", target="researcher"),
@@ -75,6 +79,7 @@ def _make_workflow(name: str = "test_wf") -> Workflow:
             Edge(source="strategist", target="builder"),
             Edge(source="builder", target="gate"),
             Edge(source="gate", target="builder", condition=VerdictType.RELOOP),
+            Edge(source="gate", target="done", condition=VerdictType.PROCEED),
         ],
         start_node="study",
     )
@@ -146,7 +151,7 @@ class TestOuterLoopWithGraphExplorationRequired:
 
         assert result.score > 0
         assert len(call_log) == 1
-        assert call_log[0]["node_count"] == 5
+        assert call_log[0]["node_count"] == 6
 
     def test_mode_registry_mirrors_to_target_for_sub_ceo(self, tmp_path: Path) -> None:
         """When target_dir is set, ephemeral modes are mirrored so the sub-CEO

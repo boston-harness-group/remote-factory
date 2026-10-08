@@ -143,6 +143,7 @@ class InnerLoop:
         task: Any | None = None,
         instance: Any | None = None,
         execution_strategy: str = "executor",
+        inner_loop_config: Any | None = None,
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
         self.factory_dir = self.project_dir / ".factory"
@@ -156,6 +157,7 @@ class InnerLoop:
         self.task = task
         self.instance = instance
         self.execution_strategy = execution_strategy
+        self._inner_loop_config = inner_loop_config
         self._step_count = 0
         self._history: list[CycleRecord] = []
         self._has_data_node: bool | None = None
@@ -282,12 +284,12 @@ class InnerLoop:
         return record
 
     def _workflow_has_data_node(self) -> bool:
-        if self._has_data_node is None:
+        if getattr(self, '_has_data_node', None) is None:
             self._has_data_node = (
                 self.workflow is not None
                 and any(isinstance(n, DataNode) for n in self.workflow.nodes.values())
             )
-        return self._has_data_node
+        return bool(self._has_data_node)
 
     def _ensure_ephemeral_mode(self) -> str:
         """Register self.workflow as an ephemeral mode for CEO subprocess discovery.
@@ -466,9 +468,23 @@ class InnerLoop:
         t0 = time.monotonic()
         workflow = self.workflow
 
-        all_instances = list(self.task.instances())
-
+        # Default to train split when holdout_ids are configured and no
+        # subset_selector is set, to prevent holdout leakage into training.
         subset_selector = getattr(self, "_subset_selector", None)
+        _defn = getattr(self.task, "_definition", None)
+        _holdout_ids = (
+            getattr(getattr(_defn, "instances_config", None), "holdout_ids", None)
+            if _defn is not None
+            else None
+        )
+        if subset_selector is None and _holdout_ids:
+            try:
+                all_instances = list(self.task.instances(split="train"))
+            except TypeError:
+                log.warning('task_instances_no_split', task=type(self.task).__name__)
+                all_instances = list(self.task.instances())
+        else:
+            all_instances = list(self.task.instances())
         if subset_selector is not None:
             selected_ids = subset_selector.select(
                 [inst.id for inst in all_instances]
@@ -518,7 +534,22 @@ class InnerLoop:
 
         for inst in all_instances:
             try:
-                self.task.setup(inst, self.project_dir)
+                try:
+                    self.task.setup(inst, self.project_dir)
+                except Exception as setup_exc:
+                    log.warning(
+                        "instance_setup_failed",
+                        instance_id=inst.id,
+                        error=str(setup_exc),
+                    )
+                    instance_results.append({
+                        "instance_id": inst.id,
+                        "passed": False,
+                        "score": 0.0,
+                        "error": "setup_failed",
+                    })
+                    scores.append(0.0)
+                    continue
 
                 prompt_text = self.task.prompt(inst)
 
@@ -560,8 +591,11 @@ class InnerLoop:
                 })
                 scores.append(0.0)
 
-        config = InnerLoopConfig()
-        aggregate_method = config.aggregate
+        aggregate_method = (
+            self._inner_loop_config.aggregate
+            if self._inner_loop_config
+            else InnerLoopConfig().aggregate
+        )
 
         if not scores:
             aggregate_score = 0.0
@@ -632,8 +666,23 @@ class InnerLoop:
         assert self.workflow is not None
 
         if self.execution_strategy in ('ceo-skill', 'ceo-tool'):
+            import statistics
+
+            from factory.models import AggregateMethod, InnerLoopConfig
+
             # CEO subprocess path — same as non-DataNode workflows
             engine = 'tool' if self.execution_strategy == 'ceo-tool' else 'skill'
+
+            # Holdout firewall: warn if holdout_ids are configured (CEO subprocess
+            # doesn't support instance filtering)
+            _defn = getattr(self.task, '_definition', None) if self.task is not None else None
+            _holdout = (
+                getattr(getattr(_defn, 'instances_config', None), 'holdout_ids', None)
+                if _defn else None
+            )
+            if _holdout and self.task is not None:
+                log.warning('ceo_strategy_no_holdout_firewall', holdout_ids=_holdout)
+
             # Build a prompt that tells the CEO about the DataNode workflow
             prompt_text = (
                 'Execute this workflow which contains a DataNode for data iteration. '
@@ -656,6 +705,29 @@ class InnerLoop:
                         score = float(summary['score'])
                 except (json.JSONDecodeError, OSError):
                     pass
+
+            # Use real scores from instance_results when available
+            if instance_results:
+                item_scores = [
+                    r.get('score', 0.0) for r in instance_results
+                    if isinstance(r, dict)
+                ]
+                if item_scores:
+                    aggregate_method = (
+                        self._inner_loop_config.aggregate
+                        if self._inner_loop_config
+                        else InnerLoopConfig().aggregate
+                    )
+                    if aggregate_method == AggregateMethod.mean:
+                        score = statistics.mean(item_scores)
+                    elif aggregate_method == AggregateMethod.median:
+                        score = statistics.median(item_scores)
+                    elif aggregate_method == AggregateMethod.max:
+                        score = max(item_scores)
+                    elif aggregate_method == AggregateMethod.all_pass:
+                        score = 1.0 if all(s >= 1.0 for s in item_scores) else 0.0
+                    else:
+                        score = statistics.mean(item_scores)
 
             record = CycleRecord(
                 cycle_number=self._step_count + 1,
@@ -691,6 +763,23 @@ class InnerLoop:
         # Get allowed instance IDs from subset selector (train/val firewall)
         subset_selector = getattr(self, '_subset_selector', None)
         allowed_instance_ids: set[str] | None = None
+
+        # Default to train split when holdout_ids are configured and no
+        # subset_selector is set, to prevent holdout leakage into training.
+        _defn = getattr(self.task, '_definition', None) if self.task is not None else None
+        _holdout_ids = (
+            getattr(getattr(_defn, 'instances_config', None), 'holdout_ids', None)
+            if _defn is not None
+            else None
+        )
+        if subset_selector is None and _holdout_ids and self.task is not None:
+            try:
+                train_ids = [inst.id for inst in self.task.instances(split='train')]
+            except TypeError:
+                log.warning('task_instances_no_split', task=type(self.task).__name__)
+                train_ids = [inst.id for inst in self.task.instances()]
+            allowed_instance_ids = set(train_ids)
+
         if subset_selector is not None and self.task is not None:
             all_ids = [inst.id for inst in self.task.instances()]
             selected = subset_selector.select(all_ids)
@@ -704,6 +793,7 @@ class InnerLoop:
                 self.workflow,
                 self.project_dir,
                 allowed_instance_ids=allowed_instance_ids,
+                task=self.task,  # Pass task for verify() on non-task_ref DataNodes
             )
             exec_result_wf = asyncio.run(executor.execute())
         except ValueError as exc:
@@ -725,39 +815,57 @@ class InnerLoop:
             )
             record.frozen_nodes = sorted(self.frozen_nodes)
             record.mutable_node_ids = sorted(self.mutable_nodes())
+            record.eval_details = {'halt_reason': str(exc)}
             self._step_count += 1
             self._history.append(record)
             return record
 
         duration_s = time.monotonic() - t0
-        score = 1.0 if exec_result_wf.success else 0.0
+        import statistics
+
+        from factory.models import AggregateMethod, InnerLoopConfig
+
+        raw_items = exec_result_wf.item_results
         instance_results = None
+        scores: list[float] = []
 
-        # Direct lookup: find DataNode ID and read its output
-        data_node_id: str | None = None
-        for nid, n in self.workflow.nodes.items():
-            if isinstance(n, DataNode):
-                data_node_id = nid
-                break
+        if raw_items:
+            instance_results = []
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    continue
+                item_score = float(item.get("score", 0.0))
+                scores.append(item_score)
+                entry = {
+                    "instance_id": item.get("item_id", ""),
+                    "score": item_score,
+                    "passed": item.get("passed", False),
+                    "details": item.get("verify_details", {}),
+                }
+                if item.get("error"):
+                    entry["error"] = item["error"]
+                instance_results.append(entry)
 
-        if data_node_id is not None and data_node_id in exec_result_wf.node_outputs:
-            try:
-                parsed = json.loads(exec_result_wf.node_outputs[data_node_id])
-                if isinstance(parsed, list) and parsed:
-                    scores = [r["score"] for r in parsed if "score" in r]
-                    if scores:
-                        score = sum(scores) / len(scores)
-                    instance_results = [
-                        {
-                            "instance_id": item.get("item_id", ""),
-                            "score": item.get("score", 0.0),
-                            "passed": item.get("passed", False),
-                        }
-                        for item in parsed
-                        if isinstance(item, dict)
-                    ]
-            except (json.JSONDecodeError, TypeError, KeyError):
-                pass
+        # Aggregate using the same configurable method as _step_with_task
+        aggregate_method = (
+            self._inner_loop_config.aggregate
+            if self._inner_loop_config
+            else InnerLoopConfig().aggregate
+        )
+
+        if not scores:
+            # No item results (executor crashed before reaching DataNode)
+            score = 0.0
+        elif aggregate_method == AggregateMethod.mean:
+            score = statistics.mean(scores)
+        elif aggregate_method == AggregateMethod.median:
+            score = statistics.median(scores)
+        elif aggregate_method == AggregateMethod.max:
+            score = max(scores)
+        elif aggregate_method == AggregateMethod.all_pass:
+            score = 1.0 if all(s >= 1.0 for s in scores) else 0.0
+        else:
+            score = statistics.mean(scores)
 
         record = CycleRecord(
             cycle_number=self._step_count + 1,
@@ -772,6 +880,10 @@ class InnerLoop:
         )
         record.frozen_nodes = sorted(self.frozen_nodes)
         record.mutable_node_ids = sorted(self.mutable_nodes())
+
+        # Propagate halt_reason from executor to CycleRecord
+        if exec_result_wf.halt_reason:
+            record.eval_details = {'halt_reason': exec_result_wf.halt_reason}
 
         self._write_cycle_summary(
             returncode=0 if exec_result_wf.success else 1,
@@ -1011,7 +1123,7 @@ class InnerLoop:
         summary: dict[str, Any] = {
             "mode": self.mode,
             "score": round(score, 4),
-            "scoring_method": "pytest_pass_rate" if test_score is not None else "heuristic",
+            "scoring_method": ("task_verify" if self._workflow_has_data_node() else "pytest_pass_rate") if test_score is not None else "heuristic",
             "heuristic_score": round(heuristic_score, 2),
             "cost_usd": round(total_cost, 2),
             "agents_spawned": agents_spawned,

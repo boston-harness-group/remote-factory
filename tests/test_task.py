@@ -831,11 +831,12 @@ class TestBuildVerifyDetails:
         details = _build_verify_details("exit_code", result, False)
         assert details["returncode"] == 42
 
-    def test_passed_true_omits_stdout_stderr(self):
+    def test_passed_true_includes_stdout_stderr(self):
+        """stdout/stderr are always included for debugging, regardless of pass/fail."""
         result = _RunResult(returncode=0, stdout="output", stderr="err")
         details = _build_verify_details("exit_code", result, True)
-        assert "stdout" not in details
-        assert "stderr" not in details
+        assert details["stdout"] == "output"
+        assert details["stderr"] == "err"
 
     def test_passed_false_includes_stdout_stderr(self):
         result = _RunResult(returncode=1, stdout="fail output", stderr="fail err")

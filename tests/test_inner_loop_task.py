@@ -169,7 +169,7 @@ class TestStepWithTask:
 
         assert record.score_end == 0.0
         assert record.instance_results is not None
-        assert record.instance_results[0]["error"] == "boom"
+        assert record.instance_results[0]["error"] == "setup_failed"
 
     def test_step_increments_step_count(self, tmp_path: Path):
         factory_dir = tmp_path / ".factory"

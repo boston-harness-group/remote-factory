@@ -29,6 +29,7 @@ from factory.outer_loop.models import (
 from factory.outer_loop.mutations import WeightedRandomStrategy
 from factory.outer_loop.population import Population
 from factory.outer_loop.similarity import NoveltyFilter
+from factory.task import TaskInstance, VerifyResult
 from factory.workflow.primitives import (
     AgentNode,
     AgentRole,
@@ -38,6 +39,25 @@ from factory.workflow.primitives import (
     VerdictType,
     Workflow,
 )
+
+
+class _StubTask:
+    """Minimal task stub that yields instances matching test training/holdout IDs."""
+
+    def __init__(self, instance_ids: list[str]) -> None:
+        self._ids = instance_ids
+
+    def instances(self, split: str = "all") -> list[TaskInstance]:
+        return [TaskInstance(id=i) for i in self._ids]
+
+    def setup(self, instance: object, workspace: object) -> None:
+        pass
+
+    def prompt(self, instance: object) -> str:
+        return "stub"
+
+    def verify(self, instance: object, workspace: object) -> VerifyResult:
+        return VerifyResult(passed=True, score=1.0)
 
 
 def _seed_workflow() -> Workflow:
@@ -142,6 +162,7 @@ class TestE2EEvolution:
             training_instances=["t1", "t2", "t3"],
             holdout_instances=["h1"],
         )
+        config.set_task(_StubTask(["t1", "t2", "t3", "h1"]))
 
         seed_score = evaluator.evaluate(seed_wf, "", ["t1", "t2", "t3"]).score
 
@@ -171,6 +192,7 @@ class TestE2EEvolution:
             training_instances=["t1", "t2"],
             holdout_instances=["h1"],
         )
+        config.set_task(_StubTask(["t1", "t2", "h1"]))
         engine = SwarmEngine(config, evaluator)
         result = engine.run(seed_wf)
 
@@ -187,6 +209,7 @@ class TestE2EEvolution:
             training_instances=["t1", "t2"],
             holdout_instances=["h1"],
         )
+        config.set_task(_StubTask(["t1", "t2", "h1"]))
         engine = SwarmEngine(config, evaluator)
         result = engine.run(seed_wf)
 
@@ -204,6 +227,7 @@ class TestE2EEvolution:
             training_instances=["t1", "t2"],
             holdout_instances=["h1"],
         )
+        config.set_task(_StubTask(["t1", "t2", "h1"]))
         engine = SwarmEngine(config, evaluator)
         result = engine.run(seed_wf)
 
@@ -223,6 +247,7 @@ class TestE2EEvolution:
             training_instances=["t1", "t2"],
             holdout_instances=["h1"],
         )
+        config.set_task(_StubTask(["t1", "t2", "h1"]))
         engine = SwarmEngine(config, evaluator)
         result = engine.run(seed_wf)
 
@@ -242,6 +267,7 @@ class TestE2EEvolution:
             training_instances=["t1", "t2"],
             holdout_instances=["h1"],
         )
+        config.set_task(_StubTask(["t1", "t2", "h1"]))
         engine = SwarmEngine(config, evaluator)
         result = engine.run(seed_wf)
 
@@ -260,6 +286,7 @@ class TestE2EOverfitDetection:
             training_instances=["t1", "t2"],
             holdout_instances=["h1"],
         )
+        config.set_task(_StubTask(["t1", "t2", "h1"]))
         engine = SwarmEngine(config, evaluator)
         result = engine.run(seed_wf)
 
@@ -394,6 +421,7 @@ class TestE2EFullPipeline:
             training_instances=["t1", "t2"],
             holdout_instances=["h1"],
         )
+        config.set_task(_StubTask(["t1", "t2", "h1"]))
         evaluator = _make_feature_evaluator()
 
         init_filesystem(tmp_path, config)

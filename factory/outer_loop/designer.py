@@ -90,6 +90,7 @@ class DesignerAgent:
         # Detect if we're creating a subgraph for a DataNode
         is_data_subgraph = _detect_frozen_data_node(seed_workflow, frozen_node_ids) is not None
 
+        _propagate_prompts_from_seed(nodes, seed_workflow)
         _inject_frozen_nodes(nodes, edges, seed_workflow, frozen_node_ids)
 
         if execution_strategy == "executor":
@@ -108,6 +109,7 @@ class DesignerAgent:
             edges=edges,
             start_node=start_node,
         )
+        wf = _validate_and_fix(wf, seed_workflow)
         log.info("designed_minimal", nodes=len(wf.nodes), benchmark=benchmark_spec[:40])
         return wf
 
@@ -260,6 +262,7 @@ class DesignerAgent:
 
             start_node = "study"
 
+        _propagate_prompts_from_seed(nodes, seed_workflow)
         _inject_frozen_nodes(nodes, edges, seed_workflow, frozen_node_ids)
 
         if execution_strategy == "executor":
@@ -277,6 +280,7 @@ class DesignerAgent:
             edges=edges,
             start_node=start_node,
         )
+        wf = _validate_and_fix(wf, seed_workflow)
         log.info("designed_thorough", nodes=len(wf.nodes), benchmark=benchmark_spec[:40])
         return wf
 
@@ -350,6 +354,7 @@ class DesignerAgent:
             )
             edges.append(Edge(source=prev_id, target=gate_id))
 
+        _propagate_prompts_from_seed(nodes, seed_workflow)
         _inject_frozen_nodes(nodes, edges, seed_workflow, frozen_node_ids)
 
         if execution_strategy == "executor":
@@ -368,6 +373,7 @@ class DesignerAgent:
             edges=edges,
             start_node=start,
         )
+        wf = _validate_and_fix(wf, seed_workflow)
         log.info("designed_custom", nodes=len(wf.nodes), benchmark=benchmark_spec[:40])
         return wf
 
@@ -670,6 +676,31 @@ def _rewire_data_nodes(
         )
         nodes[data_id] = updated
 
+        # Part D: If the terminal node is a GateNode that now serves as
+        # subgraph_exit, it needs a PROCEED edge to advance past the
+        # subgraph boundary.  The original template had it as a terminal
+        # node (zero outgoing edges — valid for SKILL.md), but inside a
+        # DataNode subgraph the executor expects a PROCEED edge.
+        exit_node = nodes.get(terminal_node)
+        if exit_node is not None and type(exit_node).__name__ == "GateNode":
+            has_proceed = any(
+                e.source == terminal_node and e.condition == VerdictType.PROCEED
+                for e in edges
+            )
+            if not has_proceed:
+                # Find the next node after the DataNode in the edge list
+                after_data_targets = [
+                    e.target for e in edges
+                    if e.source == data_id and e.target != terminal_node
+                ]
+                proceed_target = after_data_targets[0] if after_data_targets else data_id
+                edges.append(
+                    Edge(
+                        source=terminal_node,
+                        target=proceed_target,
+                        condition=VerdictType.PROCEED,
+                    )
+                )
         new_start = data_id
 
     return new_start
@@ -706,6 +737,116 @@ def extract_telemetry(eval_result: EvalResult) -> dict[str, object]:
         "complexity": eval_result.complexity,
         "score": eval_result.score,
     }
+
+
+def _propagate_prompts_from_seed(
+    nodes: dict[str, NodeType],
+    seed_workflow: Workflow | None,
+) -> None:
+    """Copy prompt_template from seed AgentNodes to template AgentNodes by role.
+
+    Builds a {AgentRole → prompt_template} lookup from the seed workflow and
+    fills in any template AgentNode whose prompt_template is empty.  Uses
+    model_copy(update={...}) because AgentNode is strict=True, extra=forbid.
+
+    No-op when seed_workflow is None.
+    """
+    if seed_workflow is None:
+        return
+
+    # Build role → prompt lookup from seed
+    role_prompts: dict[AgentRole, str] = {}
+    for node in seed_workflow.nodes.values():
+        if type(node).__name__ == "AgentNode" and isinstance(node, AgentNode):
+            if node.prompt_template:
+                role_prompts[node.role] = node.prompt_template
+
+    if not role_prompts:
+        return
+
+    # Fill empty prompts in template nodes
+    for nid, node in list(nodes.items()):
+        if type(node).__name__ == "AgentNode" and isinstance(node, AgentNode):
+            if not node.prompt_template and node.role in role_prompts:
+                nodes[nid] = node.model_copy(
+                    update={"prompt_template": role_prompts[node.role]}
+                )
+
+
+def _validate_and_fix(
+    wf: Workflow,
+    seed_workflow: Workflow | None,
+) -> Workflow:
+    """Safety-net: validate and attempt to fix remaining issues on a constructed Workflow.
+
+    Fixes applied:
+    - Empty prompt_template on AgentNodes → generic default
+    - Non-terminal GateNodes missing a PROCEED edge → adds one
+
+    Re-validates after fixes and logs warnings for any unfixable issues.
+    """
+    issues = wf.validate_graph()
+    if not issues:
+        return wf
+
+    # Attempt fixes
+    updated_nodes = dict(wf.nodes)
+    updated_edges = list(wf.edges)
+
+    # Fix 1: fill empty prompt_templates with a generic default
+    for nid, node in updated_nodes.items():
+        if type(node).__name__ == "AgentNode" and isinstance(node, AgentNode):
+            if not node.prompt_template:
+                default_prompt = (
+                    f"You are the {node.role.value} agent. "
+                    f"Analyze the project at {{project_path}} and complete your assigned task."
+                )
+                updated_nodes[nid] = node.model_copy(
+                    update={"prompt_template": default_prompt}
+                )
+
+    # Fix 2: add PROCEED edges to non-terminal GateNodes missing them
+    gate_ids = {
+        nid for nid, node in updated_nodes.items()
+        if type(node).__name__ == "GateNode"
+    }
+    for gate_id in gate_ids:
+        outgoing = [e for e in updated_edges if e.source == gate_id]
+        if not outgoing:
+            # Terminal gate — skip
+            continue
+        has_proceed = any(
+            e.condition in (VerdictType.PROCEED, VerdictType.RELOOP) or e.condition is None
+            for e in outgoing
+        )
+        if not has_proceed:
+            # Find a reasonable target — use the first unconditional edge target
+            # from any edge after the gate, or fall back to the gate itself
+            targets_from_gate = {e.target for e in outgoing}
+            # Use the first RELOOP target as a fallback PROCEED target
+            fallback_target = sorted(targets_from_gate)[0]
+            updated_edges.append(
+                Edge(source=gate_id, target=fallback_target, condition=VerdictType.PROCEED)
+            )
+
+    # Rebuild workflow with fixes
+    wf = Workflow(
+        name=wf.name,
+        nodes=updated_nodes,  # type: ignore[arg-type]
+        edges=updated_edges,
+        start_node=wf.start_node,
+    )
+
+    # Re-validate and warn about unfixable issues
+    remaining = wf.validate_graph()
+    if remaining:
+        log.warning(
+            "validate_and_fix_unfixable",
+            workflow=wf.name,
+            remaining_issues=remaining,
+        )
+
+    return wf
 
 
 def _slug(text: str) -> str:

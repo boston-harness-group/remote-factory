@@ -80,6 +80,7 @@ class ExecutionResult:
         self.completed_files: set[str] = set()
         self.node_outputs: dict[str, str] = {}
         self.duration_ms: float = 0.0
+        self.item_results: list[dict[str, Any]] = []
 
 
 class WorkflowExecutor:
@@ -99,6 +100,7 @@ class WorkflowExecutor:
         allowed_instance_ids: set[str] | None = None,
         validate: bool = True,
         auto_write_outputs: bool = True,
+        task: Any = None,  # factory.task.Task — use Any to avoid circular import
     ) -> None:
         if validate:
             from factory.workflow.validation import validate_workflow
@@ -116,6 +118,7 @@ class WorkflowExecutor:
         self.dry_run = dry_run
         self.auto_approve = auto_approve
         self._allowed_instance_ids = allowed_instance_ids
+        self._task = task
         if agent_fn is not None:
             self._agent_fn = agent_fn
         else:
@@ -771,6 +774,14 @@ class WorkflowExecutor:
         if node.inline_items:
             task_instances = [(item, None) for item in node.inline_items]
         elif node.task_ref:
+            # Ensure .factory/tasks/ is on sys.path so importlib can find
+            # task modules in eval worktrees (rsync copies the dir but does
+            # not add it to sys.path).
+            import sys
+            tasks_dir = str(self.project_path / '.factory' / 'tasks')
+            if tasks_dir not in sys.path:
+                sys.path.insert(0, tasks_dir)
+
             from factory.task import TaskRef
             task_ref = TaskRef(ref=node.task_ref)
             resolved_task = task_ref.resolve()
@@ -840,8 +851,15 @@ class WorkflowExecutor:
                     for idx, row in enumerate(reader):
                         task_instances.append((DataItem(id=str(idx), metadata=dict(row)), None))
 
-        # Apply authoritative instance filter from SwarmEngine (train/val firewall)
-        if self._allowed_instance_ids is not None:
+        # Fallback: use InnerLoop's task when DataNode has no task_ref
+        if resolved_task is None and self._task is not None:
+            resolved_task = self._task
+
+        # Apply authoritative instance filter from SwarmEngine (train/val firewall).
+        # Only filter when the DataNode uses task_ref — inline_items and
+        # source_path produce synthetic IDs ('0', '1', ...) that don't match
+        # task instance IDs, so filtering would drop everything.
+        if self._allowed_instance_ids is not None and node.task_ref:
             task_instances = [
                 (item, inst) for item, inst in task_instances
                 if item.id in self._allowed_instance_ids
@@ -851,7 +869,8 @@ class WorkflowExecutor:
         if node.split != "all":
             task_instances = [
                 (item, inst) for item, inst in task_instances
-                if item.metadata.get("split") == node.split
+                if (inst.split if inst is not None else item.metadata.get("split"))
+                == node.split
             ]
         if node.shuffle:
             seed = (
@@ -867,10 +886,12 @@ class WorkflowExecutor:
             task_instances = task_instances[:node.limit]
 
         if len(task_instances) == 0:
-            log.warning(
-                "data_source_empty",
-                node_id=node_id,
-                source=str(node.source_path or node.task_ref or "inline"),
+            raise ValueError(
+                f"DataNode '{node_id}' resolved 0 items after filtering "
+                f"(source={node.source_path or node.task_ref or 'inline'}, "
+                f"split={node.split!r}). "
+                f"Check filter configuration — empty item sets produce "
+                f"false-positive scores."
             )
 
         if len(task_instances) > node.max_items:
@@ -946,8 +967,31 @@ class WorkflowExecutor:
                         worktrees_to_clean.append((wt_dir, wt_branch))
                         item_project_path = wt_dir
 
+                    # Create TaskInstance from DataItem when task came from
+                    # InnerLoop (self._task) but items are inline/source_path
+                    if resolved_task is not None and inst is None:
+                        inst = _TaskInstance(
+                            id=item.id,
+                            path=Path(item.path) if item.path else None,
+                            metadata=item.metadata or {},
+                        )
+
                     if resolved_task is not None and inst is not None:
-                        resolved_task.setup(inst, item_project_path)
+                        try:
+                            resolved_task.setup(inst, item_project_path)
+                        except Exception as setup_exc:
+                            log.warning(
+                                "data_item_setup_failed",
+                                item_id=item.id,
+                                error=str(setup_exc),
+                            )
+                            return {
+                                "item_id": item.id,
+                                "success": False,
+                                "score": 0.0,
+                                "passed": False,
+                                "error": "setup_failed",
+                            }
                         item = DataItem(
                             id=inst.id,
                             path=str(inst.path) if inst.path else None,
@@ -1044,6 +1088,9 @@ class WorkflowExecutor:
         tasks = [run_item(pair, idx) for idx, pair in enumerate(task_instances)]
         results = await asyncio.gather(*tasks)
         item_results = list(results)
+
+        # Expose per-item results for the inner loop to aggregate scores
+        self.result.item_results = item_results
 
         # Clean up worktrees
         for wt_path, wt_branch_name in worktrees_to_clean:

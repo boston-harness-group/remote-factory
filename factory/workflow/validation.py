@@ -96,6 +96,10 @@ def _validate_data_dependencies(
                 pred_node = workflow.nodes.get(pred_id)
                 if pred_node:
                     available_writes |= pred_node.writes
+                    # DataNode implicitly writes .factory/current_item.json
+                    # before running its subgraph (executor.py L1012).
+                    if type(pred_node).__name__ == 'DataNode':
+                        available_writes.add('.factory/current_item.json')
             missing = node.reads - available_writes
             if missing:
                 issues.append(
@@ -299,8 +303,6 @@ def validate_workflow(workflow: Workflow) -> list[str]:
     _validate_fork_join_nodes(workflow, issues)
     _validate_datanode_edges(workflow, issues)
     _validate_datanode_exit(workflow, issues)
-
-    # Semantic checks
     _validate_agent_prompts(workflow, issues)
     _validate_gate_edges(workflow, issues)
     _validate_datanode_entry_reads(workflow)  # WARNING only — does not add to issues
