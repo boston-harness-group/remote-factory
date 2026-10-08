@@ -1446,6 +1446,8 @@ class WorkflowExecutor:
         if self.dry_run:
             return Verdict.proceed()
 
+        effective_max = node.max_iterations if node.max_iterations is not None else 3
+
         if node.evaluator_type == "user":
             if self.auto_approve:
                 log.info("gate.auto_approved", gate_id=node.id, workflow=self.workflow.name)
@@ -1468,7 +1470,7 @@ class WorkflowExecutor:
                 target = self._resolve_reloop_target(r, node.id)
                 if target is None:
                     return Verdict.halt(reason=f"gate '{node.id}': reloop requested but no RELOOP edge configured")
-                return Verdict.reloop(target=target, feedback=r)
+                return Verdict.reloop(target=target, feedback=r, max_iterations=effective_max)
             if re.search(r"\bproceed\b", r):
                 return Verdict.proceed()
             # Unrecognized input — fail closed, matching fn/agent gate convention.
@@ -1483,7 +1485,7 @@ class WorkflowExecutor:
                 )
                 try:
                     output = await self._run_shell(cmd)
-                    return self._parse_fn_verdict(output, node.id)
+                    return self._parse_fn_verdict(output, node.id, max_iterations=effective_max)
                 except RuntimeError:
                     return Verdict.halt(reason=f"gate command failed: {cmd}")
             return Verdict.halt(reason=f"gate '{node.id}' has no evaluator_command configured")
@@ -1506,7 +1508,7 @@ class WorkflowExecutor:
         if code != 0:
             return Verdict.halt(reason=f"CEO gate agent exited with code {code}")
 
-        return self._parse_agent_verdict(stdout, node.id)
+        return self._parse_agent_verdict(stdout, node.id, max_iterations=effective_max)
 
     def _resolve_reloop_target(self, response: str, node_id: str) -> str | None:
         """Extract the reloop target node ID from a user response.
@@ -1550,7 +1552,7 @@ class WorkflowExecutor:
             reloop_targets=", ".join(reloop_targets) if reloop_targets else "(use exact node IDs)",
         )
 
-    def _parse_agent_verdict(self, output: str, gate_id: str) -> Verdict:
+    def _parse_agent_verdict(self, output: str, gate_id: str, max_iterations: int = 3) -> Verdict:
         """Parse agent output into a Verdict by examining the last non-empty line."""
 
         lines = output.strip().splitlines()
@@ -1584,7 +1586,7 @@ class WorkflowExecutor:
             if not target:
                 return Verdict.halt(reason=f"RELOOP verdict from gate '{gate_id}' missing target and no RELOOP edge defined")
             feedback = feedback_match.group(1) if feedback_match else "needs improvement"
-            return Verdict.reloop(target=target, feedback=feedback)
+            return Verdict.reloop(target=target, feedback=feedback, max_iterations=max_iterations)
 
         if text.startswith("PROCEED") or re.match(r"^PROCEED\b", text):
             return Verdict.proceed()
@@ -1620,7 +1622,7 @@ class WorkflowExecutor:
                 if not target:
                     return Verdict.halt(reason=f"RELOOP verdict from gate '{gate_id}' missing target and no RELOOP edge defined")
                 feedback = feedback_match.group(1) if feedback_match else "needs improvement"
-                return Verdict.reloop(target=target, feedback=feedback)
+                return Verdict.reloop(target=target, feedback=feedback, max_iterations=max_iterations)
 
             if ft.startswith("PROCEED") or re.match(r"^PROCEED\b", ft):
                 return Verdict.proceed()
@@ -1633,7 +1635,7 @@ class WorkflowExecutor:
             )
         )
 
-    def _parse_fn_verdict(self, output: str, gate_id: str) -> Verdict:
+    def _parse_fn_verdict(self, output: str, gate_id: str, max_iterations: int = 3) -> Verdict:
         """Parse function output into a Verdict."""
         text = output.strip()
 
@@ -1659,7 +1661,7 @@ class WorkflowExecutor:
             after_prefix = raw_line.split(":", 1)[1].strip() if ":" in raw_line else ""
             feedback = after_prefix if after_prefix else "fn gate requested reloop"
             if target:
-                return Verdict.reloop(target=target, feedback=feedback)
+                return Verdict.reloop(target=target, feedback=feedback, max_iterations=max_iterations)
             return Verdict.halt(reason="fn gate returned RELOOP but no RELOOP edge defined")
         return Verdict.halt(
             reason=(
