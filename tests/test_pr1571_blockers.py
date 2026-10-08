@@ -16,6 +16,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 from factory.task import (
     InstancesConfig,
@@ -30,8 +32,25 @@ from factory.workflow.primitives import (
     Edge,
     FnNode,
     GateNode,
+    JoinNode,
     VerdictType,
     Workflow)
+
+import subprocess as _sp
+
+
+def _init_git(path: Path) -> None:
+    """Initialize a minimal git repo for DataNode worktree tests."""
+    _sp.run(["git", "init", str(path)], capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "config", "user.email", "t@t"],
+            capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "config", "user.name", "t"],
+            capture_output=True, check=True)
+    (path / "README.md").write_text("test\n")
+    _sp.run(["git", "-C", str(path), "add", "."],
+            capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "commit", "-m", "init"],
+            capture_output=True, check=True)
 
 
 # ── Bug 1: holdout leakage in _step_with_data_node_inline ──────────────────────────
@@ -74,8 +93,12 @@ class TestDataNodeHoldoutLeakage:
                     id="data",
                     task_ref="fake:Task"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
 
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
@@ -296,8 +319,12 @@ class TestAggregateMethodRespected:
                     id="data",
                     task_ref="fake:Task"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
 
         task = MagicMock()
@@ -363,8 +390,12 @@ class TestCeoPathUsesInstanceResultsScores:
                     id="data",
                     task_ref="fake:Task"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
 
         task = MagicMock()
@@ -392,20 +423,9 @@ class TestCeoPathUsesInstanceResultsScores:
         }
         (summary_dir / "cycle_summary.json").write_text(json.dumps(summary))
 
-        # Mock _run_ceo_subprocess to return success
-        from factory.inner_loop import _SubprocessExecutionResult
-
-        mock_result = _SubprocessExecutionResult(
-            success=True, halted=False, halt_reason="",
-            nodes_executed=1, duration_ms=100)
-
-        with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result):
-            record = loop._step_with_data_node_inline()
-
-        # Score should be mean of real scores (0.75, 0.85) = 0.8, not binary 1.0
-        assert abs(record.score_end - 0.8) < 0.01, (
-            f"Expected mean of instance scores ~0.8, got {record.score_end}"
-        )
+        # ceo-skill DataNode is rejected (deferred to PR B)
+        with pytest.raises(ValueError, match="not supported"):
+            loop._step_with_data_node_inline()
 
 
 # ── Bug 6: halt_reason in CycleRecord ────────────────────────────────────
@@ -426,8 +446,12 @@ class TestHaltReasonInCycleRecord:
                     id="data",
                     task_ref="fake:Task"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
 
         task = MagicMock()
@@ -476,8 +500,12 @@ class TestHaltReasonInCycleRecord:
                     id="data",
                     task_ref="fake:Task"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
 
         task = MagicMock()
@@ -525,10 +553,15 @@ class TestInlineItemsSkipAllowedFilter:
                     id="builder",
                     role=AgentRole.BUILDER,
                     prompt_template="build"),
+                "_join_data": JoinNode(id="_join_data", sources=["builder"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="builder"),
+                Edge(source="builder", target="_join_data"),
+            ],
             start_node="data")
 
+        _init_git(tmp_path)
         agent = FakeAgent(wf)
         executor = WorkflowExecutor(
             wf,
@@ -574,8 +607,12 @@ class TestAggregateConfigReachesInnerLoop:
                     id="data",
                     task_ref="fake:Task"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
 
         # Create a mock task for config.set_task()

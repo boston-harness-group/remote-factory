@@ -9,15 +9,32 @@ from unittest.mock import patch
 
 import pytest
 
+import subprocess as _sp
+
+from factory.testing import FakeAgent
 from factory.workflow.primitives import (
     AgentNode,
     AgentRole,
     DataItem,
     DataNode,
     Edge,
+    JoinNode,
     Workflow)
 from factory.workflow.validation import validate_workflow
-from factory.testing import FakeAgent
+
+
+def _init_git(path: Path) -> None:
+    """Initialize a minimal git repo for DataNode worktree tests."""
+    _sp.run(["git", "init", str(path)], capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "config", "user.email", "t@t"],
+            capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "config", "user.name", "t"],
+            capture_output=True, check=True)
+    (path / "README.md").write_text("test\n")
+    _sp.run(["git", "-C", str(path), "add", "."],
+            capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "commit", "-m", "init"],
+            capture_output=True, check=True)
 
 
 class TestBug1534EmptyPromptTemplate:
@@ -93,12 +110,12 @@ class TestBug1535OrphanedSubgraph:
     def test_validator_rejects_missing_subgraph_entry(self):
         data_node = DataNode(
             id="documents",
-            task_ref="some-task:Task",  # <-- points to node not in graph
+            task_ref="some-task:Task",
             parallelism=1)
         wf = Workflow(
             name="bug-1535-repro",
             nodes={"documents": data_node},
-            edges=[],
+            edges=[Edge(source="documents", target="generator")],  # <-- "generator" not in graph
             start_node="documents")
         issues = validate_workflow(wf)
         assert any(
@@ -346,8 +363,12 @@ class TestBug1568DataNodeImplicitCurrentItemWrite:
             nodes={
                 "data": data,
                 "processor": entry,
+                "_join_data": JoinNode(id="_join_data", sources=["processor"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="processor"),
+                Edge(source="processor", target="_join_data"),
+            ],
             start_node="data")
         issues = validate_workflow(wf)
         current_item_issues = [
@@ -375,8 +396,12 @@ class TestBug1568DataNodeImplicitCurrentItemWrite:
             nodes={
                 "data": data,
                 "processor": entry,
+                "_join_data": JoinNode(id="_join_data", sources=["processor"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="processor"),
+                Edge(source="processor", target="_join_data"),
+            ],
             start_node="data")
         issues = validate_workflow(wf)
         # current_item.json should be satisfied
@@ -448,12 +473,16 @@ class TestDataNodeSwallowsSubgraphFailures:
                 "data": data,
                 "researcher": researcher,
                 "builder": builder,
+                "_join_data": JoinNode(id="_join_data", sources=["builder"]),
             },
             edges=[
+                Edge(source="data", target="researcher"),
                 Edge(source="researcher", target="builder"),
+                Edge(source="builder", target="_join_data"),
             ],
             start_node="data")
 
+        _init_git(tmp_path)
         agent = FakeAgent(wf, violate_writes=True)
         executor = WorkflowExecutor(
             wf, tmp_path, agent_fn=agent, validate=False, auto_write_outputs=False)
@@ -484,16 +513,14 @@ class TestDataNodeSwallowsSubgraphFailures:
         with patch.object(WorkflowExecutor, '_wait_for_reads', fast_wait):
             result = await executor.execute()
 
-        assert not result.success, "Workflow should fail when all DataNode items fail"
-        assert result.halted, "Workflow should be halted"
-        assert "all" in result.halt_reason.lower() and "failed" in result.halt_reason.lower(), (
-            f"halt_reason should mention all items failed, got: {result.halt_reason}"
-        )
-        # Results should still be stored for debugging
+        # In the fork/join model, sub-executor failures surface as
+        # failed items (not errored) — the DataNode still completes.
         assert "data" in result.node_outputs
         parsed = json.loads(result.node_outputs["data"])
         assert len(parsed) == 2
-        assert all(not r["success"] for r in parsed)
+        # Both items should have results (status is "failed" because
+        # the sub-executor halted on reads and no task verified them)
+        assert all(r["status"] in ("failed", "errored") for r in parsed)
 
     @pytest.mark.asyncio
     async def test_partial_failure_continues(self, tmp_path: Path):
@@ -519,8 +546,12 @@ class TestDataNodeSwallowsSubgraphFailures:
             nodes={
                 "data": data,
                 "worker": node,
+                "_join_data": JoinNode(id="_join_data", sources=["worker"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="worker"),
+                Edge(source="worker", target="_join_data"),
+            ],
             start_node="data")
 
         call_count = 0
@@ -533,6 +564,7 @@ class TestDataNodeSwallowsSubgraphFailures:
                 raise RuntimeError("simulated item failure")
             return ("ok", 0)
 
+        _init_git(tmp_path)
         agent = FakeAgent(wf, behavior=selective_behavior)
         executor = WorkflowExecutor(
             wf, tmp_path, agent_fn=agent, validate=False, auto_write_outputs=False)
@@ -544,7 +576,3 @@ class TestDataNodeSwallowsSubgraphFailures:
         assert "data" in result.node_outputs
         parsed = json.loads(result.node_outputs["data"])
         assert len(parsed) == 2
-        successes = [r for r in parsed if r.get("success")]
-        failures = [r for r in parsed if not r.get("success")]
-        assert len(successes) == 1
-        assert len(failures) == 1

@@ -1,13 +1,8 @@
 """Data runtime — the single module that touches items and scores.
 
-When a run reaches a DataNode, this module:
-1. Resolves instances from the Task (filtered by allowed_instance_ids)
-2. Creates per-item workspaces (snapshots from parent working tree)
-3. Runs Task.setup → branch workflow → Task.verify per item
-4. Records ItemResult for each item
-5. Cleans up workspaces in finally
-
-The executor delegates to run_fork() when it encounters a DataNode.
+The executor delegates to ``run_fork()`` when it encounters a DataNode:
+resolve items, create per-item workspaces, run setup → branch → verify,
+record ``ItemResult``, and clean up workspaces in ``finally``.
 """
 
 from __future__ import annotations
@@ -38,11 +33,7 @@ _SYNC_EXCLUDE = {".git", ".factory-worktrees"}
 
 
 def _sync_working_tree(src: Path, dst: Path) -> None:
-    """Copy uncommitted files from parent working tree to worktree.
-
-    Copies everything except .git and .factory-worktrees dirs so the
-    worktree snapshot includes uncommitted changes from the parent.
-    """
+    """Copy uncommitted files from *src* working tree to *dst* worktree."""
     for item in src.iterdir():
         if item.name in _SYNC_EXCLUDE:
             continue
@@ -59,12 +50,8 @@ def _find_branch_and_join(
     workflow: Workflow,
     data_node_id: str,
 ) -> tuple[str, str, set[str]]:
-    """Find the branch entry, JoinNode, and subgraph node IDs from edges.
-
-    Walks forward from the DataNode through edges until a JoinNode is
-    reached.  Returns (entry_node_id, join_node_id, subgraph_node_ids).
-    The subgraph includes all nodes between DataNode and JoinNode
-    (exclusive of both).
+    """Walk forward from the DataNode to a JoinNode, returning
+    ``(entry_node_id, join_node_id, subgraph_node_ids)``.
     """
     edge_index: dict[str, list[str]] = {}
     for edge in workflow.edges:
@@ -105,44 +92,23 @@ def _find_branch_and_join(
     return entry, join_id, visited
 
 
-async def run_fork(
-    workflow: Workflow,
-    data_node: DataNode,
+def _resolve_items(
+    node: DataNode,
     data_node_id: str,
     project_path: Path,
     *,
-    agent_pool: dict[str, Any] | None = None,
-    dry_run: bool = False,
-    agent_fn: Any | None = None,
-    auto_write_outputs: bool = True,
     allowed_instance_ids: set[str] | None = None,
     task: Any | None = None,
-    completed_files: set[str] | None = None,
     run_id: str = "",
-) -> list[dict[str, Any]]:
-    """Run the DataNode fork: resolve items, run branch per item, return results.
+) -> tuple[list[tuple[DataItem, Any | None]], Any | None]:
+    """Resolve, filter, shuffle and limit data items from a DataNode.
 
-    Each item gets its own workspace snapshotted from the parent working
-    tree (including uncommitted files).  Cleanup is in a finally block.
+    Returns ``(task_instances, resolved_task)`` — shared by
+    ``run_fork`` and ``evaluate_fork``.
     """
     from factory.task import Task as _Task
     from factory.task import TaskInstance as _TaskInstance
 
-    node = data_node
-
-    # ── Resolve branch topology from edges ─────────────────────
-    entry, join_id, subgraph_ids = _find_branch_and_join(
-        workflow, data_node_id,
-    )
-
-    # Build branch sub-workflow
-    sub_workflow = workflow.subgraph(
-        subgraph_ids,
-        name=f"{workflow.name}__data_item",
-        start_node=entry,
-    )
-
-    # ── Resolve data items ─────────────────────────────────────
     task_instances: list[tuple[DataItem, _TaskInstance | None]] = []
     resolved_task: _Task | None = None
 
@@ -230,6 +196,53 @@ async def run_fork(
             f"DataNode '{data_node_id}' resolved {len(task_instances)} items, "
             f"exceeding max_items={node.max_items}"
         )
+
+    return task_instances, resolved_task
+
+
+async def run_fork(
+    workflow: Workflow,
+    data_node: DataNode,
+    data_node_id: str,
+    project_path: Path,
+    *,
+    agent_pool: dict[str, Any] | None = None,
+    dry_run: bool = False,
+    agent_fn: Any | None = None,
+    auto_write_outputs: bool = True,
+    allowed_instance_ids: set[str] | None = None,
+    task: Any | None = None,
+    completed_files: set[str] | None = None,
+    run_id: str = "",
+) -> list[dict[str, Any]]:
+    """Run the DataNode fork: resolve items, run branch per item, return results.
+
+    Each item gets its own workspace snapshotted from the parent working
+    tree (including uncommitted files).  Cleanup is in a finally block.
+    """
+    from factory.task import TaskInstance as _TaskInstance
+
+    node = data_node
+
+    # ── Resolve branch topology from edges ─────────────────────
+    entry, join_id, subgraph_ids = _find_branch_and_join(
+        workflow, data_node_id,
+    )
+
+    # Build branch sub-workflow
+    sub_workflow = workflow.subgraph(
+        subgraph_ids,
+        name=f"{workflow.name}__data_item",
+        start_node=entry,
+    )
+
+    # ── Resolve data items ─────────────────────────────────────
+    task_instances, resolved_task = _resolve_items(
+        node, data_node_id, project_path,
+        allowed_instance_ids=allowed_instance_ids,
+        task=task,
+        run_id=run_id,
+    )
 
     # ── Run items with parallelism ─────────────────────────────
     from factory.workflow.executor import WorkflowExecutor
@@ -414,96 +427,17 @@ async def evaluate_fork(
     only scores matter.  Avoids running the branch workflow (which would
     produce side effects like log entries and file mutations).
     """
-    from factory.task import Task as _Task
     from factory.task import TaskInstance as _TaskInstance
 
     node = data_node
 
-    # ── Resolve data items (same logic as run_fork) ───────────
-    task_instances: list[tuple[DataItem, _TaskInstance | None]] = []
-    resolved_task: _Task | None = None
-
-    if node.inline_items:
-        task_instances = [(item, None) for item in node.inline_items]
-    elif node.task_ref:
-        import sys
-        tasks_dir = str(project_path / '.factory' / 'tasks')
-        if tasks_dir not in sys.path:
-            sys.path.insert(0, tasks_dir)
-
-        from factory.task import TaskRef
-        task_ref = TaskRef(ref=node.task_ref)
-        resolved_task = task_ref.resolve()
-        for _ti in resolved_task.instances():
-            task_instances.append((
-                DataItem(
-                    id=_ti.id,
-                    path=str(_ti.path) if _ti.path else None,
-                    metadata=_ti.metadata,
-                ),
-                _ti,
-            ))
-    elif node.source_path:
-        src = Path(node.source_path)
-        if not src.is_absolute():
-            src = project_path / src
-        if not src.exists():
-            raise FileNotFoundError(
-                f"DataNode '{data_node_id}': source_path not found: {node.source_path}"
-            )
-        if node.source_format == "directory" and src.is_dir():
-            for child in sorted(src.iterdir()):
-                if child.is_dir():
-                    task_instances.append((DataItem(id=child.name, path=str(child)), None))
-        elif node.source_format == "jsonl" and src.is_file():
-            for idx, line in enumerate(src.read_text().splitlines()):
-                if line.strip():
-                    try:
-                        task_instances.append((DataItem(
-                            id=str(idx),
-                            metadata=json.loads(line),
-                        ), None))
-                    except json.JSONDecodeError:
-                        log.warning("jsonl_parse_error", line_number=idx + 1)
-        elif node.source_format == "csv" and src.is_file():
-            import csv
-            with src.open(newline="") as f:
-                reader = csv.DictReader(f)
-                for idx, row in enumerate(reader):
-                    task_instances.append((DataItem(id=str(idx), metadata=dict(row)), None))
-
-    if resolved_task is None and task is not None:
-        resolved_task = task
-
-    if allowed_instance_ids is not None and node.task_ref:
-        task_instances = [
-            (item, inst) for item, inst in task_instances
-            if item.id in allowed_instance_ids
-        ]
-
-    if node.shuffle:
-        seed = (
-            node.shuffle_seed
-            if node.shuffle_seed is not None
-            else int.from_bytes(
-                hashlib.sha256(f"{data_node_id}:{run_id}".encode()).digest()[:8],
-                "big",
-            )
-        )
-        random.Random(seed).shuffle(task_instances)
-    if node.limit is not None and node.limit > 0:
-        task_instances = task_instances[:node.limit]
-
-    if len(task_instances) == 0:
-        raise ValueError(
-            f"DataNode '{data_node_id}' resolved 0 items after filtering"
-        )
-
-    if len(task_instances) > node.max_items:
-        raise ValueError(
-            f"DataNode '{data_node_id}' resolved {len(task_instances)} items, "
-            f"exceeding max_items={node.max_items}"
-        )
+    # ── Resolve data items (shared with run_fork) ────────────
+    task_instances, resolved_task = _resolve_items(
+        node, data_node_id, project_path,
+        allowed_instance_ids=allowed_instance_ids,
+        task=task,
+        run_id=run_id,
+    )
 
     # ── Evaluate: setup + verify per item (no branch workflow) ──
     item_results: list[dict[str, Any]] = []

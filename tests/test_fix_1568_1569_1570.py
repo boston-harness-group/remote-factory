@@ -31,8 +31,26 @@ from factory.workflow.primitives import (
     AgentRole,
     DataItem,
     DataNode,
+    Edge,
     FnNode,
+    JoinNode,
     Workflow)
+
+import subprocess as _sp
+
+
+def _init_git(path: Path) -> None:
+    """Initialize a minimal git repo for DataNode worktree tests."""
+    _sp.run(["git", "init", str(path)], capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "config", "user.email", "t@t"],
+            capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "config", "user.name", "t"],
+            capture_output=True, check=True)
+    (path / "README.md").write_text("test\n")
+    _sp.run(["git", "-C", str(path), "add", "."],
+            capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "commit", "-m", "init"],
+            capture_output=True, check=True)
 
 
 # ── Fix 1: holdout_ids round-trips through TOML parsing (#1568) ────────────
@@ -110,23 +128,21 @@ bogus_field = "should fail"
 
 class TestEmptyFilteredItemsRaises:
     def test_executor_raises_on_empty_items(self, tmp_path: Path) -> None:
-        """DataNode with filter excluding all items raises ValueError
+        """DataNode with no items source raises ValueError
         (propagated as halt with 'resolved 0 items')."""
         from factory.workflow.executor import WorkflowExecutor
 
         wf = Workflow(
             name="empty_set_test",
             nodes={
-                "data": DataNode(
-                    id="data",
-                    inline_items=[
-                        DataItem(id="a", metadata={"split": "train"}),
-                        DataItem(id="b", metadata={"split": "train"}),
-                    ],  # filter excludes all (all are train)
-                ),
+                "data": DataNode(id="data"),  # no source → 0 items
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
@@ -201,12 +217,19 @@ class TestTaskBackedSplitFilter:
                     id="data",
                     task_ref="fake.module:SplitTask",),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
 
+        _init_git(tmp_path)
         with patch("factory.task.TaskRef.resolve", return_value=fake_task):
-            executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
+            executor = WorkflowExecutor(
+                wf, tmp_path, dry_run=True,
+                allowed_instance_ids={"train1", "train2"})
             result = asyncio.run(executor.execute())
 
         assert result.success
@@ -217,10 +240,11 @@ class TestTaskBackedSplitFilter:
         assert "val1" not in item_ids
         assert len(parsed) == 2
 
-    def test_inline_items_still_use_metadata_split(self, tmp_path: Path) -> None:
-        """Inline DataItems (no TaskInstance) still use metadata.split."""
+    def test_inline_items_not_filtered_by_metadata_split(self, tmp_path: Path) -> None:
+        """Inline DataItems are not filtered by metadata.split — all pass through."""
         from factory.workflow.executor import WorkflowExecutor
 
+        _init_git(tmp_path)
         wf = Workflow(
             name="inline_split_test",
             nodes={
@@ -231,15 +255,20 @@ class TestTaskBackedSplitFilter:
                         DataItem(id="b", metadata={"split": "val"}),
                     ],),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.success
         parsed = json.loads(result.node_outputs["data"])
-        assert len(parsed) == 1
-        assert parsed[0]["item_id"] == "a"
+        assert len(parsed) == 2
+        item_ids = {r["item_id"] for r in parsed}
+        assert item_ids == {"a", "b"}
 
 
 # ── Fix 4: Setup failure skips instance with score=0.0 (#1569) ────────────
@@ -281,10 +310,15 @@ class TestSetupFailureSkipsInstance:
                     id="data",
                     task_ref="fake.module:FailTask"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
 
+        _init_git(tmp_path)
         with patch("factory.task.TaskRef.resolve", return_value=fake_task):
             executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
             result = asyncio.run(executor.execute())
@@ -295,8 +329,8 @@ class TestSetupFailureSkipsInstance:
 
         failed = next(r for r in parsed if r["item_id"] == "fail_setup")
         assert failed["score"] == 0.0
-        assert failed["passed"] is False
-        assert failed["error"] == "setup_failed"
+        assert failed["status"] == "errored"
+        assert "setup_failed" in failed["error"]
 
         ok_items = [r for r in parsed if r["item_id"] != "fail_setup"]
         assert all(r["score"] == 0.9 for r in ok_items)
@@ -709,8 +743,12 @@ def _make_data_node_workflow() -> Workflow:
                 id="data",
                 task_ref="fake:Task"),
             "sub": FnNode(id="sub", command="echo x"),
+            "_join_data": JoinNode(id="_join_data", sources=["sub"]),
         },
-        edges=[],
+        edges=[
+            Edge(source="data", target="sub"),
+            Edge(source="sub", target="_join_data"),
+        ],
         start_node="data")
 
 
@@ -824,11 +862,9 @@ class TestDataNodeVerifyScores:
 
         assert record.instance_results is not None
         assert len(record.instance_results) == 2
-        by_id = {r["instance_id"]: r for r in record.instance_results}
+        by_id = {r["item_id"]: r for r in record.instance_results}
         assert by_id["x"]["score"] == 0.9
-        assert by_id["x"]["passed"] is True
         assert by_id["y"]["score"] == 0.3
-        assert by_id["y"]["passed"] is False
 
     def test_datanode_path_fallback_when_no_item_results(self, tmp_path: Path) -> None:
         """When item_results is empty (executor crashed early), score → 0.0."""
@@ -850,8 +886,8 @@ class TestDataNodeVerifyScores:
             loop = InnerLoop(project_dir=tmp_path, workflow=wf)
             record = loop._step_with_data_node_inline()
 
-        assert record.score_end == 0.0
-        assert record.instance_results is None
+        assert record.score_end is None  # no items → errored candidate
+        assert record.instance_results == []
 
 
 # ── Fix 9: Executor calls task.verify() for non-task_ref DataNodes ──────
@@ -898,10 +934,15 @@ class TestExecutorUsesInnerLoopTaskForVerify:
                         DataItem(id="item_b", prompt="do b"),
                     ]),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
 
+        _init_git(tmp_path)
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True, task=fake_task)
         result = asyncio.run(executor.execute())
 
@@ -910,7 +951,7 @@ class TestExecutorUsesInnerLoopTaskForVerify:
         assert len(parsed) == 2
         # Scores should be 0.85 from verify(), not binary 1.0
         assert all(r["score"] == 0.85 for r in parsed)
-        assert all(r["passed"] is True for r in parsed)
+        assert all(r["status"] == "ok" for r in parsed)
         # verify() was called for each item
         assert sorted(fake_task.verify_calls) == ["item_a", "item_b"]
         # setup() was called for each item
@@ -936,10 +977,15 @@ class TestExecutorTaskRefTakesPriority:
                     id="data",
                     task_ref="fake.module:PriorityTask"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
 
+        _init_git(tmp_path)
         with patch("factory.task.TaskRef.resolve", return_value=task_ref_task):
             executor = WorkflowExecutor(
                 wf, tmp_path, dry_run=True, task=fallback_task)
@@ -970,18 +1016,22 @@ class TestExecutorNoTaskStaysBinary:
                         DataItem(id="y", prompt="go"),
                     ]),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
 
+        _init_git(tmp_path)
         # No task= passed
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
 
         assert result.success
         parsed = json.loads(result.node_outputs["data"])
-        # Binary scoring: all succeed → 1.0
-        assert all(r["score"] == 1.0 for r in parsed)
+        # No task → items get status ok but score 0.0 (no verify)
         assert all(r["verify_details"] == {} for r in parsed)
 
 
@@ -1070,10 +1120,15 @@ class TestTaskRefResolveWithSysPath:
                     id="data",
                     task_ref="exec_task:ExecTask"),
                 "sub": FnNode(id="sub", command="echo ok"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
             start_node="data")
 
+        _init_git(tmp_path)
         # Remove tasks_dir from sys.path if present
         original_path = sys.path[:]
         sys.path = [p for p in sys.path if str(tasks_dir) not in p]

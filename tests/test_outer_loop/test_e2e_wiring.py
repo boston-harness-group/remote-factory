@@ -40,6 +40,7 @@ from factory.workflow.primitives import (
     Edge,
     FnNode,
     GateNode,
+    JoinNode,
     VerdictType,
     Workflow)
 
@@ -64,8 +65,12 @@ def _make_datanode_workflow(task_ref: str = "wiring_task_copied:WiringTask") -> 
                 id="data",
                 task_ref=task_ref),
             "process": FnNode(id="process", command="echo ok"),
+            "_join_data": JoinNode(id="_join_data", sources=["process"]),
         },
-        edges=[],
+        edges=[
+            Edge(source="data", target="process"),
+            Edge(source="process", target="_join_data"),
+        ],
         start_node="data")
 
 
@@ -237,9 +242,9 @@ class TestRealPipelineRun:
 
         # Verify that verify_details flow through to instance_results
         details_found = [
-            r.get('details', {})
+            r.get('verify_details') or r.get('details', {})
             for r in shared.instance_results
-            if isinstance(r, dict) and r.get('details')
+            if isinstance(r, dict) and (r.get('verify_details') or r.get('details'))
         ]
         assert len(details_found) > 0, 'No verify_details found in instance_results'
         sample = details_found[0]
@@ -303,22 +308,26 @@ class TestRealPipelineRun:
         )
         for r in i3_results:
             assert r.get("score", -1) == 0.0, f"i3 score should be 0.0, got {r.get('score')}"
-            assert r.get("passed") is False, f"i3 should not pass, got {r.get('passed')}"
-            assert r.get("error") == "setup_failed", (
-                f"i3 should have error='setup_failed', got {r.get('error')!r}"
+            assert r.get("status") == "errored", f"i3 should be errored, got {r.get('status')}"
+            assert "setup_failed" in (r.get("error") or ""), (
+                f"i3 should have error containing 'setup_failed', got {r.get('error')!r}"
             )
 
     def test_halt_reason_in_eval_details(self, tmp_path: Path) -> None:
-        """Test 5: DataNode with 0 items after split-filter → halted."""
-        data = DataNode(
-            id="data",
-            inline_items=[DataItem(id="x1", metadata={"split": "val"})],  # x1 is val → 0 items after filter
-        )
+        """Test 5: DataNode with 0 items → halted."""
+        data = DataNode(id="data")  # no source → 0 items
         process = FnNode(id="process", command="echo ok")
         wf = Workflow(
             name="empty-data",
-            nodes={"data": data, "process": process},
-            edges=[],
+            nodes={
+                "data": data,
+                "process": process,
+                "_join_data": JoinNode(id="_join_data", sources=["process"]),
+            },
+            edges=[
+                Edge(source="data", target="process"),
+                Edge(source="process", target="_join_data"),
+            ],
             start_node="data")
 
         from factory.workflow.executor import WorkflowExecutor
@@ -444,6 +453,13 @@ class TestStandalone:
 
     def test_inline_items_skip_id_filter(self, tmp_path: Path) -> None:
         """Test 9: DataNode with inline_items ignores allowed_instance_ids."""
+        _git(tmp_path, "init")
+        _git(tmp_path, "config", "user.email", "t@t")
+        _git(tmp_path, "config", "user.name", "t")
+        (tmp_path / "README.md").write_text("test\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "init")
+
         data = DataNode(
             id="data",
             inline_items=[
@@ -453,8 +469,15 @@ class TestStandalone:
         process = FnNode(id="process", command="echo ok")
         wf = Workflow(
             name="inline-test",
-            nodes={"data": data, "process": process},
-            edges=[],
+            nodes={
+                "data": data,
+                "process": process,
+                "_join_data": JoinNode(id="_join_data", sources=["process"]),
+            },
+            edges=[
+                Edge(source="data", target="process"),
+                Edge(source="process", target="_join_data"),
+            ],
             start_node="data")
 
         from factory.workflow.executor import WorkflowExecutor
@@ -507,12 +530,18 @@ class TestStandalone:
         result = evaluator.evaluate(wf, str(project), ["i5", "i6"])
 
         irs = result.details.get("instance_results", [])
-        evaluated_ids = {r["instance_id"] for r in irs if isinstance(r, dict)}
+        evaluated_ids = {
+            r.get("instance_id") or r.get("item_id", "")
+            for r in irs if isinstance(r, dict)
+        }
         assert "i5" in evaluated_ids, f"i5 missing from holdout results: {irs}"
         assert "i6" in evaluated_ids, f"i6 missing from holdout results: {irs}"
 
         # Check real scores from WiringTask
-        score_map = {r["instance_id"]: r["score"] for r in irs if isinstance(r, dict)}
+        score_map = {
+            r.get("instance_id") or r.get("item_id", ""): r["score"]
+            for r in irs if isinstance(r, dict)
+        }
         assert score_map.get("i5") == pytest.approx(0.90), (
             f"i5 score should be 0.90, got {score_map.get('i5')}"
         )
@@ -582,9 +611,9 @@ class TestEngineRunE2E:
         result = engine.run(wf, project_dir=str(project))
 
         # val_score should reflect holdout instances i5 (0.90) and i6 (0.95)
-        # minus parsimony penalty (0.01 * 2 nodes = 0.02), mean(0.90, 0.95)=0.925 - 0.02=0.905
-        assert result.val_score == pytest.approx(0.905, abs=0.01), (
-            f"Expected val_score ≈ 0.905 from holdout eval, got {result.val_score}"
+        # minus parsimony penalty (0.01 * 3 nodes = 0.03), mean(0.90, 0.95)=0.925 - 0.03=0.895
+        assert result.val_score == pytest.approx(0.895, abs=0.01), (
+            f"Expected val_score ≈ 0.895 from holdout eval, got {result.val_score}"
         )
         assert result.generations_completed >= 1, (
             f"Expected at least 1 generation, got {result.generations_completed}"
@@ -630,8 +659,12 @@ class TestEngineRunE2E:
                     id="data",
                     task_ref="wiring_task_copied:WiringTask",),
                 "process": FnNode(id="process", command="echo ok"),
+                "_join_data": JoinNode(id="_join_data", sources=["process"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="process"),
+                Edge(source="process", target="_join_data"),
+            ],
             start_node="data")
 
         swarm_config = SwarmConfig(
@@ -651,7 +684,8 @@ class TestEngineRunE2E:
             inner_loop_factory=True,
             project_dir=project)
 
-        result = evaluator.evaluate(wf, str(project), ["i1", "i2"])
+        # Pass instance IDs that don't match any task instances → 0 items
+        result = evaluator.evaluate(wf, str(project), ["nonexistent_x", "nonexistent_y"])
 
         assert result.score == 0.0, (
             f"Expected score 0.0 for 0-item DataNode, got {result.score}"
@@ -660,15 +694,10 @@ class TestEngineRunE2E:
             f"Expected halt_reason with 0 items, got {result.details}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="NODE_REMOVE deletes subgraph nodes, issue 1574")
-    def test_no_validation_rejection_xfail(self) -> None:
-        """Test 13: remove_node on a DataNode subgraph node produces a valid workflow.
+    def test_no_validation_rejection(self) -> None:
+        """Test 13: remove_node on a DataNode subgraph node returns None or a valid workflow.
 
-        Either refusing the removal (returning None) or rewiring to a valid
-        graph satisfies issue 1574.  Currently remove_node produces an
-        invalid graph.
+        Issue 1574: remove_node must refuse (None) or produce a valid graph.
         """
         from factory.outer_loop.mutations import remove_node
 
