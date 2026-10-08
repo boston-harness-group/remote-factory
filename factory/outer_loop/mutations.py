@@ -27,19 +27,28 @@ log = structlog.get_logger()
 
 
 def _is_in_data_subgraph(workflow: Workflow, node_id: str) -> bool:
-    """Check if node_id is inside any DataNode's subgraph."""
-    from factory.workflow.executor import _collect_subgraph_nodes
-    from factory.workflow.primitives import DataNode
+    """Check if node_id is inside any DataNode's fork branch."""
+    from factory.workflow.primitives import DataNode, JoinNode
 
     for nid, node in workflow.nodes.items():
         if isinstance(node, DataNode):
-            if (node.subgraph_entry in workflow.nodes
-                    and node.subgraph_exit in workflow.nodes):
-                subgraph = _collect_subgraph_nodes(
-                    workflow, node.subgraph_entry, node.subgraph_exit
-                )
-                if node_id in subgraph:
-                    return True
+            # Walk forward from DataNode edges to find branch nodes
+            edge_targets = [e.target for e in workflow.edges if e.source == nid]
+            visited: set[str] = set()
+            queue = list(edge_targets)
+            while queue:
+                current = queue.pop(0)
+                if current in visited:
+                    continue
+                target_node = workflow.nodes.get(current)
+                if isinstance(target_node, JoinNode):
+                    continue  # Don't go past JoinNode
+                visited.add(current)
+                for e in workflow.edges:
+                    if e.source == current:
+                        queue.append(e.target)
+            if node_id in visited:
+                return True
     return False
 
 
@@ -201,16 +210,46 @@ def validate_and_repair(workflow: Workflow) -> Workflow | None:
         if not has_gated_edge:
             return None
 
+    # Reject JoinNode with dangling sources
+    for _nid, _node in workflow.nodes.items():
+        if isinstance(_node, JoinNode):
+            for src in _node.sources:
+                if src not in workflow.nodes:
+                    return None
+
+    # Reject DataNode workflows with broken fork/join structure
+    for _nid, _node in workflow.nodes.items():
+        if isinstance(_node, _DataNodeType):
+            has_out = any(e.source == _nid for e in workflow.edges)
+            if not has_out:
+                return None
+            # Check that a JoinNode is reachable from the DataNode
+            visited_dn: set[str] = set()
+            queue_dn = [e.target for e in workflow.edges if e.source == _nid]
+            found_join = False
+            while queue_dn:
+                cur = queue_dn.pop(0)
+                if cur in visited_dn:
+                    continue
+                visited_dn.add(cur)
+                if isinstance(workflow.nodes.get(cur), JoinNode):
+                    found_join = True
+                    break
+                for e in workflow.edges:
+                    if e.source == cur:
+                        queue_dn.append(e.target)
+            if not found_join:
+                return None
+
     # Verify reads/writes chain
-    # For nodes inside a DataNode subgraph, .factory/current_item.json is
-    # a system-provided file (written by the executor before subgraph runs).
+    # For nodes inside a DataNode branch, .factory/current_item.json is
+    # a system-provided file (written by the runtime before branch runs).
     _data_subgraph_nodes: set[str] = set()
     for _nid, _node in workflow.nodes.items():
         if isinstance(_node, _DataNodeType):
-            if (_node.subgraph_entry in workflow.nodes
-                    and _node.subgraph_exit in workflow.nodes):
-                from factory.workflow.executor import _collect_subgraph_nodes as _csn
-                _data_subgraph_nodes |= _csn(workflow, _node.subgraph_entry, _node.subgraph_exit)
+            for nid_check in workflow.nodes:
+                if _is_in_data_subgraph(workflow, nid_check):
+                    _data_subgraph_nodes.add(nid_check)
 
     for nid, node in workflow.nodes.items():
         if node.reads:

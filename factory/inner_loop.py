@@ -427,7 +427,7 @@ class InnerLoop:
             self._write_directives(directives)
 
         if self._workflow_has_data_node():
-            return self._step_with_data_node(directives)
+            return self._step_with_data_node_inline(directives)
 
         # Belt-and-suspenders: catch post-mutation composition failures
         # (e.g. NODE_REMOVE stripping the Builder after initial composition)
@@ -651,121 +651,33 @@ class InnerLoop:
         self._history.append(record)
         return record
 
-    def _step_with_data_node(self, directives: dict[str, Any] | None = None) -> CycleRecord:
-        """Execute DataNode workflows, respecting execution_strategy.
+    def _step_with_data_node_inline(self, directives: dict[str, Any] | None = None) -> CycleRecord:
+        """Execute DataNode workflows.
 
-        executor: WorkflowExecutor handles DataNode iteration internally via _execute_data().
-        ceo-skill: CEO subprocess reads SKILL.md with concrete factory task CLI steps
-            for per-item lifecycle.
-        ceo-tool: Same as ceo-skill but CEO uses tool-based execution engine.
+        Two modes controlled by ``_verify_only`` (set by the evaluator):
+        - False (default): full executor run — plan → data fork → summarize.
+        - True: setup + verify per item only, no branch workflow / side effects.
+
+        ceo-skill / ceo-tool are rejected until PR B.
         """
         import asyncio
-        import json
 
         t0 = time.monotonic()
         assert self.workflow is not None
 
         if self.execution_strategy in ('ceo-skill', 'ceo-tool'):
-            import statistics
-
-            from factory.models import AggregateMethod, InnerLoopConfig
-
-            # CEO subprocess path — same as non-DataNode workflows
-            engine = 'tool' if self.execution_strategy == 'ceo-tool' else 'skill'
-
-            # Holdout firewall: warn if holdout_ids are configured (CEO subprocess
-            # doesn't support instance filtering)
-            _defn = getattr(self.task, '_definition', None) if self.task is not None else None
-            _holdout = (
-                getattr(getattr(_defn, 'instances_config', None), 'holdout_ids', None)
-                if _defn else None
-            )
-            if _holdout and self.task is not None:
-                log.warning('ceo_strategy_no_holdout_firewall', holdout_ids=_holdout)
-
-            # Build a prompt that tells the CEO about the DataNode workflow
-            prompt_text = (
-                'Execute this workflow which contains a DataNode for data iteration. '
-                'Follow the SKILL.md instructions to iterate over items using factory task CLI commands.'
-            )
-            exec_result = self._run_ceo_subprocess(prompt_text, engine=engine)
-
-            duration_s = time.monotonic() - t0
-            score = 1.0 if exec_result.success else 0.0
-
-            # Try to recover per-item scores from cycle_summary.json
-            instance_results: list[dict[str, Any]] | None = None
-            summary_path = self.factory_dir / 'outer_loop' / 'runs' / self.mode / 'cycle_summary.json'
-            if summary_path.exists():
-                try:
-                    summary = json.loads(summary_path.read_text())
-                    if 'instance_results' in summary:
-                        instance_results = summary['instance_results']
-                    if 'score' in summary:
-                        score = float(summary['score'])
-                except (json.JSONDecodeError, OSError):
-                    pass
-
-            # Use real scores from instance_results when available
-            if instance_results:
-                item_scores = [
-                    r.get('score', 0.0) for r in instance_results
-                    if isinstance(r, dict)
-                ]
-                if item_scores:
-                    aggregate_method = (
-                        self._inner_loop_config.aggregate
-                        if self._inner_loop_config
-                        else InnerLoopConfig().aggregate
-                    )
-                    if aggregate_method == AggregateMethod.mean:
-                        score = statistics.mean(item_scores)
-                    elif aggregate_method == AggregateMethod.median:
-                        score = statistics.median(item_scores)
-                    elif aggregate_method == AggregateMethod.max:
-                        score = max(item_scores)
-                    elif aggregate_method == AggregateMethod.all_pass:
-                        score = 1.0 if all(s >= 1.0 for s in item_scores) else 0.0
-                    else:
-                        score = statistics.mean(item_scores)
-
-            record = CycleRecord(
-                cycle_number=self._step_count + 1,
-                mode=self.mode,
-                started_at=None,
-                ended_at=None,
-                duration_s=duration_s,
-                score_start=None,
-                score_end=score,
-                score_delta=None,
-                instance_results=instance_results,
-            )
-            record.frozen_nodes = sorted(self.frozen_nodes)
-            record.mutable_node_ids = sorted(self.mutable_nodes())
-
-            self._write_cycle_summary(
-                returncode=0 if exec_result.success else 1,
-                event_offset=0,
-                duration_ms=int(duration_s * 1000),
-                builder_committed=False,
-                experiments=0,
-                test_score=score,
-                instance_results=instance_results,
+            raise ValueError(
+                "DataNode workflows are not supported with ceo-skill / ceo-tool "
+                "until PR B.  Use execution_strategy='executor'."
             )
 
-            self._step_count += 1
-            self._history.append(record)
-            return record
-
-        # executor path — WorkflowExecutor handles DataNode iteration
-        from factory.workflow.executor import WorkflowExecutor
+        from factory.models import InnerLoopConfig
+        from factory.workflow.primitives import DataNode as _DataNode
 
         # Get allowed instance IDs from subset selector (train/val firewall)
         subset_selector = getattr(self, '_subset_selector', None)
         allowed_instance_ids: set[str] | None = None
 
-        # Default to train split when holdout_ids are configured and no
-        # subset_selector is set, to prevent holdout leakage into training.
         _defn = getattr(self.task, '_definition', None) if self.task is not None else None
         _holdout_ids = (
             getattr(getattr(_defn, 'instances_config', None), 'holdout_ids', None)
@@ -785,115 +697,105 @@ class InnerLoop:
             selected = subset_selector.select(all_ids)
             if selected:
                 allowed_instance_ids = set(selected)
-            # If selected is empty, leave allowed_instance_ids = None (allow everything)
-            # This handles the case where no split is configured and training_instances is empty
 
-        try:
-            executor = WorkflowExecutor(
-                self.workflow,
-                self.project_dir,
-                allowed_instance_ids=allowed_instance_ids,
-                task=self.task,  # Pass task for verify() on non-task_ref DataNodes
-            )
-            exec_result_wf = asyncio.run(executor.execute())
-        except ValueError as exc:
-            log.warning(
-                "workflow_validation_failed",
-                error=str(exc),
-                workflow=getattr(self.workflow, "name", "unknown"),
-            )
-            duration_s = time.monotonic() - t0
-            record = CycleRecord(
-                cycle_number=self._step_count + 1,
-                mode=self.mode,
-                started_at=None,
-                ended_at=None,
-                duration_s=duration_s,
-                score_start=None,
-                score_end=0.0,
-                score_delta=None,
-            )
-            record.frozen_nodes = sorted(self.frozen_nodes)
-            record.mutable_node_ids = sorted(self.mutable_nodes())
-            record.eval_details = {'halt_reason': str(exc)}
-            self._step_count += 1
-            self._history.append(record)
-            return record
+        verify_only = getattr(self, '_verify_only', False)
+
+        if verify_only:
+            # Fast path: setup + verify only (no workflow execution)
+            from factory.workflow.data_runtime import evaluate_fork
+
+            data_node_id: str | None = None
+            data_node: _DataNode | None = None
+            for nid, n in self.workflow.nodes.items():
+                if isinstance(n, _DataNode):
+                    data_node_id = nid
+                    data_node = n
+                    break
+
+            if data_node_id is None or data_node is None:
+                raise ValueError("No DataNode found in workflow")
+
+            try:
+                raw_items = asyncio.run(evaluate_fork(
+                    self.workflow,
+                    data_node,
+                    data_node_id,
+                    self.project_dir,
+                    allowed_instance_ids=allowed_instance_ids,
+                    task=self.task,
+                    run_id=getattr(self, '_run_id', ''),
+                ))
+            except ValueError as exc:
+                log.warning("evaluate_fork_failed", error=str(exc))
+                duration_s = time.monotonic() - t0
+                record = CycleRecord(
+                    cycle_number=self._step_count + 1,
+                    mode=self.mode,
+                    started_at=None, ended_at=None,
+                    duration_s=duration_s,
+                    score_start=None, score_end=0.0, score_delta=None,
+                )
+                record.frozen_nodes = sorted(self.frozen_nodes)
+                record.mutable_node_ids = sorted(self.mutable_nodes())
+                record.eval_details = {'halt_reason': str(exc)}
+                self._step_count += 1
+                self._history.append(record)
+                return record
+        else:
+            # Full path: WorkflowExecutor runs plan → data → join → summarize
+            from factory.workflow.executor import WorkflowExecutor
+
+            try:
+                executor = WorkflowExecutor(
+                    self.workflow,
+                    self.project_dir,
+                    allowed_instance_ids=allowed_instance_ids,
+                    task=self.task,
+                )
+                exec_result_wf = asyncio.run(executor.execute())
+            except ValueError as exc:
+                log.warning(
+                    "workflow_validation_failed",
+                    error=str(exc),
+                    workflow=getattr(self.workflow, "name", "unknown"),
+                )
+                duration_s = time.monotonic() - t0
+                record = CycleRecord(
+                    cycle_number=self._step_count + 1,
+                    mode=self.mode,
+                    started_at=None, ended_at=None,
+                    duration_s=duration_s,
+                    score_start=None, score_end=0.0, score_delta=None,
+                )
+                record.frozen_nodes = sorted(self.frozen_nodes)
+                record.mutable_node_ids = sorted(self.mutable_nodes())
+                record.eval_details = {'halt_reason': str(exc)}
+                self._step_count += 1
+                self._history.append(record)
+                return record
+
+            raw_items = exec_result_wf.item_results or []
 
         duration_s = time.monotonic() - t0
-        import statistics
 
-        from factory.models import AggregateMethod, InnerLoopConfig
-
-        raw_items = exec_result_wf.item_results
-        instance_results = None
-        scores: list[float] = []
-
-        if raw_items:
-            instance_results = []
-            for item in raw_items:
-                if not isinstance(item, dict):
-                    continue
-                item_score = float(item.get("score", 0.0))
-                scores.append(item_score)
-                entry = {
-                    "instance_id": item.get("item_id", ""),
-                    "score": item_score,
-                    "passed": item.get("passed", False),
-                    "details": item.get("verify_details", {}),
-                }
-                if item.get("error"):
-                    entry["error"] = item["error"]
-                instance_results.append(entry)
-
-        # Aggregate using the same configurable method as _step_with_task
         aggregate_method = (
             self._inner_loop_config.aggregate
             if self._inner_loop_config
             else InnerLoopConfig().aggregate
         )
 
-        if not scores:
-            # No item results (executor crashed before reaching DataNode)
-            score = 0.0
-        elif aggregate_method == AggregateMethod.mean:
-            score = statistics.mean(scores)
-        elif aggregate_method == AggregateMethod.median:
-            score = statistics.median(scores)
-        elif aggregate_method == AggregateMethod.max:
-            score = max(scores)
-        elif aggregate_method == AggregateMethod.all_pass:
-            score = 1.0 if all(s >= 1.0 for s in scores) else 0.0
-        else:
-            score = statistics.mean(scores)
-
-        record = CycleRecord(
-            cycle_number=self._step_count + 1,
+        record = CycleRecord.from_run(
+            raw_items,
+            aggregate=aggregate_method.value if hasattr(aggregate_method, 'value') else str(aggregate_method),
             mode=self.mode,
-            started_at=None,
-            ended_at=None,
             duration_s=duration_s,
-            score_start=None,
-            score_end=score,
-            score_delta=None,
-            instance_results=instance_results,
+            cycle_number=self._step_count + 1,
         )
         record.frozen_nodes = sorted(self.frozen_nodes)
         record.mutable_node_ids = sorted(self.mutable_nodes())
 
-        # Propagate halt_reason from executor to CycleRecord
-        if exec_result_wf.halt_reason:
+        if not verify_only and exec_result_wf.halt_reason:
             record.eval_details = {'halt_reason': exec_result_wf.halt_reason}
-
-        self._write_cycle_summary(
-            returncode=0 if exec_result_wf.success else 1,
-            event_offset=0,
-            duration_ms=int(duration_s * 1000),
-            builder_committed=False,
-            experiments=0,
-            test_score=score,
-            instance_results=instance_results,
-        )
 
         self._step_count += 1
         self._history.append(record)

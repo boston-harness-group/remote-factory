@@ -29,7 +29,6 @@ from factory.workflow.events import (
 from factory.workflow.primitives import (
     AgentConfig,
     AgentNode,
-    DataItem,
     DataNode,
     Edge,
     FnNode,
@@ -313,7 +312,7 @@ class WorkflowExecutor:
             return
 
         if isinstance(node, DataNode):
-            await self._execute_data(node_id, node)
+            await self._execute_data_fork(node_id, node)
             return
 
         await self._execute_action_node(node)
@@ -744,17 +743,11 @@ class WorkflowExecutor:
         if next_id:
             await self._execute_from(next_id)
 
-    async def _execute_data(self, node_id: str, node: DataNode) -> None:
-        """Execute a DataNode: resolve items, run subgraph per item with fault isolation."""
-        import hashlib as _hashlib
-        import random as _random
-        import subprocess as _sp
-
-        from factory.task import Task as _Task
-        from factory.task import TaskInstance as _TaskInstance
+    async def _execute_data_fork(self, node_id: str, node: DataNode) -> None:
+        """Execute a DataNode via the data runtime (fork/join model)."""
+        from factory.workflow.data_runtime import run_fork
 
         self.result.nodes_executed += 1
-
         self._emit(
             "node.started",
             NodeStarted(
@@ -767,365 +760,49 @@ class WorkflowExecutor:
 
         start = time.monotonic()
 
-        # Resolve data items from exactly one source, keeping TaskInstances for task_ref
-        task_instances: list[tuple[DataItem, _TaskInstance | None]] = []
-        resolved_task: _Task | None = None
-
-        if node.inline_items:
-            task_instances = [(item, None) for item in node.inline_items]
-        elif node.task_ref:
-            # Ensure .factory/tasks/ is on sys.path so importlib can find
-            # task modules in eval worktrees (rsync copies the dir but does
-            # not add it to sys.path).
-            import sys
-            tasks_dir = str(self.project_path / '.factory' / 'tasks')
-            if tasks_dir not in sys.path:
-                sys.path.insert(0, tasks_dir)
-
-            from factory.task import TaskRef
-            task_ref = TaskRef(ref=node.task_ref)
-            resolved_task = task_ref.resolve()
-            for inst in resolved_task.instances():
-                task_instances.append((
-                    DataItem(
-                        id=inst.id,
-                        path=str(inst.path) if inst.path else None,
-                        metadata=inst.metadata,
-                    ),
-                    inst,
-                ))
-        elif node.source_path:
-            from pathlib import Path as _Path
-            src = _Path(node.source_path)
-            if not src.is_absolute():
-                src = self.project_path / src
-            # Raise if source_path doesn't exist
-            if not src.exists():
-                raise FileNotFoundError(
-                    f"DataNode '{node_id}': source_path not found: {node.source_path}"
-                )
-            # Validate path kind matches source_format
-            if node.source_format == "directory" and not src.is_dir():
-                raise ValueError(
-                    f"DataNode '{node_id}': source_format='directory' requires a directory, "
-                    f"got a file at {node.source_path}"
-                )
-            if node.source_format in ("jsonl", "csv") and not src.is_file():
-                raise ValueError(
-                    f"DataNode '{node_id}': source_format='{node.source_format}' requires a file, "
-                    f"got a directory at {node.source_path}"
-                )
-            if node.source_format == "directory" and src.is_dir():
-                for child in sorted(src.iterdir()):
-                    if child.is_dir():
-                        task_instances.append((DataItem(id=child.name, path=str(child)), None))
-            elif node.source_format == "jsonl" and src.is_file():
-                error_count = 0
-                lines = src.read_text().splitlines()
-                total_non_empty = 0
-                for idx, line in enumerate(lines):
-                    if line.strip():
-                        total_non_empty += 1
-                        try:
-                            task_instances.append((DataItem(
-                                id=str(idx),
-                                metadata=json.loads(line),
-                            ), None))
-                        except json.JSONDecodeError:
-                            error_count += 1
-                            log.warning(
-                                "jsonl_parse_error",
-                                node_id=node_id,
-                                line_number=idx + 1,
-                                line_preview=line.strip()[:100],
-                            )
-                if error_count > 0 and error_count == total_non_empty:
-                    raise ValueError(
-                        f"DataNode '{node_id}': all {error_count} JSONL lines "
-                        f"failed to parse"
-                    )
-            elif node.source_format == "csv" and src.is_file():
-                import csv
-                with src.open(newline="") as f:
-                    reader = csv.DictReader(f)
-                    for idx, row in enumerate(reader):
-                        task_instances.append((DataItem(id=str(idx), metadata=dict(row)), None))
-
-        # Fallback: use InnerLoop's task when DataNode has no task_ref
-        if resolved_task is None and self._task is not None:
-            resolved_task = self._task
-
-        # Apply authoritative instance filter from SwarmEngine (train/val firewall).
-        # Only filter when the DataNode uses task_ref — inline_items and
-        # source_path produce synthetic IDs ('0', '1', ...) that don't match
-        # task instance IDs, so filtering would drop everything.
-        if self._allowed_instance_ids is not None and node.task_ref:
-            task_instances = [
-                (item, inst) for item, inst in task_instances
-                if item.id in self._allowed_instance_ids
-            ]
-
-        # Apply split/shuffle/limit filters to the paired list
-        if node.split != "all":
-            task_instances = [
-                (item, inst) for item, inst in task_instances
-                if (inst.split if inst is not None else item.metadata.get("split"))
-                == node.split
-            ]
-        if node.shuffle:
-            seed = (
-                node.shuffle_seed
-                if node.shuffle_seed is not None
-                else int.from_bytes(
-                    _hashlib.sha256(f"{node_id}:{self.run_id}".encode()).digest()[:8],
-                    "big",
-                )
+        try:
+            item_results = await run_fork(
+                self.workflow,
+                node,
+                node_id,
+                self.project_path,
+                agent_pool=self.agent_pool,
+                dry_run=self.dry_run,
+                agent_fn=self._agent_fn,
+                auto_write_outputs=self.auto_write_outputs,
+                allowed_instance_ids=self._allowed_instance_ids,
+                task=self._task,
+                completed_files=self.completed_files,
+                run_id=self.run_id,
             )
-            _random.Random(seed).shuffle(task_instances)
-        if node.limit is not None and node.limit > 0:
-            task_instances = task_instances[:node.limit]
-
-        if len(task_instances) == 0:
-            raise ValueError(
-                f"DataNode '{node_id}' resolved 0 items after filtering "
-                f"(source={node.source_path or node.task_ref or 'inline'}, "
-                f"split={node.split!r}). "
-                f"Check filter configuration — empty item sets produce "
-                f"false-positive scores."
+        except Exception as exc:
+            elapsed = (time.monotonic() - start) * 1000
+            self.result.halted = True
+            self.result.halt_reason = f"DataNode '{node_id}' failed: {exc}"
+            self._emit(
+                "node.failed",
+                NodeFailed(
+                    workflow_name=self.workflow.name,
+                    run_id=self.run_id,
+                    node_id=node_id,
+                    node_type="DataNode",
+                    error=str(exc),
+                ),
             )
+            return
 
-        if len(task_instances) > node.max_items:
-            raise ValueError(
-                f"DataNode '{node_id}' resolved {len(task_instances)} items, "
-                f"exceeding max_items={node.max_items}"
-            )
-
-        # Collect subgraph and run per item with Semaphore-throttled concurrency
-        subgraph_ids = _collect_subgraph_nodes(
-            self.workflow, node.subgraph_entry, node.subgraph_exit,
-        )
-        sub_workflow = self.workflow.subgraph(
-            subgraph_ids,
-            name=f"{self.workflow.name}__data_item",
-            start_node=node.subgraph_entry,
-        )
-
-        item_results: list[dict[str, Any]] = []
-        sem = asyncio.Semaphore(node.parallelism)
-
-        # Pre-compute reads that exist on disk
-        disk_reads: set[str] = set()
-        for sg_node in sub_workflow.nodes.values():
-            for r in sg_node.reads:
-                if (self.project_path / r).exists():
-                    disk_reads.add(r)
-
-        # Resolve base commit once for worktree creation when parallelism > 1
-        use_worktrees = node.parallelism > 1 and not self.dry_run
-        base_commit: str | None = None
-        worktrees_to_clean: list[tuple[Path, str]] = []
-        if use_worktrees:
-            try:
-                rev_result = _sp.run(
-                    ["git", "rev-parse", "HEAD"],
-                    cwd=self.project_path,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                base_commit = rev_result.stdout.strip()
-            except _sp.CalledProcessError:
-                use_worktrees = False
-
-        async def run_item(
-            pair: tuple[DataItem, _TaskInstance | None],
-            item_idx: int,
-        ) -> dict[str, Any]:
-            item, inst = pair
-            item_project_path = self.project_path
-            wt_branch: str | None = None
-            async with sem:
-                try:
-                    # Create per-item worktree when parallelism > 1
-                    if use_worktrees and base_commit is not None:
-                        wt_dir = (
-                            self.project_path
-                            / ".factory-worktrees"
-                            / f"data-{self.run_id}-{item_idx}"
-                        )
-                        wt_branch = f"factory/data-{self.run_id}-{item_idx}"
-                        wt_dir.parent.mkdir(parents=True, exist_ok=True)
-                        _sp.run(
-                            [
-                                "git", "worktree", "add",
-                                str(wt_dir), "-b", wt_branch, base_commit,
-                            ],
-                            cwd=self.project_path,
-                            check=True,
-                            capture_output=True,
-                        )
-                        worktrees_to_clean.append((wt_dir, wt_branch))
-                        item_project_path = wt_dir
-
-                    # Create TaskInstance from DataItem when task came from
-                    # InnerLoop (self._task) but items are inline/source_path
-                    if resolved_task is not None and inst is None:
-                        inst = _TaskInstance(
-                            id=item.id,
-                            path=Path(item.path) if item.path else None,
-                            metadata=item.metadata or {},
-                        )
-
-                    if resolved_task is not None and inst is not None:
-                        try:
-                            resolved_task.setup(inst, item_project_path)
-                        except Exception as setup_exc:
-                            log.warning(
-                                "data_item_setup_failed",
-                                item_id=item.id,
-                                error=str(setup_exc),
-                            )
-                            return {
-                                "item_id": item.id,
-                                "success": False,
-                                "score": 0.0,
-                                "passed": False,
-                                "error": "setup_failed",
-                            }
-                        item = DataItem(
-                            id=inst.id,
-                            path=str(inst.path) if inst.path else None,
-                            metadata=inst.metadata,
-                            prompt=resolved_task.prompt(inst),
-                        )
-
-                        # Diagnostic: list files created by setup()
-                        _setup_files = [
-                            str(f.relative_to(item_project_path))
-                            for f in item_project_path.rglob('*') if f.is_file()
-                        ]
-                        log.info(
-                            'data_item_setup_complete',
-                            item_id=item.id,
-                            workspace=str(item_project_path),
-                            files_found=len(_setup_files),
-                            files=_setup_files[:20],
-                        )
-
-                    # Re-scan subgraph reads for files created by setup()
-                    setup_reads: set[str] = set()
-                    for sg_node in sub_workflow.nodes.values():
-                        for r in sg_node.reads:
-                            if (item_project_path / r).exists():
-                                setup_reads.add(r)
-                            else:
-                                # Check if file exists under a different relative path
-                                basename = Path(r).name
-                                matches = [
-                                    str(f.relative_to(item_project_path))
-                                    for f in item_project_path.rglob(basename)
-                                    if f.is_file()
-                                ]
-                                if matches:
-                                    log.warning(
-                                        'setup_read_path_mismatch',
-                                        node_id=sg_node.id,
-                                        declared_read=r,
-                                        found_at=matches,
-                                        hint='node.reads path does not match setup() output location',
-                                    )
-
-                    # Write current_item.json for subgraph visibility
-                    item_json_path = item_project_path / ".factory" / "current_item.json"
-                    item_json_path.parent.mkdir(parents=True, exist_ok=True)
-                    item_json_path.write_text(json.dumps(item.model_dump()))
-
-                    try:
-                        item_executor = WorkflowExecutor(
-                            sub_workflow.model_copy(deep=True),
-                            item_project_path,
-                            agent_pool=self.agent_pool,
-                            dry_run=self.dry_run,
-                            agent_fn=self._agent_fn,
-                            initial_context=item.prompt or None,
-                            auto_write_outputs=self.auto_write_outputs,
-                        )
-                        # Include current_item.json so subgraph nodes don't block on read-wait
-                        item_executor.completed_files = self.completed_files | disk_reads | setup_reads | {".factory/current_item.json"}
-                        item_result = await item_executor.execute()
-                    finally:
-                        item_json_path.unlink(missing_ok=True)
-
-                    score = 1.0 if item_result.success else 0.0
-                    passed = item_result.success
-                    verify_details: dict[str, Any] = {}
-
-                    if resolved_task is not None and inst is not None:
-                        vr = resolved_task.verify(inst, item_project_path)
-                        score = vr.score
-                        passed = vr.passed
-                        verify_details = vr.details or {}
-
-                    return {
-                        "item_id": item.id,
-                        "success": item_result.success,
-                        "score": score,
-                        "passed": passed,
-                        "nodes_executed": item_result.nodes_executed,
-                        "node_outputs": item_result.node_outputs,
-                        "verify_details": verify_details,
-                    }
-                except Exception as exc:
-                    log.warning("data_item_failed", item_id=item.id, error=str(exc))
-                    return {
-                        "item_id": item.id,
-                        "success": False,
-                        "score": 0.0,
-                        "passed": False,
-                        "error": str(exc),
-                    }
-
-        tasks = [run_item(pair, idx) for idx, pair in enumerate(task_instances)]
-        results = await asyncio.gather(*tasks)
-        item_results = list(results)
-
-        # Expose per-item results for the inner loop to aggregate scores
         self.result.item_results = item_results
 
-        # Clean up worktrees
-        for wt_path, wt_branch_name in worktrees_to_clean:
-            try:
-                _sp.run(
-                    ["git", "worktree", "remove", str(wt_path), "--force"],
-                    cwd=self.project_path,
-                    capture_output=True,
-                )
-                _sp.run(
-                    ["git", "branch", "-D", wt_branch_name],
-                    cwd=self.project_path,
-                    capture_output=True,
-                )
-            except Exception as wt_exc:
-                log.warning("data_worktree_cleanup_failed", path=str(wt_path), error=str(wt_exc))
-
-        # Propagate DataNode failure when ALL items fail
-        failed_items = [r for r in item_results if not r.get("success", False)]
-        if len(failed_items) == len(item_results) and item_results:
-            # Every single subgraph failed — this is a DataNode failure
-            sample_error = failed_items[0].get("error", "") or failed_items[0].get("halt_reason", "subgraph failed")
-            log.error(
-                "data_node_all_items_failed",
-                node_id=node_id,
-                total_items=len(item_results),
-                sample_error=sample_error,
-            )
+        # Check if all items errored (no ok or failed items)
+        ok_items = [r for r in item_results if r.get("status") == "ok"]
+        has_failed = any(r.get("status") == "failed" for r in item_results)
+        if not ok_items and not has_failed:
+            # All items errored — halt
             elapsed = (time.monotonic() - start) * 1000
             self.result.halted = True
             self.result.halt_reason = (
-                f"DataNode '{node_id}': all {len(item_results)} items failed. "
-                f"Sample error: {sample_error}"
+                f"DataNode '{node_id}': all {len(item_results)} items errored"
             )
-            # Still store the results for debugging
             self.result.node_outputs[node_id] = json.dumps(item_results)
             self._emit(
                 "node.failed",
@@ -1137,15 +814,7 @@ class WorkflowExecutor:
                     error=self.result.halt_reason,
                 ),
             )
-            return  # Don't follow edges — halt here
-        elif failed_items:
-            # Partial failure — log warning but continue
-            log.warning(
-                "data_node_partial_failure",
-                node_id=node_id,
-                failed=len(failed_items),
-                total=len(item_results),
-            )
+            return
 
         elapsed = (time.monotonic() - start) * 1000
         self.result.node_outputs[node_id] = json.dumps(item_results)
@@ -1163,9 +832,23 @@ class WorkflowExecutor:
             ),
         )
 
-        next_id = self._next_unconditional(node_id)
-        if next_id:
-            await self._execute_from(next_id)
+        # After DataNode completes, skip to the JoinNode (it's the barrier)
+        # and then continue from there
+        from factory.workflow.data_runtime import _find_branch_and_join
+        try:
+            _, join_id, _ = _find_branch_and_join(self.workflow, node_id)
+            # Mark JoinNode as completed
+            self.result.nodes_executed += 1
+            self.result.node_outputs[join_id] = ""
+            # Follow edges from JoinNode
+            next_id = self._next_unconditional(join_id)
+            if next_id:
+                await self._execute_from(next_id)
+        except ValueError:
+            # No JoinNode found — just follow DataNode's unconditional edge
+            next_id = self._next_unconditional(node_id)
+            if next_id:
+                await self._execute_from(next_id)
 
     async def _execute_selection(self, node: SelectionNode) -> None:
         """Compare parallel experiment results and select the best."""
@@ -1357,11 +1040,43 @@ class WorkflowExecutor:
         return await self._run_shell(cmd)
 
     async def _run_fn(self, node: FnNode) -> str:
-        """Run a FnNode's shell command."""
+        """Run a FnNode's callable or shell command.
+
+        When ``callable_name`` is set (format ``module.path:fn_name``),
+        the function is imported and called with ``project_dir=str(project_path)``
+        as keyword argument.  Otherwise falls back to running the shell
+        ``command``.
+        """
+        if node.callable_name:
+            return await self._run_callable(node)
         if not node.command:
             return ""
         cmd = node.command.replace("{project_path}", shlex.quote(str(self.project_path)))
         return await self._run_shell(cmd)
+
+    async def _run_callable(self, node: FnNode) -> str:
+        """Import and call a FnNode's Python callable."""
+        import importlib
+
+        ref = node.callable_name
+        if not ref or ":" not in ref:
+            raise ValueError(
+                f"FnNode '{node.id}' callable_name must be 'module.path:fn_name', "
+                f"got {ref!r}"
+            )
+        module_path, fn_name = ref.rsplit(":", 1)
+        mod = importlib.import_module(module_path)
+        fn = getattr(mod, fn_name, None)
+        if fn is None:
+            raise ValueError(
+                f"Module {module_path!r} has no attribute {fn_name!r}"
+            )
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, lambda: fn(project_dir=str(self.project_path)),
+        )
+        return str(result) if result is not None else ""
 
     async def _run_agent(self, node: AgentNode) -> str:
         """Invoke an agent via factory/agents/runner.py."""

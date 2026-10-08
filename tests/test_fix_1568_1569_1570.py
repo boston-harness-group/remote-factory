@@ -25,16 +25,14 @@ from factory.task import (
     TaskDefinition,
     TaskInstance,
     VerifyConfig,
-    VerifyResult,
-)
+    VerifyResult)
 from factory.workflow.primitives import (
     AgentNode,
     AgentRole,
     DataItem,
     DataNode,
     FnNode,
-    Workflow,
-)
+    Workflow)
 
 
 # ── Fix 1: holdout_ids round-trips through TOML parsing (#1568) ────────────
@@ -124,23 +122,19 @@ class TestEmptyFilteredItemsRaises:
                     inline_items=[
                         DataItem(id="a", metadata={"split": "train"}),
                         DataItem(id="b", metadata={"split": "train"}),
-                    ],
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                    split="val",  # filter excludes all (all are train)
+                    ],  # filter excludes all (all are train)
                 ),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.halted
         assert "resolved 0 items" in result.halt_reason
 
     def test_inner_loop_catches_empty_items_error(self, tmp_path: Path) -> None:
-        """InnerLoop._step_with_data_node catches the ValueError and returns score=0.0."""
+        """InnerLoop._step_with_data_node_inline catches the ValueError and returns score=0.0."""
         from factory.inner_loop import InnerLoop
 
         wf = Workflow(
@@ -148,19 +142,14 @@ class TestEmptyFilteredItemsRaises:
             nodes={
                 "data": DataNode(
                     id="data",
-                    inline_items=[DataItem(id="a", metadata={"split": "train"})],
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                    split="val",
-                ),
+                    inline_items=[DataItem(id="a", metadata={"split": "train"})],),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
         loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-        record = loop._step_with_data_node()
+        record = loop._step_with_data_node_inline()
         assert record.score_end == 0.0
 
 
@@ -179,8 +168,7 @@ class _SplitTask:
                 id=d["id"],
                 path=d.get("path"),
                 metadata=d.get("metadata", {}),
-                split=d.get("split"),
-            )
+                split=d.get("split"))
 
     def setup(self, instance: Any, workspace: Path) -> None:
         pass
@@ -211,16 +199,11 @@ class TestTaskBackedSplitFilter:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="fake.module:SplitTask",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                    split="train",
-                ),
+                    task_ref="fake.module:SplitTask",),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         with patch("factory.task.TaskRef.resolve", return_value=fake_task):
             executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
@@ -246,16 +229,11 @@ class TestTaskBackedSplitFilter:
                     inline_items=[
                         DataItem(id="a", metadata={"split": "train"}),
                         DataItem(id="b", metadata={"split": "val"}),
-                    ],
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                    split="train",
-                ),
+                    ],),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.success
@@ -301,15 +279,11 @@ class TestSetupFailureSkipsInstance:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="fake.module:FailTask",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    task_ref="fake.module:FailTask"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         with patch("factory.task.TaskRef.resolve", return_value=fake_task):
             executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
@@ -341,8 +315,7 @@ class TestSetupFailureSkipsInstance:
             TaskInstance(id="ok2"),
         ]
         task._definition = TaskDefinition(
-            name="mock", scoring=ScoringContract(method="exit_code"),
-        )
+            name="mock", scoring=ScoringContract(method="exit_code"))
 
         call_count = {"setup": 0, "prompt": 0, "verify": 0}
 
@@ -369,12 +342,10 @@ class TestSetupFailureSkipsInstance:
                 "builder": AgentNode(
                     id="builder",
                     role=AgentRole.BUILDER,
-                    prompt_template="build {project_path}",
-                ),
+                    prompt_template="build {project_path}"),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
 
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
@@ -413,8 +384,7 @@ class TestVerifyDetailsOnSuccess:
         defn = TaskDefinition(
             name="test",
             scoring=ScoringContract(method="exit_code"),
-            verify_config=VerifyConfig(command="echo hello-world"),
-        )
+            verify_config=VerifyConfig(command="echo hello-world"))
         task = Task(definition=defn)
         inst = TaskInstance(id="t1")
         result = task.verify(inst, tmp_path)
@@ -429,8 +399,7 @@ class TestVerifyDetailsOnSuccess:
         defn = TaskDefinition(
             name="test",
             scoring=ScoringContract(method="exit_code"),
-            verify_config=VerifyConfig(command="echo failure-output; exit 1"),
-        )
+            verify_config=VerifyConfig(command="echo failure-output; exit 1"))
         task = Task(definition=defn)
         inst = TaskInstance(id="t1")
         result = task.verify(inst, tmp_path)
@@ -449,8 +418,7 @@ class TestVerifyInstanceSubstitution:
         defn = TaskDefinition(
             name="test",
             scoring=ScoringContract(method="exit_code"),
-            verify_config=VerifyConfig(command="echo {instance_id}"),
-        )
+            verify_config=VerifyConfig(command="echo {instance_id}"))
         task = Task(definition=defn)
         inst = TaskInstance(id="test42")
         result = task.verify(inst, tmp_path)
@@ -466,8 +434,7 @@ class TestVerifyInstanceSubstitution:
         defn = TaskDefinition(
             name="test",
             scoring=ScoringContract(method="exit_code"),
-            verify_config=VerifyConfig(command="echo {instance_dir}"),
-        )
+            verify_config=VerifyConfig(command="echo {instance_dir}"))
         task = Task(definition=defn)
         inst = TaskInstance(id="my_inst", path=inst_dir)
         result = task.verify(inst, tmp_path)
@@ -480,8 +447,7 @@ class TestVerifyInstanceSubstitution:
         defn = TaskDefinition(
             name="test",
             scoring=ScoringContract(method="exit_code"),
-            verify_config=VerifyConfig(command="echo {instance_id}"),
-        )
+            verify_config=VerifyConfig(command="echo {instance_id}"))
         task = Task(definition=defn)
         # Instance ID with spaces — should be shell-quoted
         inst = TaskInstance(id="test with spaces")
@@ -499,8 +465,7 @@ class TestPromptInstanceSubstitution:
         """prompt() substitutes {instance_id} into prompt text."""
         defn = TaskDefinition(
             name="test",
-            prompt_config=PromptConfig(text="Fix {instance_id}"),
-        )
+            prompt_config=PromptConfig(text="Fix {instance_id}"))
         task = Task(definition=defn)
         inst = TaskInstance(id="bug99")
         assert task.prompt(inst) == "Fix bug99"
@@ -509,8 +474,7 @@ class TestPromptInstanceSubstitution:
         """prompt() substitutes {instance_dir} into prompt text."""
         defn = TaskDefinition(
             name="test",
-            prompt_config=PromptConfig(text="Work in {instance_dir}"),
-        )
+            prompt_config=PromptConfig(text="Work in {instance_dir}"))
         task = Task(definition=defn)
         inst = TaskInstance(id="x", path=Path("/data/instances/x"))
         assert task.prompt(inst) == "Work in /data/instances/x"
@@ -519,8 +483,7 @@ class TestPromptInstanceSubstitution:
         """prompt() does NOT use shlex.quote() — prompt text is not shell-executed."""
         defn = TaskDefinition(
             name="test",
-            prompt_config=PromptConfig(text="Fix {instance_id} now"),
-        )
+            prompt_config=PromptConfig(text="Fix {instance_id} now"))
         task = Task(definition=defn)
         inst = TaskInstance(id="test with spaces")
         result = task.prompt(inst)
@@ -531,8 +494,7 @@ class TestPromptInstanceSubstitution:
         """prompt() without placeholders returns text unchanged."""
         defn = TaskDefinition(
             name="test",
-            prompt_config=PromptConfig(text="Just do it."),
-        )
+            prompt_config=PromptConfig(text="Just do it."))
         task = Task(definition=defn)
         inst = TaskInstance(id="any")
         assert task.prompt(inst) == "Just do it."
@@ -553,9 +515,7 @@ class TestInnerLoopTrainDefault:
             scoring=ScoringContract(method="exit_code"),
             instances_config=InstancesConfig(
                 format="directory",
-                holdout_ids=["val1"],
-            ),
-        )
+                holdout_ids=["val1"]))
 
         task = MagicMock()
         task._definition = defn
@@ -574,12 +534,10 @@ class TestInnerLoopTrainDefault:
                 "builder": AgentNode(
                     id="builder",
                     role=AgentRole.BUILDER,
-                    prompt_template="build {project_path}",
-                ),
+                    prompt_template="build {project_path}"),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
 
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
@@ -630,12 +588,10 @@ class TestInnerLoopTrainDefault:
                 "builder": AgentNode(
                     id="builder",
                     role=AgentRole.BUILDER,
-                    prompt_template="build {project_path}",
-                ),
+                    prompt_template="build {project_path}"),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
 
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
@@ -670,9 +626,7 @@ class TestInnerLoopTrainDefault:
             scoring=ScoringContract(method="exit_code"),
             instances_config=InstancesConfig(
                 format="directory",
-                holdout_ids=["val1"],
-            ),
-        )
+                holdout_ids=["val1"]))
 
         task = MagicMock()
         task._definition = defn
@@ -690,12 +644,10 @@ class TestInnerLoopTrainDefault:
                 "builder": AgentNode(
                     id="builder",
                     role=AgentRole.BUILDER,
-                    prompt_template="build {project_path}",
-                ),
+                    prompt_template="build {project_path}"),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
 
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
@@ -755,21 +707,16 @@ def _make_data_node_workflow() -> Workflow:
         nodes={
             "data": DataNode(
                 id="data",
-                task_ref="fake:Task",
-                subgraph_entry="sub",
-                subgraph_exit="sub",
-            ),
+                task_ref="fake:Task"),
             "sub": FnNode(id="sub", command="echo x"),
         },
         edges=[],
-        start_node="data",
-    )
+        start_node="data")
 
 
 def _mock_exec_result(
     success: bool,
-    item_results: list[dict[str, Any]],
-) -> MagicMock:
+    item_results: list[dict[str, Any]]) -> MagicMock:
     """Build a mock ExecutionResult with item_results populated."""
     from factory.workflow.executor import ExecutionResult
 
@@ -785,7 +732,7 @@ def _mock_exec_result(
 
 
 class TestDataNodeVerifyScores:
-    """Fix: _step_with_data_node must use real task.verify() scores,
+    """Fix: _step_with_data_node_inline must use real task.verify() scores,
     not binary 1.0/0.0 from exec_result_wf.success."""
 
     def test_datanode_path_uses_verify_scores(self, tmp_path: Path) -> None:
@@ -811,7 +758,7 @@ class TestDataNodeVerifyScores:
             MockExecutor.return_value = mock_exec
 
             loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-            record = loop._step_with_data_node()
+            record = loop._step_with_data_node_inline()
 
         expected = (0.85 + 0.72 + 0.93) / 3
         assert record.score_end is not None
@@ -843,7 +790,7 @@ class TestDataNodeVerifyScores:
             MockExecutor.return_value = mock_exec
 
             loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-            record = loop._step_with_data_node()
+            record = loop._step_with_data_node_inline()
 
         expected = (0.85 + 0.0 + 0.72) / 3
         assert record.score_end is not None
@@ -873,7 +820,7 @@ class TestDataNodeVerifyScores:
             MockExecutor.return_value = mock_exec
 
             loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-            record = loop._step_with_data_node()
+            record = loop._step_with_data_node_inline()
 
         assert record.instance_results is not None
         assert len(record.instance_results) == 2
@@ -901,7 +848,7 @@ class TestDataNodeVerifyScores:
             MockExecutor.return_value = mock_exec
 
             loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-            record = loop._step_with_data_node()
+            record = loop._step_with_data_node_inline()
 
         assert record.score_end == 0.0
         assert record.instance_results is None
@@ -949,15 +896,11 @@ class TestExecutorUsesInnerLoopTaskForVerify:
                     inline_items=[
                         DataItem(id="item_a", prompt="do a"),
                         DataItem(id="item_b", prompt="do b"),
-                    ],
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    ]),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True, task=fake_task)
         result = asyncio.run(executor.execute())
@@ -991,20 +934,15 @@ class TestExecutorTaskRefTakesPriority:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="fake.module:PriorityTask",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    task_ref="fake.module:PriorityTask"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         with patch("factory.task.TaskRef.resolve", return_value=task_ref_task):
             executor = WorkflowExecutor(
-                wf, tmp_path, dry_run=True, task=fallback_task,
-            )
+                wf, tmp_path, dry_run=True, task=fallback_task)
             result = asyncio.run(executor.execute())
 
         assert result.success
@@ -1030,15 +968,11 @@ class TestExecutorNoTaskStaysBinary:
                     inline_items=[
                         DataItem(id="x", prompt="go"),
                         DataItem(id="y", prompt="go"),
-                    ],
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    ]),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         # No task= passed
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
@@ -1134,15 +1068,11 @@ class TestTaskRefResolveWithSysPath:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="exec_task:ExecTask",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    task_ref="exec_task:ExecTask"),
                 "sub": FnNode(id="sub", command="echo ok"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         # Remove tasks_dir from sys.path if present
         original_path = sys.path[:]
@@ -1203,8 +1133,7 @@ class TestTrainingInstancesLimitsTaskSplit:
             benchmark="test",
             budget=100,
             population_size=1,
-            training_instances=["a", "c"],
-        )
+            training_instances=["a", "c"])
         task = _FourInstanceTask()
         config.set_task(task)
 
@@ -1227,12 +1156,10 @@ class TestTrainingInstancesLimitsTaskSplit:
                 "b": AgentNode(
                     id="b",
                     role=AgentRole.BUILDER,
-                    prompt_template="build",
-                ),
+                    prompt_template="build"),
             },
             edges=[],
-            start_node="b",
-        )
+            start_node="b")
         pop = Population()
         ind = Population.make_individual(wf, generation=0)
         pop.add(ind)
@@ -1255,8 +1182,7 @@ class TestTrainingInstancesLimitsTaskSplit:
             benchmark="test",
             budget=100,
             population_size=1,
-            training_instances=[],
-        )
+            training_instances=[])
         task = _FourInstanceTask()
         config.set_task(task)
 
@@ -1277,12 +1203,10 @@ class TestTrainingInstancesLimitsTaskSplit:
                 "b": AgentNode(
                     id="b",
                     role=AgentRole.BUILDER,
-                    prompt_template="build",
-                ),
+                    prompt_template="build"),
             },
             edges=[],
-            start_node="b",
-        )
+            start_node="b")
         pop = Population()
         ind = Population.make_individual(wf, generation=0)
         pop.add(ind)
@@ -1310,12 +1234,10 @@ class TestCreateWorktreeCopiesTasks:
         subprocess.run(["git", "init", str(project)], capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", str(project), "config", "user.email", "test@test.com"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", str(project), "config", "user.name", "Test"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
 
         # Create .factory/tasks/my_task.py (gitignored, copied by _create_worktree)
         tasks_dir = project / ".factory" / "tasks"
@@ -1337,12 +1259,10 @@ class TestCreateWorktreeCopiesTasks:
         dummy.write_text("test\n")
         subprocess.run(
             ["git", "-C", str(project), "add", "README.md"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", str(project), "commit", "-m", "init"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
 
         wt_path: Path | None = None
         try:
@@ -1371,23 +1291,19 @@ class TestCreateWorktreeCopiesTasks:
         subprocess.run(["git", "init", str(project)], capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", str(project), "config", "user.email", "test@test.com"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", str(project), "config", "user.name", "Test"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
 
         dummy = project / "README.md"
         dummy.write_text("test\n")
         subprocess.run(
             ["git", "-C", str(project), "add", "README.md"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", str(project), "commit", "-m", "init"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
 
         wt_path: Path | None = None
         try:

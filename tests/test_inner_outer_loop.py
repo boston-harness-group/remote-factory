@@ -21,14 +21,12 @@ from factory.checkpoint import (
     CheckpointState,
     format_checkpoint,
     load_checkpoint,
-    save_checkpoint,
-)
+    save_checkpoint)
 from factory.models import (
     AggregateMethod,
     FactoryConfig,
     InnerLoopConfig,
-    OuterLoopConfig,
-)
+    OuterLoopConfig)
 from factory.research.runner import aggregate_metric
 from factory.store import ExperimentStore, _parse_inner_loop, _parse_outer_loop
 from factory.workflow.primitives import Workflow
@@ -50,8 +48,7 @@ class TestInnerLoopConfig:
             runs_per_cycle=5,
             aggregate=AggregateMethod.median,
             plateau_threshold=5,
-            max_inner_runs_per_cycle=10,
-        )
+            max_inner_runs_per_cycle=10)
         assert config.runs_per_cycle == 5
         assert config.aggregate == AggregateMethod.median
         assert config.plateau_threshold == 5
@@ -78,8 +75,7 @@ class TestOuterLoopConfig:
         config = OuterLoopConfig(
             max_outer_cycles=5,
             inner_surfaces=["prompts/*.md"],
-            outer_surfaces=["src/**/*.py"],
-        )
+            outer_surfaces=["src/**/*.py"])
         assert config.max_outer_cycles == 5
         assert config.inner_surfaces == ["prompts/*.md"]
         assert config.outer_surfaces == ["src/**/*.py"]
@@ -97,8 +93,7 @@ class TestFactoryConfigWithLoops:
             guards=[],
             eval_command="echo ok",
             eval_threshold=0.8,
-            constraints=[],
-        )
+            constraints=[])
         assert config.inner_loop is None
         assert config.outer_loop is None
 
@@ -110,8 +105,7 @@ class TestFactoryConfigWithLoops:
             eval_command="echo ok",
             eval_threshold=0.8,
             constraints=[],
-            inner_loop=InnerLoopConfig(runs_per_cycle=3),
-        )
+            inner_loop=InnerLoopConfig(runs_per_cycle=3))
         assert config.inner_loop is not None
         assert config.inner_loop.runs_per_cycle == 3
 
@@ -123,8 +117,7 @@ class TestFactoryConfigWithLoops:
             eval_command="echo ok",
             eval_threshold=0.8,
             constraints=[],
-            outer_loop=OuterLoopConfig(inner_surfaces=["a.md"], outer_surfaces=["b.py"]),
-        )
+            outer_loop=OuterLoopConfig(inner_surfaces=["a.md"], outer_surfaces=["b.py"]))
         assert config.outer_loop is not None
         assert config.outer_loop.inner_surfaces == ["a.md"]
 
@@ -236,8 +229,7 @@ class TestCheckpointStateExtension:
             pending_agents=[],
             last_eval_scores={},
             current_hypothesis=None,
-            timestamp="2026-01-01T00:00:00Z",
-        )
+            timestamp="2026-01-01T00:00:00Z")
         assert state.plateau_count == 0
         assert state.loop_level == "inner"
 
@@ -251,8 +243,7 @@ class TestCheckpointStateExtension:
             current_hypothesis="test",
             timestamp="2026-01-01T00:00:00Z",
             plateau_count=2,
-            loop_level="outer",
-        )
+            loop_level="outer")
         assert state.plateau_count == 2
         assert state.loop_level == "outer"
 
@@ -266,8 +257,7 @@ class TestCheckpointStateExtension:
             current_hypothesis=None,
             timestamp="2026-01-01T00:00:00Z",
             plateau_count=3,
-            loop_level="outer",
-        )
+            loop_level="outer")
         data = json.loads(state.model_dump_json())
         restored = CheckpointState.model_validate(data)
         assert restored.plateau_count == 3
@@ -292,8 +282,7 @@ class TestCheckpointSaveLoadFormat:
             completed_hypotheses=[1, 2, 3],
             plateau_count=2,
             loop_level="outer",
-            timestamp="2026-05-24T15:00:00",
-        )
+            timestamp="2026-05-24T15:00:00")
         save_checkpoint(project, state)
         loaded = load_checkpoint(project)
         assert loaded is not None
@@ -333,8 +322,7 @@ class TestCheckpointSaveLoadFormat:
             current_hypothesis=None,
             plateau_count=2,
             loop_level="outer",
-            timestamp="2026-05-24T00:00:00",
-        )
+            timestamp="2026-05-24T00:00:00")
         output = format_checkpoint(state)
         assert "research" in output
         assert "Loop level:    outer" in output
@@ -350,8 +338,7 @@ class TestCheckpointSaveLoadFormat:
             current_hypothesis=None,
             plateau_count=0,
             loop_level="inner",
-            timestamp="2026-05-24T00:00:00",
-        )
+            timestamp="2026-05-24T00:00:00")
         output = format_checkpoint(state)
         assert "Loop level:    inner" in output
         assert "Plateau count" not in output
@@ -367,8 +354,7 @@ class TestCheckpointSaveLoadFormat:
                 last_eval_scores={},
                 current_hypothesis=None,
                 loop_level="invalid",
-                timestamp="2026-05-24T00:00:00",
-            )
+                timestamp="2026-05-24T00:00:00")
 
 
 # ── Integration: factory.md -> config.json -> FactoryConfig ──────
@@ -542,8 +528,7 @@ class TestSpecFormatRoundTrip:
                 cwd=math_benchmark_project,
                 capture_output=True,
                 text=True,
-                check=True,
-            )
+                check=True)
             output = json.loads(result.stdout)
             scores.append(output["score"])
 
@@ -662,18 +647,14 @@ class TestDataNodeIntegration:
                         DataItem(id="item-1", prompt="solve 1"),
                         DataItem(id="item-2", prompt="solve 2"),
                     ],
-                    subgraph_entry="sub_start",
-                    subgraph_exit="sub_end",
-                    parallelism=1,
-                ),
+                    parallelism=1),
                 "sub_start": FnNode(id="sub_start", command="echo start"),
                 "sub_end": FnNode(id="sub_end", command="echo end"),
             },
             edges=[
                 Edge(source="sub_start", target="sub_end"),
             ],
-            start_node="data",
-        )
+            start_node="data")
 
     @staticmethod
     def _make_plain_workflow() -> Workflow:
@@ -685,12 +666,10 @@ class TestDataNodeIntegration:
                 "builder": AgentNode(
                     id="builder",
                     role=AgentRole.BUILDER,
-                    prompt_template="build {project_path}",
-                ),
+                    prompt_template="build {project_path}"),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
 
     @staticmethod
     def _make_exec_result(success: bool = True) -> MagicMock:
@@ -702,8 +681,8 @@ class TestDataNodeIntegration:
         r.duration_ms = 100.0
         return r
 
-    def test_data_node_routes_through_step_with_data_node(self, tmp_path: Path) -> None:
-        """DataNode workflow routes through InnerLoop._step_with_data_node()."""
+    def test_data_node_routes_through_step_with_data_node_inline(self, tmp_path: Path) -> None:
+        """DataNode workflow routes through InnerLoop._step_with_data_node_inline()."""
         from unittest.mock import AsyncMock, patch
 
         from factory.inner_loop import InnerLoop
@@ -725,8 +704,7 @@ class TestDataNodeIntegration:
         with patch(
             "factory.workflow.executor.WorkflowExecutor.execute",
             new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
+            return_value=mock_result):
             record = loop.step()
 
         assert record.score_end == 1.0
@@ -751,8 +729,7 @@ class TestDataNodeIntegration:
         with patch(
             "factory.workflow.executor.WorkflowExecutor.execute",
             new_callable=AsyncMock,
-            return_value=mock_result,
-        ) as mock_execute:
+            return_value=mock_result) as mock_execute:
             loop.step()
 
         mock_execute.assert_called_once()
@@ -827,8 +804,7 @@ class TestDataNodeIntegration:
         with patch(
             "factory.workflow.executor.WorkflowExecutor.execute",
             new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
+            return_value=mock_result):
             record = loop.step()
 
         assert record.score_end is not None
@@ -849,8 +825,7 @@ class _ComposeTestTask:
         from factory.task import ScoringContract, TaskDefinition
 
         self.definition = TaskDefinition(
-            name="mock", scoring=ScoringContract(method="exit_code"),
-        )
+            name="mock", scoring=ScoringContract(method="exit_code"))
         self.scoring = self.definition.scoring
         self.constraints = None
 
@@ -882,8 +857,7 @@ class TestComposeDataNodeWorkflowIntegration:
             DataItem,
             DataNode,
             Edge,
-            FnNode,
-        )
+            FnNode)
 
         wf = Workflow(
             name="eval_only",
@@ -891,19 +865,14 @@ class TestComposeDataNodeWorkflowIntegration:
                 "gen": AgentNode(
                     id="gen",
                     role=AgentRole.RESEARCHER,
-                    prompt_template="research",
-                ),
+                    prompt_template="research"),
                 "data": DataNode(
                     id="data",
-                    inline_items=[DataItem(id="i1", prompt="test")],
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    inline_items=[DataItem(id="i1", prompt="test")]),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[Edge(source="gen", target="data")],
-            start_node="gen",
-        )
+            start_node="gen")
 
         task = _ComposeTestTask()
 

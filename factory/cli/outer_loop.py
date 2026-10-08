@@ -203,7 +203,6 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
             population_size=population_size,
             designer_count=designer_count,
             training_instances=getattr(args, "training_instances", []),
-            holdout_instances=getattr(args, "holdout_instances", []),
             target_project=str(Path(target_proj).resolve()) if target_proj else "",
             test_command=resolved_test_command,
             test_format=resolved_test_format,

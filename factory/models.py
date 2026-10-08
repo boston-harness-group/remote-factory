@@ -110,6 +110,36 @@ class ResearchTarget(BaseModel):
         return Task(definition=defn)
 
 
+class ItemStatus(str, Enum):
+    """Status of a single item in a DataNode fork run."""
+
+    ok = "ok"
+    failed = "failed"
+    errored = "errored"
+
+
+class ItemResult(BaseModel):
+    """Result of running one item through the DataNode fork branch."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    item_id: str
+    split: str = "train"
+    status: ItemStatus
+    score: float = 0.0
+    verify_details: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    cost: float = 0.0
+    duration_s: float = 0.0
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _coerce_status(cls, v: object) -> ItemStatus:
+        if isinstance(v, str):
+            return ItemStatus(v)
+        return v  # type: ignore[return-value]
+
+
 class AggregateMethod(str, Enum):
     """How to aggregate multiple run metrics into a single value."""
 

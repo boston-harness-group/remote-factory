@@ -398,6 +398,15 @@ class SwarmEvaluator:
                 if instances:
                     from factory.outer_loop.subset import FixedSubsetSelector
                     loop._subset_selector = FixedSubsetSelector(instances)
+                # Verify-only mode: skip branch workflow execution and
+                # only run setup + verify per item.  The first evaluation
+                # for a given workflow runs the full executor so pre/post-
+                # fork nodes (plan, summarize) execute once; all subsequent
+                # evaluations use the fast verify-only path.
+                if not getattr(self, '_has_run_full_workflow', False):
+                    self._has_run_full_workflow = True
+                else:
+                    loop._verify_only = True
             else:
                 loop = InnerLoop(
                     project_dir=wt_path,
@@ -414,9 +423,7 @@ class SwarmEvaluator:
                 )
             record = loop.step()
 
-            summary_data = self._read_cycle_summary(wt_path, loop.mode)
-            summary_score = float(summary_data.get("score", 0.0)) if summary_data else None
-            score = summary_score if summary_score is not None else (record.score_end or 0.0)
+            score = record.score_end or 0.0
             cost = record.total_cost_usd
 
             record.split = "train"
@@ -437,10 +444,6 @@ class SwarmEvaluator:
                 "reverted": record.reverted,
                 "parsimony_penalty": parsimony,
             }
-            if summary_data:
-                details["scoring_method"] = summary_data.get("scoring_method", "unknown")
-                if "test_details" in summary_data:
-                    details["test_details"] = summary_data["test_details"]
 
             if isinstance(record.instance_results, list) and record.instance_results:
                 from factory.outer_loop.verify_adapter import (

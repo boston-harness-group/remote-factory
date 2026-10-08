@@ -631,7 +631,14 @@ def _selection_to_instruction(node: SelectionNode, workflow: Workflow) -> str:
 
 
 def _data_to_instruction(node: DataNode, workflow: Workflow) -> str:
-    """Convert a DataNode to concrete data-iteration instructions for the CEO."""
+    """Convert a DataNode to concrete data-iteration instructions for the CEO.
+
+    Raises ValueError because ceo-skill DataNode support is deferred to PR B.
+    """
+    raise ValueError(
+        "DataNode workflows are not supported with ceo-skill / ceo-tool "
+        "until PR B.  Use execution_strategy='executor'."
+    )
     out_edges = _outgoing_edges(workflow, node.id)
     edges_str = _format_edges(out_edges)
 
@@ -816,11 +823,14 @@ def workflow_to_skill_md(workflow: Workflow) -> str:
                 workflow, node.subgraph_entry, node.subgraph_exit
             )
         elif isinstance(node, DataNode):
-            from factory.workflow.executor import _collect_subgraph_nodes
+            # DataNode uses real edges; collect branch nodes via BFS
+            from factory.workflow.data_runtime import _find_branch_and_join
 
-            subgraph_nodes |= _collect_subgraph_nodes(
-                workflow, node.subgraph_entry, node.subgraph_exit
-            )
+            try:
+                _, _, branch_ids = _find_branch_and_join(workflow, nid)
+                subgraph_nodes |= branch_ids
+            except ValueError:
+                pass  # No JoinNode found — will error in _data_to_instruction
 
     sections: list[str] = []
     phase_num = 1

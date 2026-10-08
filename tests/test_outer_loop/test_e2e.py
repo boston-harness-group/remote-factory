@@ -116,7 +116,7 @@ def _make_feature_evaluator() -> SwarmEvaluator:
         tournament_size=2,
         mutation_rate=0.5,
         training_instances=["t1", "t2", "t3"],
-        holdout_instances=["h1"],
+        
     )
     return SwarmEvaluator(config, evaluator_fn=eval_fn)
 
@@ -143,7 +143,7 @@ def _make_holdout_evaluator(training_score: float = 0.8) -> SwarmEvaluator:
         budget=30,
         population_size=4,
         training_instances=["t1", "t2"],
-        holdout_instances=["h1"],
+        
     )
     return SwarmEvaluator(config, evaluator_fn=eval_fn)
 
@@ -160,7 +160,7 @@ class TestE2EEvolution:
             tournament_size=2,
             mutation_rate=0.5,
             training_instances=["t1", "t2", "t3"],
-            holdout_instances=["h1"],
+            
         )
         config.set_task(_StubTask(["t1", "t2", "t3", "h1"]))
 
@@ -190,7 +190,7 @@ class TestE2EEvolution:
             budget=30,
             population_size=4,
             training_instances=["t1", "t2"],
-            holdout_instances=["h1"],
+            
         )
         config.set_task(_StubTask(["t1", "t2", "h1"]))
         engine = SwarmEngine(config, evaluator)
@@ -207,7 +207,7 @@ class TestE2EEvolution:
             budget=30,
             population_size=4,
             training_instances=["t1", "t2"],
-            holdout_instances=["h1"],
+            
         )
         config.set_task(_StubTask(["t1", "t2", "h1"]))
         engine = SwarmEngine(config, evaluator)
@@ -225,7 +225,7 @@ class TestE2EEvolution:
             budget=30,
             population_size=4,
             training_instances=["t1", "t2"],
-            holdout_instances=["h1"],
+            
         )
         config.set_task(_StubTask(["t1", "t2", "h1"]))
         engine = SwarmEngine(config, evaluator)
@@ -245,7 +245,7 @@ class TestE2EEvolution:
             budget=30,
             population_size=4,
             training_instances=["t1", "t2"],
-            holdout_instances=["h1"],
+            
         )
         config.set_task(_StubTask(["t1", "t2", "h1"]))
         engine = SwarmEngine(config, evaluator)
@@ -265,7 +265,7 @@ class TestE2EEvolution:
             budget=30,
             population_size=4,
             training_instances=["t1", "t2"],
-            holdout_instances=["h1"],
+            
         )
         config.set_task(_StubTask(["t1", "t2", "h1"]))
         engine = SwarmEngine(config, evaluator)
@@ -284,7 +284,7 @@ class TestE2EOverfitDetection:
             budget=30,
             population_size=4,
             training_instances=["t1", "t2"],
-            holdout_instances=["h1"],
+            
         )
         config.set_task(_StubTask(["t1", "t2", "h1"]))
         engine = SwarmEngine(config, evaluator)
@@ -301,7 +301,7 @@ class TestE2EFilesystem:
             benchmark="test-fs",
             budget=10,
             training_instances=["t1"],
-            holdout_instances=["h1"],
+            
         )
         root = init_filesystem(tmp_path, config)
 
@@ -323,7 +323,7 @@ class TestE2EFilesystem:
             benchmark="test-ckpt",
             budget=50,
             training_instances=["t1"],
-            holdout_instances=["h1"],
+            
         )
         init_filesystem(tmp_path, config)
 
@@ -366,7 +366,7 @@ class TestE2EFilesystem:
             benchmark="test-gen",
             budget=10,
             training_instances=["t1"],
-            holdout_instances=["h1"],
+            
         )
         init_filesystem(tmp_path, config)
 
@@ -419,7 +419,7 @@ class TestE2EFullPipeline:
             budget=30,
             population_size=4,
             training_instances=["t1", "t2"],
-            holdout_instances=["h1"],
+            
         )
         config.set_task(_StubTask(["t1", "t2", "h1"]))
         evaluator = _make_feature_evaluator()

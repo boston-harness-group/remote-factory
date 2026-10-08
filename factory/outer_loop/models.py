@@ -100,7 +100,6 @@ class SwarmConfig(BaseModel):
     mutation_strategy: str = "weighted_random"
     designer_count: int = 2
     training_instances: list[str] = Field(default_factory=list)
-    holdout_instances: list[str] = Field(default_factory=list)
     plateau_window: int = 3
     plateau_threshold: float = 0.01
     diversity_floor: float = 0.2
@@ -115,18 +114,6 @@ class SwarmConfig(BaseModel):
     task_module: str = ""
     seed_workflow_module: str = ""
     execution_strategy: Literal["executor", "ceo-skill", "ceo-tool"] = "executor"
-
-    @field_validator("holdout_instances")
-    @classmethod
-    def _no_overlap_with_training(cls, v: list[str], info: object) -> list[str]:
-        data = getattr(info, "data", {})
-        training = data.get("training_instances", [])
-        overlap = set(v) & set(training)
-        if overlap:
-            raise ValueError(
-                f"holdout_instances must not overlap with training_instances: {overlap}"
-            )
-        return v
 
     # ── Task integration (not serialised — set at runtime) ───────
 

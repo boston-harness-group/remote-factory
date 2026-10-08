@@ -16,8 +16,7 @@ from factory.workflow.primitives import (
     DataNode,
     Edge,
     FnNode,
-    Workflow,
-)
+    Workflow)
 
 
 # ── Phase 1: DataItem / DataNode Pydantic validation ──────────────
@@ -54,10 +53,7 @@ class TestDataNode:
         items = [DataItem(id="i1"), DataItem(id="i2")]
         node = DataNode(
             id="dn",
-            inline_items=items,
-            subgraph_entry="a",
-            subgraph_exit="b",
-        )
+            inline_items=items)
         assert len(node.inline_items) == 2
         assert node.task_ref is None
         assert node.source_path is None
@@ -65,30 +61,21 @@ class TestDataNode:
     def test_task_ref_source(self) -> None:
         node = DataNode(
             id="dn",
-            task_ref="my.module:MyTask",
-            subgraph_entry="a",
-            subgraph_exit="b",
-        )
+            task_ref="my.module:MyTask")
         assert node.task_ref == "my.module:MyTask"
 
     def test_source_path_source(self) -> None:
         node = DataNode(
             id="dn",
             source_path="/data/items",
-            source_format="directory",
-            subgraph_entry="a",
-            subgraph_exit="b",
-        )
+            source_format="directory")
         assert node.source_path == "/data/items"
         assert node.source_format == "directory"
 
     def test_no_source_allowed_late_bound(self) -> None:
         """A DataNode with zero sources is valid (late-bound template)."""
         dn = DataNode(
-            id="dn",
-            subgraph_entry="a",
-            subgraph_exit="b",
-        )
+            id="dn")
         assert dn.task_ref is None
         assert dn.source_path is None
         assert dn.inline_items == []
@@ -99,27 +86,18 @@ class TestDataNode:
             DataNode(
                 id="dn",
                 task_ref="x",
-                inline_items=[DataItem(id="i")],
-                subgraph_entry="a",
-                subgraph_exit="b",
-            )
+                inline_items=[DataItem(id="i")])
 
     def test_source_path_requires_format(self) -> None:
         with pytest.raises(ValidationError, match="source_format"):
             DataNode(
                 id="dn",
-                source_path="/data/items",
-                subgraph_entry="a",
-                subgraph_exit="b",
-            )
+                source_path="/data/items")
 
     def test_defaults(self) -> None:
         node = DataNode(
             id="dn",
-            inline_items=[DataItem(id="i")],
-            subgraph_entry="a",
-            subgraph_exit="b",
-        )
+            inline_items=[DataItem(id="i")])
         assert node.parallelism == 1
         assert node.split == "all"
         assert node.shuffle is False
@@ -132,21 +110,15 @@ class TestDataNode:
             DataNode(
                 id="dn",
                 inline_items=[DataItem(id="i")],
-                subgraph_entry="a",
-                subgraph_exit="b",
-                unknown="x",
-            )
+                unknown="x")
 
     def test_from_dict_roundtrip(self) -> None:
         items = [DataItem(id="i1", prompt="do it")]
         node = DataNode(
             id="dn",
             inline_items=items,
-            subgraph_entry="entry",
-            subgraph_exit="exit",
             parallelism=5,
-            max_items=100,
-        )
+            max_items=100)
         wf = Workflow(
             name="test",
             nodes={
@@ -158,8 +130,7 @@ class TestDataNode:
                 Edge(source="dn", target="entry"),
                 Edge(source="entry", target="exit"),
             ],
-            start_node="dn",
-        )
+            start_node="dn")
         data = wf.to_dict()
         restored = Workflow.from_dict(data)
         dn = restored.nodes["dn"]
@@ -181,18 +152,14 @@ def _make_data_workflow(items: list[DataItem]) -> Workflow:
             "data": DataNode(
                 id="data",
                 inline_items=items,
-                subgraph_entry="sub_start",
-                subgraph_exit="sub_end",
-                parallelism=2,
-            ),
+                parallelism=2),
             "sub_start": FnNode(id="sub_start", command="echo start"),
             "sub_end": FnNode(id="sub_end", command="echo end"),
         },
         edges=[
             Edge(source="sub_start", target="sub_end"),
         ],
-        start_node="data",
-    )
+        start_node="data")
 
 
 class TestExecuteData:
@@ -264,15 +231,11 @@ class TestExecuteData:
                 "data": DataNode(
                     id="data",
                     inline_items=items,
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                    max_items=5,
-                ),
+                    max_items=5),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.halted
@@ -291,16 +254,11 @@ class TestExecuteData:
             nodes={
                 "data": DataNode(
                     id="data",
-                    inline_items=items,
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                    split="train",
-                ),
+                    inline_items=items,),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.success
@@ -318,15 +276,11 @@ class TestExecuteData:
                 "data": DataNode(
                     id="data",
                     inline_items=items,
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                    limit=3,
-                ),
+                    limit=3),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.success
@@ -349,15 +303,11 @@ class TestDataNodeValidation:
             nodes={
                 "data": DataNode(
                     id="data",
-                    inline_items=[DataItem(id="i")],
-                    subgraph_entry="missing",
-                    subgraph_exit="sub",
-                ),
+                    inline_items=[DataItem(id="i")]),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         issues = wf.validate_graph()
         assert any("missing" in i and "entry" in i for i in issues)
 
@@ -367,15 +317,11 @@ class TestDataNodeValidation:
             nodes={
                 "data": DataNode(
                     id="data",
-                    inline_items=[DataItem(id="i")],
-                    subgraph_entry="sub",
-                    subgraph_exit="missing",
-                ),
+                    inline_items=[DataItem(id="i")]),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         issues = wf.validate_graph()
         assert any("missing" in i and "exit" in i for i in issues)
 
@@ -450,15 +396,11 @@ class TestDataInstructionSourcePath:
                 "data": DataNode(
                     id="data",
                     source_path="data.jsonl",
-                    source_format="jsonl",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="jsonl"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         node = wf.nodes["data"]
         result = _data_to_instruction(node, wf)
         assert "Read items from `data.jsonl`" in result
@@ -472,15 +414,11 @@ class TestDataInstructionSourcePath:
                 "data": DataNode(
                     id="data",
                     source_path="items.jsonl",
-                    source_format="jsonl",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="jsonl"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         node = wf.nodes["data"]
         result = _data_to_instruction(node, wf)
         assert "Each line is a JSON object" in result
@@ -494,15 +432,11 @@ class TestDataInstructionSourcePath:
                 "data": DataNode(
                     id="data",
                     source_path="/data/items",
-                    source_format="directory",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="directory"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         node = wf.nodes["data"]
         result = _data_to_instruction(node, wf)
         assert "subdirectory" in result
@@ -516,15 +450,11 @@ class TestDataInstructionSourcePath:
                 "data": DataNode(
                     id="data",
                     source_path="data.csv",
-                    source_format="csv",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="csv"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         node = wf.nodes["data"]
         result = _data_to_instruction(node, wf)
         assert "Each row is one item" in result
@@ -578,15 +508,11 @@ class TestDataInstructionHasAggregateStep:
                 "data": DataNode(
                     id="data",
                     source_path="data.jsonl",
-                    source_format="jsonl",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="jsonl"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         node = wf.nodes["data"]
         result = _data_to_instruction(node, wf)
         assert "Aggregate scores" in result
@@ -611,8 +537,7 @@ class TestComputeFeaturesDataNode:
             name="w",
             nodes={"a": FnNode(id="a", command="x")},
             edges=[],
-            start_node="a",
-        )
+            start_node="a")
         features = compute_features(wf)
         assert len(features) == 9
 
@@ -631,8 +556,7 @@ class TestComputeFeaturesDataNode:
             name="w",
             nodes={"a": FnNode(id="a", command="x")},
             edges=[],
-            start_node="a",
-        )
+            start_node="a")
         features = compute_features(wf)
         assert features[8] == 0
 
@@ -645,8 +569,7 @@ class TestDiversityMetricNewAxis:
             name="w",
             nodes={"a": FnNode(id="a", command="x")},
             edges=[],
-            start_node="a",
-        )
+            start_node="a")
         wf_with_data = _make_data_workflow([DataItem(id="i")])
 
         ind1 = Population.make_individual(wf_no_data, score=0.5)
@@ -684,15 +607,11 @@ class TestSourcePathDirectory:
                 "data": DataNode(
                     id="data",
                     source_path=str(src_dir),
-                    source_format="directory",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="directory"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.success
@@ -716,15 +635,11 @@ class TestSourcePathJsonl:
                 "data": DataNode(
                     id="data",
                     source_path=str(jsonl_file),
-                    source_format="jsonl",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="jsonl"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.success
@@ -747,15 +662,11 @@ class TestSourcePathCsv:
                 "data": DataNode(
                     id="data",
                     source_path=str(csv_file),
-                    source_format="csv",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="csv"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.success
@@ -776,22 +687,18 @@ class TestSourcePathNonExistent:
                 "data": DataNode(
                     id="data",
                     source_path=str(tmp_path / "does_not_exist"),
-                    source_format="directory",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="directory"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.halted
         assert "source_path not found" in result.halt_reason
 
 
-# ── Phase 8: inner_loop _step_with_data_node ────────────────────
+# ── Phase 8: inner_loop _step_with_data_node_inline ────────────────────
 
 
 class TestStepWithDataNode:
@@ -814,9 +721,8 @@ class TestStepWithDataNode:
         with patch(
             "factory.workflow.executor.WorkflowExecutor.execute",
             new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
-            record = loop._step_with_data_node()
+            return_value=mock_result):
+            record = loop._step_with_data_node_inline()
 
         assert record.score_end == 1.0
         assert record.cycle_number == 1
@@ -835,27 +741,21 @@ class TestSubgraphInheritsCompletedFiles:
             name="inherit_test",
             nodes={
                 "upstream_fn": FnNode(
-                    id="upstream_fn", command="echo ready", writes={"data_ready"},
-                ),
+                    id="upstream_fn", command="echo ready", writes={"data_ready"}),
                 "data_loader": DataNode(
                     id="data_loader",
-                    inline_items=[DataItem(id="item1", prompt="go")],
-                    subgraph_entry="process_node",
-                    subgraph_exit="exit_node",
-                ),
+                    inline_items=[DataItem(id="item1", prompt="go")]),
                 "process_node": FnNode(
                     id="process_node",
                     command="echo processing",
-                    reads={"data_ready"},
-                ),
+                    reads={"data_ready"}),
                 "exit_node": FnNode(id="exit_node", command="echo done"),
             },
             edges=[
                 Edge(source="upstream_fn", target="data_loader"),
                 Edge(source="process_node", target="exit_node"),
             ],
-            start_node="upstream_fn",
-        )
+            start_node="upstream_fn")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
 
@@ -873,14 +773,10 @@ class TestSubgraphInheritsCompletedFiles:
             name="no_reads_test",
             nodes={
                 "upstream_fn": FnNode(
-                    id="upstream_fn", command="echo ready", writes={"data_ready"},
-                ),
+                    id="upstream_fn", command="echo ready", writes={"data_ready"}),
                 "data_loader": DataNode(
                     id="data_loader",
-                    inline_items=[DataItem(id="item1")],
-                    subgraph_entry="process_node",
-                    subgraph_exit="exit_node",
-                ),
+                    inline_items=[DataItem(id="item1")]),
                 "process_node": FnNode(id="process_node", command="echo processing"),
                 "exit_node": FnNode(id="exit_node", command="echo done"),
             },
@@ -888,8 +784,7 @@ class TestSubgraphInheritsCompletedFiles:
                 Edge(source="upstream_fn", target="data_loader"),
                 Edge(source="process_node", target="exit_node"),
             ],
-            start_node="upstream_fn",
-        )
+            start_node="upstream_fn")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
 
@@ -949,18 +844,14 @@ def _make_task_ref_workflow(task_ref: str = "fake.module:FakeTask") -> Workflow:
             "data": DataNode(
                 id="data",
                 task_ref=task_ref,
-                subgraph_entry="sub_start",
-                subgraph_exit="sub_end",
-                parallelism=2,
-            ),
+                parallelism=2),
             "sub_start": FnNode(id="sub_start", command="echo start"),
             "sub_end": FnNode(id="sub_end", command="echo end"),
         },
         edges=[
             Edge(source="sub_start", target="sub_end"),
         ],
-        start_node="data",
-    )
+        start_node="data")
 
 
 class TestTaskRefVerify:
@@ -970,8 +861,7 @@ class TestTaskRefVerify:
 
         fake_task = _FakeTask(
             instances_data=[{"id": "inst_a"}, {"id": "inst_b"}],
-            verify_scores={"inst_a": 0.8, "inst_b": 0.3},
-        )
+            verify_scores={"inst_a": 0.8, "inst_b": 0.3})
 
         wf = _make_task_ref_workflow()
 
@@ -1013,8 +903,7 @@ class TestTaskRefVerify:
 
         fake_task = _FakeTask(
             instances_data=[{"id": "i1"}, {"id": "i2"}, {"id": "i3"}],
-            verify_scores={"i1": 1.0, "i2": 1.0, "i3": 1.0},
-        )
+            verify_scores={"i1": 1.0, "i2": 1.0, "i3": 1.0})
 
         wf = _make_task_ref_workflow()
 
@@ -1033,8 +922,7 @@ class TestTaskRefVerify:
 
         fake_task = _FakeTask(
             instances_data=[{"id": "ok1"}, {"id": "fail_setup"}, {"id": "ok2"}],
-            verify_scores={"ok1": 1.0, "ok2": 0.9},
-        )
+            verify_scores={"ok1": 1.0, "ok2": 0.9})
         original_setup = fake_task.setup
 
         def failing_setup(instance, workspace):
@@ -1064,7 +952,7 @@ class TestTaskRefVerify:
 
 class TestStepWithDataNodeVerifyScores:
     def test_aggregates_verify_scores(self, tmp_path: Path) -> None:
-        """_step_with_data_node should aggregate per-item verify scores, not binary."""
+        """_step_with_data_node_inline should aggregate per-item verify scores, not binary."""
         from unittest.mock import AsyncMock
 
         from factory.inner_loop import InnerLoop
@@ -1084,9 +972,8 @@ class TestStepWithDataNodeVerifyScores:
         with patch(
             "factory.workflow.executor.WorkflowExecutor.execute",
             new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
-            record = loop._step_with_data_node()
+            return_value=mock_result):
+            record = loop._step_with_data_node_inline()
 
         assert record.score_end == pytest.approx(0.6)
 
@@ -1108,9 +995,8 @@ class TestStepWithDataNodeVerifyScores:
         with patch(
             "factory.workflow.executor.WorkflowExecutor.execute",
             new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
-            record = loop._step_with_data_node()
+            return_value=mock_result):
+            record = loop._step_with_data_node_inline()
 
         assert record.score_end == 0.0
 
@@ -1122,10 +1008,7 @@ class TestParallelismDefault:
     def test_parallelism_default_is_1(self) -> None:
         node = DataNode(
             id="dn",
-            inline_items=[DataItem(id="i")],
-            subgraph_entry="a",
-            subgraph_exit="b",
-        )
+            inline_items=[DataItem(id="i")])
         assert node.parallelism == 1
 
     def test_parallelism_zero_rejected(self) -> None:
@@ -1133,10 +1016,7 @@ class TestParallelismDefault:
             DataNode(
                 id="dn",
                 inline_items=[DataItem(id="i")],
-                subgraph_entry="a",
-                subgraph_exit="b",
-                parallelism=0,
-            )
+                parallelism=0)
 
 
 class TestNonexistentSourcePathRaises:
@@ -1149,15 +1029,11 @@ class TestNonexistentSourcePathRaises:
                 "data": DataNode(
                     id="data",
                     source_path=str(tmp_path / "nope"),
-                    source_format="jsonl",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="jsonl"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.halted
@@ -1175,16 +1051,11 @@ class TestEmptySourceRaises:
             nodes={
                 "data": DataNode(
                     id="data",
-                    inline_items=[DataItem(id="a", metadata={"split": "train"})],
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                    split="val",
-                ),
+                    inline_items=[DataItem(id="a", metadata={"split": "train"})],),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.halted
@@ -1208,15 +1079,11 @@ class TestMalformedJsonlLineIsolated:
                 "data": DataNode(
                     id="data",
                     source_path=str(jsonl_file),
-                    source_format="jsonl",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="jsonl"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.success
@@ -1236,15 +1103,11 @@ class TestMalformedJsonlLineIsolated:
                 "data": DataNode(
                     id="data",
                     source_path=str(jsonl_file),
-                    source_format="jsonl",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="jsonl"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.halted
@@ -1263,16 +1126,12 @@ class TestShuffleDeterministic:
                 "data": DataNode(
                     id="data",
                     inline_items=items,
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
                     shuffle=True,
-                    shuffle_seed=42,
-                ),
+                    shuffle_seed=42),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         # Run twice with the same seed -- order must match
         executor1 = WorkflowExecutor(wf, tmp_path, dry_run=True)
@@ -1299,16 +1158,13 @@ class TestShuffleDeterministic:
                 "data": DataNode(
                     id="data",
                     inline_items=items,
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
                     shuffle=True,
                     # No shuffle_seed -- uses run_id hash
                 ),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         executor1 = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result1 = asyncio.run(executor1.execute())
@@ -1331,10 +1187,7 @@ class TestExplicitEdgeToSubgraphRejected:
             nodes={
                 "data": DataNode(
                     id="data",
-                    inline_items=[DataItem(id="i")],
-                    subgraph_entry="sub_start",
-                    subgraph_exit="sub_end",
-                ),
+                    inline_items=[DataItem(id="i")]),
                 "sub_start": FnNode(id="sub_start", command="echo start"),
                 "sub_end": FnNode(id="sub_end", command="echo end"),
             },
@@ -1342,8 +1195,7 @@ class TestExplicitEdgeToSubgraphRejected:
                 Edge(source="data", target="sub_start"),
                 Edge(source="sub_start", target="sub_end"),
             ],
-            start_node="data",
-        )
+            start_node="data")
         issues = wf.validate_graph()
         assert any("double-execution" in i for i in issues)
 
@@ -1399,9 +1251,8 @@ class TestDirectScoreLookup:
         with patch(
             "factory.workflow.executor.WorkflowExecutor.execute",
             new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
-            record = loop._step_with_data_node()
+            return_value=mock_result):
+            record = loop._step_with_data_node_inline()
 
         assert record.score_end == pytest.approx(0.75)
 
@@ -1427,9 +1278,8 @@ class TestInstanceResultsPopulated:
         with patch(
             "factory.workflow.executor.WorkflowExecutor.execute",
             new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
-            record = loop._step_with_data_node()
+            return_value=mock_result):
+            record = loop._step_with_data_node_inline()
 
         assert record.instance_results is not None
         assert len(record.instance_results) == 2
@@ -1446,8 +1296,7 @@ class _ComposeTestTask:
         from factory.task import ScoringContract, TaskDefinition
 
         self.definition = TaskDefinition(
-            name="mock", scoring=ScoringContract(method="exit_code"),
-        )
+            name="mock", scoring=ScoringContract(method="exit_code"))
         self.scoring = self.definition.scoring
         self.constraints = None
 
@@ -1483,21 +1332,16 @@ class TestComposeDataNodeWorkflow:
                 "generator": AgentNode(
                     id="generator",
                     role=AgentRole.RESEARCHER,
-                    prompt_template="generate",
-                ),
+                    prompt_template="generate"),
                 "data": DataNode(
                     id="data",
-                    inline_items=[DataItem(id="i1", prompt="test")],
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    inline_items=[DataItem(id="i1", prompt="test")]),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[
                 Edge(source="generator", target="data"),
             ],
-            start_node="generator",
-        )
+            start_node="generator")
 
         task = _ComposeTestTask()
 
@@ -1525,15 +1369,11 @@ class TestFormatPathKindMismatch:
                 "data": DataNode(
                     id="data",
                     source_path=str(a_file),
-                    source_format="directory",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="directory"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.halted
@@ -1551,15 +1391,11 @@ class TestFormatPathKindMismatch:
                 "data": DataNode(
                     id="data",
                     source_path=str(a_dir),
-                    source_format="jsonl",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="jsonl"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.halted
@@ -1577,15 +1413,11 @@ class TestFormatPathKindMismatch:
                 "data": DataNode(
                     id="data",
                     source_path=str(a_dir),
-                    source_format="csv",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    source_format="csv"),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.halted
@@ -1609,8 +1441,7 @@ class TestWorkflowHasDataNode:
             name="no_data",
             nodes={"a": FnNode(id="a", command="echo x")},
             edges=[],
-            start_node="a",
-        )
+            start_node="a")
         loop = InnerLoop(project_dir=tmp_path, workflow=wf)
         assert loop._workflow_has_data_node() is False
 
@@ -1627,7 +1458,7 @@ class TestWorkflowHasDataNode:
 
 
 class TestStepWithDataNodeCoverage:
-    """FIX 5: _step_with_data_node happy path and failure coverage."""
+    """FIX 5: _step_with_data_node_inline happy path and failure coverage."""
 
     def test_happy_path(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock
@@ -1648,9 +1479,8 @@ class TestStepWithDataNodeCoverage:
         with patch(
             "factory.workflow.executor.WorkflowExecutor.execute",
             new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
-            record = loop._step_with_data_node()
+            return_value=mock_result):
+            record = loop._step_with_data_node_inline()
 
         assert record.score_end == pytest.approx(0.85)
         assert record.cycle_number == 1
@@ -1675,9 +1505,8 @@ class TestStepWithDataNodeCoverage:
         with patch(
             "factory.workflow.executor.WorkflowExecutor.execute",
             new_callable=AsyncMock,
-            return_value=mock_result,
-        ):
-            record = loop._step_with_data_node()
+            return_value=mock_result):
+            record = loop._step_with_data_node_inline()
 
         assert record.score_end == 0.0
 
@@ -1728,19 +1557,16 @@ class TestDataNodeLoopSubgraph:
             id="loop_body",
             command=f"python3 -c \"open('{pp}/counter.txt','a').write('x\\n')\"",
             reads=set(),
-            writes={"counter.txt"},
-        )
+            writes={"counter.txt"})
         body_pkg = Package(
             name="body",
             graph=Workflow(
                 name="body_graph",
                 nodes={"loop_body": body_node},
                 edges=[],
-                start_node="loop_body",
-            ),
+                start_node="loop_body"),
             entry_node="loop_body",
-            exit_node="loop_body",
-        )
+            exit_node="loop_body")
 
         gate = GateNode(
             id="loop_gate",
@@ -1753,8 +1579,7 @@ class TestDataNodeLoopSubgraph:
                 f"print('PROCEED' if c >= 3 else 'RELOOP: try again')"
                 f"\""
             ),
-            reads=set(),
-        )
+            reads=set())
 
         loop_pkg = Loop(body_pkg, gate, max_iterations=10, name="test_loop")
 
@@ -1763,8 +1588,7 @@ class TestDataNodeLoopSubgraph:
             id="data_driver",
             inline_items=[DataItem(id="game1", prompt="play")],
             subgraph_entry=loop_pkg.entry_node,
-            subgraph_exit=loop_pkg.exit_node,
-        )
+            subgraph_exit=loop_pkg.exit_node)
 
         all_nodes: dict[str, Any] = {"data_driver": data_node}
         for nid, node in loop_pkg.graph.nodes.items():
@@ -1774,8 +1598,7 @@ class TestDataNodeLoopSubgraph:
             name="loop_data_test",
             nodes=all_nodes,
             edges=list(loop_pkg.graph.edges),
-            start_node="data_driver",
-        )
+            start_node="data_driver")
 
         # Validate graph — should have no issues
         issues = wf.validate_graph()
@@ -1803,26 +1626,22 @@ class TestDataNodeLoopSubgraph:
             id="loop_body",
             command="echo body",
             reads=set(),
-            writes={"counter.txt"},
-        )
+            writes={"counter.txt"})
         body_pkg = Package(
             name="body",
             graph=Workflow(
                 name="body_graph",
                 nodes={"loop_body": body_node},
                 edges=[],
-                start_node="loop_body",
-            ),
+                start_node="loop_body"),
             entry_node="loop_body",
-            exit_node="loop_body",
-        )
+            exit_node="loop_body")
 
         gate = GateNode(
             id="loop_gate",
             evaluator_type="fn",
             evaluator_command="echo PROCEED",
-            reads=set(),
-        )
+            reads=set())
 
         loop_pkg = Loop(body_pkg, gate, max_iterations=5, name="test_loop")
 
@@ -1842,8 +1661,7 @@ class TestDataNodeLoopSubgraph:
             name="wrong_exit_test",
             nodes=all_nodes,
             edges=list(loop_pkg.graph.edges),
-            start_node="data_driver",
-        )
+            start_node="data_driver")
 
         issues = wf.validate_graph()
         gate_warnings = [
@@ -1861,26 +1679,22 @@ class TestDataNodeLoopSubgraph:
         body_node = FnNode(
             id="loop_body",
             command="echo body",
-            reads=set(),
-        )
+            reads=set())
         body_pkg = Package(
             name="body",
             graph=Workflow(
                 name="body_graph",
                 nodes={"loop_body": body_node},
                 edges=[],
-                start_node="loop_body",
-            ),
+                start_node="loop_body"),
             entry_node="loop_body",
-            exit_node="loop_body",
-        )
+            exit_node="loop_body")
 
         gate = GateNode(
             id="loop_gate",
             evaluator_type="fn",
             evaluator_command="echo PROCEED",
-            reads=set(),
-        )
+            reads=set())
 
         loop_pkg = Loop(body_pkg, gate, max_iterations=5, name="test_loop")
 
@@ -1889,8 +1703,7 @@ class TestDataNodeLoopSubgraph:
             id="data_driver",
             inline_items=[DataItem(id="game1", prompt="play")],
             subgraph_entry=loop_pkg.entry_node,
-            subgraph_exit=loop_pkg.exit_node,
-        )
+            subgraph_exit=loop_pkg.exit_node)
 
         all_nodes: dict[str, Any] = {"data_driver": data_node}
         for nid, node in loop_pkg.graph.nodes.items():
@@ -1900,13 +1713,11 @@ class TestDataNodeLoopSubgraph:
             name="edge_preservation_test",
             nodes=all_nodes,
             edges=list(loop_pkg.graph.edges),
-            start_node="data_driver",
-        )
+            start_node="data_driver")
 
         # Collect subgraph nodes
         subgraph_ids = _collect_subgraph_nodes(
-            wf, loop_pkg.entry_node, loop_pkg.exit_node,
-        )
+            wf, loop_pkg.entry_node, loop_pkg.exit_node)
 
         # All 3 loop nodes + exit must be in subgraph
         assert "loop_body" in subgraph_ids
@@ -1949,19 +1760,14 @@ class TestDiskReadsRescanAfterSetup:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="fake.module:SetupWritingTask",
-                    subgraph_entry="reader",
-                    subgraph_exit="reader",
-                ),
+                    task_ref="fake.module:SetupWritingTask"),
                 "reader": FnNode(
                     id="reader",
                     command="echo ok",
-                    reads={setup_file},
-                ),
+                    reads={setup_file}),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         fake_task = _SetupWritingTask(setup_file)
 
@@ -2020,19 +1826,16 @@ class TestDiskReadsRescanAfterSetup:
             prompt_template='Generate the next move',
             reads=set(),
             writes=set(),
-            timeout=30,
-        )
+            timeout=30)
         body_pkg = Package(
             name='gen_body',
             graph=Workflow(
                 name='gen_graph',
                 nodes={'generator': generator},
                 edges=[],
-                start_node='generator',
-            ),
+                start_node='generator'),
             entry_node='generator',
-            exit_node='generator',
-        )
+            exit_node='generator')
 
         gate = GateNode(
             id='game_gate',
@@ -2045,8 +1848,7 @@ class TestDiskReadsRescanAfterSetup:
                 f"print('PROCEED' if c >= 3 else 'RELOOP: keep playing')"
                 f"\""
             ),
-            reads=set(),
-        )
+            reads=set())
 
         loop_pkg = Loop(body_pkg, gate, max_iterations=10, name='game_loop')
 
@@ -2054,8 +1856,7 @@ class TestDiskReadsRescanAfterSetup:
             id='game_data',
             inline_items=[DataItem(id='game1', prompt='Play chess')],
             subgraph_entry=loop_pkg.entry_node,
-            subgraph_exit=loop_pkg.exit_node,
-        )
+            subgraph_exit=loop_pkg.exit_node)
 
         all_nodes: dict[str, Any] = {'game_data': data_node}
         for nid, node in loop_pkg.graph.nodes.items():
@@ -2065,8 +1866,7 @@ class TestDiskReadsRescanAfterSetup:
             name='agent_loop_test',
             nodes=all_nodes,
             edges=list(loop_pkg.graph.edges),
-            start_node='game_data',
-        )
+            start_node='game_data')
 
         issues = wf.validate_graph()
         assert not issues, f'Validation issues: {issues}'
@@ -2101,10 +1901,7 @@ class TestDiskReadsRescanAfterSetup:
             nodes={
                 'data': DataNode(
                     id='data',
-                    inline_items=[DataItem(id='item1', prompt='test')],
-                    subgraph_entry='reader',
-                    subgraph_exit='reader',
-                ),
+                    inline_items=[DataItem(id='item1', prompt='test')]),
                 'reader': FnNode(
                     id='reader',
                     command='echo ok',
@@ -2112,8 +1909,7 @@ class TestDiskReadsRescanAfterSetup:
                 ),
             },
             edges=[],
-            start_node='data',
-        )
+            start_node='data')
 
         # Patch max_wait to avoid 60s timeout in CI
         async def fast_wait(self_inner, node):

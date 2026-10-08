@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -18,12 +20,10 @@ def _make_workflow(name: str = "test") -> Workflow:
             "builder": AgentNode(
                 id="builder",
                 role=AgentRole.BUILDER,
-                prompt_template="build {project_path}",
-            ),
+                prompt_template="build {project_path}"),
         },
         edges=[],
-        start_node="builder",
-    )
+        start_node="builder")
 
 
 def _make_exec_result(success: bool = True) -> MagicMock:
@@ -72,8 +72,7 @@ class TestExecutionStrategyDefault:
 
             loop = InnerLoop(
                 project_dir=tmp_path, mode="test", task=task, workflow=wf,
-                execution_strategy="executor",
-            )
+                execution_strategy="executor")
             record = loop.step()
 
         MockExecutor.assert_called_once()
@@ -90,8 +89,7 @@ class TestCeoSkillDispatch:
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
         mock_result = _SubprocessExecutionResult(success=True, nodes_executed=1, duration_ms=50)
 
@@ -112,14 +110,12 @@ class TestCeoSkillDispatch:
         task.prompt.side_effect = lambda i: (call_order.append("prompt"), "prompt")[1]
         task.verify.side_effect = lambda i, w: (
             call_order.append("verify"),
-            VerifyResult(passed=True, score=0.9),
-        )[1]
+            VerifyResult(passed=True, score=0.9))[1]
 
         wf = _make_workflow()
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
         mock_result = _SubprocessExecutionResult(success=True)
         with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result):
@@ -138,8 +134,7 @@ class TestCeoToolDispatch:
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-tool",
-        )
+            execution_strategy="ceo-tool")
 
         mock_result = _SubprocessExecutionResult(success=True, nodes_executed=1)
         with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result) as mock_run:
@@ -159,8 +154,7 @@ class TestEphemeralModeRegistration:
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
         files_existed_during_run: dict[str, int] = {}
 
@@ -190,8 +184,7 @@ class TestEphemeralModeRegistration:
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -215,8 +208,7 @@ class TestEphemeralModeRegistration:
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
         captured_cmd: list[str] = []
 
@@ -275,8 +267,7 @@ class TestCostWarning:
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
         mock_result = _SubprocessExecutionResult(success=True)
         with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result):
@@ -298,8 +289,7 @@ class TestLegacyPathUnchanged:
         (tmp_path / ".factory").mkdir()
         loop = InnerLoop(
             project_dir=tmp_path, mode="test",
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
         assert loop.task is None
         # step() should route to _step_subprocess, not _step_with_task
         assert hasattr(loop, "_step_subprocess")
@@ -307,98 +297,80 @@ class TestLegacyPathUnchanged:
 
 def _make_data_node_workflow() -> Workflow:
     """Create a workflow with a DataNode for dispatch tests."""
-    from factory.workflow.primitives import DataItem, DataNode
+    from factory.workflow.primitives import DataItem, DataNode, Edge, JoinNode
 
     items = [DataItem(id="item-1", prompt="test")]
     data_node = DataNode(
         id="data",
-        inline_items=items,
-        subgraph_entry="builder",
-        subgraph_exit="builder",
-    )
+        inline_items=items)
     builder = AgentNode(
         id="builder",
         role=AgentRole.BUILDER,
-        prompt_template="build",
-    )
+        prompt_template="build")
+    join = JoinNode(id="join", sources=["builder"])
     return Workflow(
         name="data-test",
-        nodes={"data": data_node, "builder": builder},
-        edges=[],
-        start_node="data",
-    )
+        nodes={"data": data_node, "builder": builder, "join": join},
+        edges=[
+            Edge(source="data", target="builder"),
+            Edge(source="builder", target="join"),
+        ],
+        start_node="data")
 
 
 class TestDataNodeStrategyDispatch:
     """DataNode dispatch respects execution_strategy."""
 
-    def test_datanode_executor_uses_step_with_data_node(self, tmp_path: Path) -> None:
-        """executor + DataNode still routes to _step_with_data_node."""
+    def test_datanode_executor_uses_step_with_data_node_inline(self, tmp_path: Path) -> None:
+        """executor + DataNode still routes to _step_with_data_node_inline."""
         (tmp_path / ".factory").mkdir()
         wf = _make_data_node_workflow()
 
         task = MagicMock()
         task.instances.return_value = [TaskInstance(id="inst-1")]
         task.definition = TaskDefinition(
-            name="mock", scoring=ScoringContract(method="exit_code"),
-        )
+            name="mock", scoring=ScoringContract(method="exit_code"))
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="executor",
-        )
+            execution_strategy="executor")
 
-        with patch.object(loop, "_step_with_data_node") as mock_data:
+        with patch.object(loop, "_step_with_data_node_inline") as mock_data:
             mock_data.return_value = MagicMock(score_end=0.9)
             loop.step()
 
         mock_data.assert_called_once()
 
-    def test_datanode_ceo_skill_uses_subprocess(self, tmp_path: Path) -> None:
-        """ceo-skill + DataNode calls _run_ceo_subprocess inside _step_with_data_node."""
+    def test_datanode_ceo_skill_raises(self, tmp_path: Path) -> None:
+        """ceo-skill + DataNode raises ValueError (not supported until PR B)."""
         (tmp_path / ".factory").mkdir()
         wf = _make_data_node_workflow()
 
         task = MagicMock()
         task.instances.return_value = [TaskInstance(id="inst-1")]
         task.definition = TaskDefinition(
-            name="mock", scoring=ScoringContract(method="exit_code"),
-        )
+            name="mock", scoring=ScoringContract(method="exit_code"))
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
-        mock_result = _SubprocessExecutionResult(success=True, nodes_executed=1, duration_ms=50)
-        with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result) as mock_run:
-            record = loop.step()
+        with pytest.raises(ValueError, match="not supported"):
+            loop.step()
 
-        mock_run.assert_called_once()
-        # Verify it was called with engine='skill'
-        assert mock_run.call_args[1]["engine"] == "skill"
-        assert record.score_end == 1.0
-
-    def test_datanode_ceo_tool_uses_subprocess(self, tmp_path: Path) -> None:
-        """ceo-tool + DataNode calls _run_ceo_subprocess with engine='tool'."""
+    def test_datanode_ceo_tool_raises(self, tmp_path: Path) -> None:
+        """ceo-tool + DataNode raises ValueError (not supported until PR B)."""
         (tmp_path / ".factory").mkdir()
         wf = _make_data_node_workflow()
 
         task = MagicMock()
         task.instances.return_value = [TaskInstance(id="inst-1")]
         task.definition = TaskDefinition(
-            name="mock", scoring=ScoringContract(method="exit_code"),
-        )
+            name="mock", scoring=ScoringContract(method="exit_code"))
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-tool",
-        )
+            execution_strategy="ceo-tool")
 
-        mock_result = _SubprocessExecutionResult(success=True, nodes_executed=1, duration_ms=50)
-        with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result) as mock_run:
-            record = loop.step()
-
-        mock_run.assert_called_once()
-        assert mock_run.call_args[1]["engine"] == "tool"
-        assert record.score_end == 1.0
+        with pytest.raises(ValueError, match="not supported"):
+            loop.step()

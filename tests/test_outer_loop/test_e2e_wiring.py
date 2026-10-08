@@ -2,7 +2,7 @@
 
 Tests 1-6 share a single engine run via a class-level fixture that exercises
 the REAL pipeline: SwarmEngine → SwarmEvaluator._evaluate_via_inner_loop →
-git worktree → compose() → InnerLoop._step_with_data_node →
+git worktree → compose() → InnerLoop._step_with_data_node_inline →
 WorkflowExecutor._execute_data → task.setup/verify.
 
 No AgentNodes. No claude binary. The DataNode subgraph is a single FnNode
@@ -41,8 +41,7 @@ from factory.workflow.primitives import (
     FnNode,
     GateNode,
     VerdictType,
-    Workflow,
-)
+    Workflow)
 
 pytestmark = pytest.mark.e2e
 
@@ -63,15 +62,11 @@ def _make_datanode_workflow(task_ref: str = "wiring_task_copied:WiringTask") -> 
         nodes={
             "data": DataNode(
                 id="data",
-                task_ref=task_ref,
-                subgraph_entry="process",
-                subgraph_exit="process",
-            ),
+                task_ref=task_ref),
             "process": FnNode(id="process", command="echo ok"),
         },
         edges=[],
-        start_node="data",
-    )
+        start_node="data")
 
 
 def _git(project: Path, *args: str) -> None:
@@ -79,8 +74,7 @@ def _git(project: Path, *args: str) -> None:
     subprocess.run(
         ["git", "-C", str(project), *args],
         check=True,
-        capture_output=True,
-    )
+        capture_output=True)
 
 
 def _bootstrap_git_project(project: Path) -> None:
@@ -121,7 +115,7 @@ class _SharedState:
     """Lazily populated cache for the shared engine run (tests 1-6).
 
     Runs the REAL path: SwarmEngine → SwarmEvaluator._evaluate_via_inner_loop
-    → worktree → compose() → InnerLoop._step_with_data_node →
+    → worktree → compose() → InnerLoop._step_with_data_node_inline →
     WorkflowExecutor._execute_data → task.setup/verify.
     """
 
@@ -156,10 +150,9 @@ class _SharedState:
             tournament_size=2,
             mutation_rate=0.0,  # no mutations — offspring produced by crossover/structural changes only
             training_instances=["i1", "i2", "i3", "i4"],
-            holdout_instances=["i5", "i6"],
+            
             frozen_node_ids=["data"],
-            designer_count=0,
-        )
+            designer_count=0)
         task = WiringTask(str(project))
         swarm_config.set_task(task)
 
@@ -169,15 +162,13 @@ class _SharedState:
         evaluator = SwarmEvaluator(
             swarm_config,
             inner_loop_factory=True,  # triggers real inner-loop path
-            project_dir=project,
-        )
+            project_dir=project)
 
         # ── Build engine and seed population ────────────────────
         engine = SwarmEngine(
             swarm_config,
             evaluator,
-            project_dir=project,
-        )
+            project_dir=project)
         pop = Population()
         ind = Population.make_individual(wf, generation=0)
         seed_id = ind.id
@@ -214,13 +205,12 @@ class TestRealPipelineRun:
     """Tests 1-6 inspect the single shared evolve_generation() result.
 
     The entire pipeline runs for real: worktree isolation, compose(),
-    InnerLoop._step_with_data_node, WorkflowExecutor._execute_data,
+    InnerLoop._step_with_data_node_inline, WorkflowExecutor._execute_data,
     task.setup/verify.  Only process spawned is `echo ok` (FnNode).
     """
 
     def test_holdout_never_reaches_training(
-        self, shared: type[_SharedState],
-    ) -> None:
+        self, shared: type[_SharedState]) -> None:
         """Test 1: i5/i6 do NOT appear in instance_results from training eval."""
         assert shared.instance_results
         assert len(shared.instance_results) == 4  # i1, i2, i3 (setup_failed), i4
@@ -235,8 +225,7 @@ class TestRealPipelineRun:
         )
 
     def test_scores_are_fractional(
-        self, shared: type[_SharedState],
-    ) -> None:
+        self, shared: type[_SharedState]) -> None:
         """Test 2: At least one instance score is fractional (not 0 or 1)."""
         scores = [
             r.get("score", 0.0)
@@ -257,8 +246,7 @@ class TestRealPipelineRun:
         assert 'grammar_score' in sample, f'Expected grammar_score in details, got {sample}'
 
     def test_all_pass_vs_mean(
-        self, shared: type[_SharedState],
-    ) -> None:
+        self, shared: type[_SharedState]) -> None:
         """Test 3: pipeline score reflects all_pass (0.0), not mean.
 
         The pipeline ran with aggregate=all_pass.  i3 setup fails and i4
@@ -297,8 +285,7 @@ class TestRealPipelineRun:
         )
 
     def test_setup_failure_skips_instance(
-        self, shared: type[_SharedState],
-    ) -> None:
+        self, shared: type[_SharedState]) -> None:
         """Test 4: i3 setup fails → scored as 0.0, passed=False, error preserved.
 
         The real pipeline path: executor._execute_data catches setup
@@ -325,18 +312,14 @@ class TestRealPipelineRun:
         """Test 5: DataNode with 0 items after split-filter → halted."""
         data = DataNode(
             id="data",
-            inline_items=[DataItem(id="x1", metadata={"split": "val"})],
-            subgraph_entry="process",
-            subgraph_exit="process",
-            split="train",  # x1 is val → 0 items after filter
+            inline_items=[DataItem(id="x1", metadata={"split": "val"})],  # x1 is val → 0 items after filter
         )
         process = FnNode(id="process", command="echo ok")
         wf = Workflow(
             name="empty-data",
             nodes={"data": data, "process": process},
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         from factory.workflow.executor import WorkflowExecutor
 
@@ -347,8 +330,7 @@ class TestRealPipelineRun:
         assert "0 items" in result.halt_reason
 
     def test_training_instances_limits_items(
-        self, shared: type[_SharedState],
-    ) -> None:
+        self, shared: type[_SharedState]) -> None:
         """Test 6: Only i1-i4 appear in instance_results (train split)."""
         assert shared.instance_results
         assert len(shared.instance_results) == 4  # i1, i2, i3 (setup_failed), i4
@@ -379,15 +361,14 @@ class TestStandalone:
             tournament_size=2,
             mutation_rate=0.0,
             training_instances=["x", "y"],  # Don't match any task instance
-            holdout_instances=[],
+            
         )
         config.set_task(task)
 
         call_log: list[list[str]] = []
 
         def track_eval(
-            wf: Workflow, project_dir: str, instances: list[str],
-        ) -> EvalResult:
+            wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
             call_log.append(list(instances))
             return EvalResult(score=0.5, benchmark_score=0.5)
 
@@ -397,8 +378,7 @@ class TestStandalone:
             name="simple",
             nodes={"a": FnNode(id="a", command="echo a")},
             edges=[],
-            start_node="a",
-        )
+            start_node="a")
         pop = engine.seed(wf)
 
         engine.evolve_generation(pop, 0, str(tmp_path))
@@ -421,8 +401,7 @@ class TestStandalone:
         gate = GateNode(
             id="gate",
             evaluator_type="agent",
-            evaluator_role=AgentRole.CEO,
-        )
+            evaluator_role=AgentRole.CEO)
         builder = AgentNode(
             id="builder",
             role=AgentRole.BUILDER,
@@ -435,18 +414,15 @@ class TestStandalone:
                 Edge(source="builder", target="gate"),
                 Edge(source="gate", target="builder", condition=VerdictType.RELOOP),
             ],
-            start_node="builder",
-        )
+            start_node="builder")
 
         seed_wf = Workflow(
             name="seed",
             nodes={"builder": AgentNode(
                 id="builder", role=AgentRole.BUILDER,
-                prompt_template="seed prompt",
-            )},
+                prompt_template="seed prompt")},
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
 
         fixed = _validate_and_fix(wf, seed_wf)
 
@@ -473,25 +449,20 @@ class TestStandalone:
             inline_items=[
                 DataItem(id="0", metadata={}),
                 DataItem(id="1", metadata={}),
-            ],
-            subgraph_entry="process",
-            subgraph_exit="process",
-        )
+            ])
         process = FnNode(id="process", command="echo ok")
         wf = Workflow(
             name="inline-test",
             nodes={"data": data, "process": process},
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         from factory.workflow.executor import WorkflowExecutor
 
         ex = WorkflowExecutor(
             wf, tmp_path, dry_run=True,
             allowed_instance_ids={"t1"},
-            validate=False,
-        )
+            validate=False)
         result = asyncio.run(ex.execute())
 
         assert result.success
@@ -523,17 +494,15 @@ class TestStandalone:
             population_size=2,
             tournament_size=2,
             training_instances=["i1", "i2", "i3", "i4"],
-            holdout_instances=["i5", "i6"],
-            frozen_node_ids=["data"],
-        )
+            
+            frozen_node_ids=["data"])
         task = WiringTask(str(project))
         config.set_task(task)
 
         evaluator = SwarmEvaluator(
             config,
             inner_loop_factory=True,
-            project_dir=project,
-        )
+            project_dir=project)
 
         result = evaluator.evaluate(wf, str(project), ["i5", "i6"])
 
@@ -585,17 +554,15 @@ class TestEngineRunE2E:
             mutation_rate=0.0,
             designer_count=0,
             training_instances=["i1", "i2", "i3", "i4"],
-            holdout_instances=["i5", "i6"],
-            frozen_node_ids=["data"],
-        )
+            
+            frozen_node_ids=["data"])
         task = WiringTask(str(project))
         swarm_config.set_task(task)
 
         evaluator = SwarmEvaluator(
             swarm_config,
             inner_loop_factory=True,
-            project_dir=project,
-        )
+            project_dir=project)
 
         # Wrap evaluator.evaluate to record which instances each call receives
         eval_log: list[set[str]] = []
@@ -610,8 +577,7 @@ class TestEngineRunE2E:
         engine = SwarmEngine(
             swarm_config,
             evaluator,
-            project_dir=project,
-        )
+            project_dir=project)
 
         result = engine.run(wf, project_dir=str(project))
 
@@ -627,8 +593,7 @@ class TestEngineRunE2E:
         # Find the first eval call that saw holdout instances
         holdout_ids = {"i5", "i6"}
         holdout_idx = next(
-            (i for i, c in enumerate(eval_log) if c & holdout_ids), None,
-        )
+            (i for i, c in enumerate(eval_log) if c & holdout_ids), None)
         assert holdout_idx is not None, (
             f"No eval call saw holdout instances. Calls: {eval_log}"
         )
@@ -663,16 +628,11 @@ class TestEngineRunE2E:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="wiring_task_copied:WiringTask",
-                    subgraph_entry="process",
-                    subgraph_exit="process",
-                    split="test",
-                ),
+                    task_ref="wiring_task_copied:WiringTask",),
                 "process": FnNode(id="process", command="echo ok"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         swarm_config = SwarmConfig(
             benchmark="wiring",
@@ -681,17 +641,15 @@ class TestEngineRunE2E:
             tournament_size=2,
             mutation_rate=0.0,
             training_instances=["i1", "i2"],
-            holdout_instances=[],
-            frozen_node_ids=["data"],
-        )
+            
+            frozen_node_ids=["data"])
         task = WiringTask(str(project))
         swarm_config.set_task(task)
 
         evaluator = SwarmEvaluator(
             swarm_config,
             inner_loop_factory=True,
-            project_dir=project,
-        )
+            project_dir=project)
 
         result = evaluator.evaluate(wf, str(project), ["i1", "i2"])
 
@@ -704,8 +662,7 @@ class TestEngineRunE2E:
 
     @pytest.mark.xfail(
         strict=True,
-        reason="NODE_REMOVE deletes subgraph nodes, issue 1574",
-    )
+        reason="NODE_REMOVE deletes subgraph nodes, issue 1574")
     def test_no_validation_rejection_xfail(self) -> None:
         """Test 13: remove_node on a DataNode subgraph node produces a valid workflow.
 

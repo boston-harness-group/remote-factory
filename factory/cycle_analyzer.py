@@ -98,6 +98,72 @@ class CycleRecord:
     eval_details: dict[str, object] | None = None
     split: str | None = None
 
+    @classmethod
+    def from_run(
+        cls,
+        item_results: list[dict],
+        *,
+        aggregate: str = "mean",
+        mode: str | None = None,
+        duration_s: float = 0.0,
+        cycle_number: int = 1,
+    ) -> CycleRecord:
+        """Build a CycleRecord from item results with configured aggregation.
+
+        Scoring rules:
+        - errored items are excluded from all aggregation
+        - failed items count with their score
+        - all_pass = 1.0 only if every non-errored score >= 1.0
+        - if most items errored, the candidate is errored (score_end=None)
+        """
+        import statistics
+
+        non_errored = [
+            r for r in item_results if r.get("status") != "errored"
+        ]
+        errored_count = len(item_results) - len(non_errored)
+
+        # If most items errored, the candidate is errored
+        if len(non_errored) == 0 or errored_count > len(non_errored):
+            return cls(
+                cycle_number=cycle_number,
+                mode=mode,
+                started_at=None,
+                ended_at=None,
+                duration_s=duration_s,
+                score_start=None,
+                score_end=None,
+                score_delta=None,
+                errored=errored_count,
+                instance_results=item_results,
+            )
+
+        scores = [float(r.get("score", 0.0)) for r in non_errored]
+
+        if aggregate == "mean":
+            score = statistics.mean(scores)
+        elif aggregate == "median":
+            score = statistics.median(scores)
+        elif aggregate == "max":
+            score = max(scores)
+        elif aggregate == "all_pass":
+            score = 1.0 if all(s >= 1.0 for s in scores) else 0.0
+        else:
+            score = statistics.mean(scores)
+
+        return cls(
+            cycle_number=cycle_number,
+            mode=mode,
+            started_at=None,
+            ended_at=None,
+            duration_s=duration_s,
+            score_start=None,
+            score_end=score,
+            score_delta=None,
+            errored=errored_count,
+            instance_results=item_results,
+        )
+
 
 class CycleAnalyzer:
     """Reads .factory/ artifacts and produces structured CycleRecords."""

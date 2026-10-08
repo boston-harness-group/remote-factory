@@ -11,8 +11,7 @@ from factory.workflow.primitives import (
     DataNode,
     Edge,
     FnNode,
-    Workflow,
-)
+    Workflow)
 
 
 class TestDesignMinimal:
@@ -152,8 +151,7 @@ class TestPropose:
             simple_workflow,
             telemetry={"node_stats": {}, "dominant_failure": ""},
             archive_stats={"diversity": 0.5},
-            benchmark_spec="test",
-        )
+            benchmark_spec="test")
         assert len(proposals) >= 1
         assert len(proposals) <= 3
 
@@ -166,8 +164,7 @@ class TestPropose:
                 "dominant_failure": "",
             },
             archive_stats={"diversity": 0.5},
-            benchmark_spec="test",
-        )
+            benchmark_spec="test")
         remove_proposals = [
             p for p in proposals if p.operator == MutationType.NODE_REMOVE
         ]
@@ -183,8 +180,7 @@ class TestPropose:
                 "dominant_failure": "timeout",
             },
             archive_stats={"diversity": 0.5},
-            benchmark_spec="test",
-        )
+            benchmark_spec="test")
         timeout_proposals = [
             p for p in proposals if p.operator == MutationType.PARAM_MUTATE
         ]
@@ -196,8 +192,7 @@ class TestPropose:
             simple_workflow,
             telemetry={"node_stats": {}, "dominant_failure": ""},
             archive_stats={"diversity": 0.1},
-            benchmark_spec="test",
-        )
+            benchmark_spec="test")
         insert_proposals = [
             p for p in proposals if p.operator == MutationType.NODE_INSERT
         ]
@@ -209,8 +204,7 @@ class TestPropose:
             simple_workflow,
             telemetry={},
             archive_stats={},
-            benchmark_spec="test",
-        )
+            benchmark_spec="test")
         assert len(proposals) >= 1
 
     def test_max_3_proposals(self, simple_workflow) -> None:  # type: ignore[no-untyped-def]
@@ -227,8 +221,7 @@ class TestPropose:
                 "dominant_failure": "timeout",
             },
             archive_stats={"diversity": 0.1},
-            benchmark_spec="test",
-        )
+            benchmark_spec="test")
         assert len(proposals) <= 3
 
 
@@ -244,16 +237,13 @@ class TestFrozenNodePreservation:
                 "positions": FnNode(
                     id="positions",
                     command="load_positions",
-                    writes={".factory/positions.json"},
-                ),
+                    writes={".factory/positions.json"}),
                 "researcher": AgentNode(
                     id="researcher",
-                    role=AgentRole.RESEARCHER,
-                ),
+                    role=AgentRole.RESEARCHER),
             },
             edges=[Edge(source="positions", target="researcher")],
-            start_node="positions",
-        )
+            start_node="positions")
 
     def test_design_minimal_preserves_frozen_nodes(self) -> None:
         designer = DesignerAgent()
@@ -261,8 +251,7 @@ class TestFrozenNodePreservation:
         result = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         assert "positions" in result.nodes
         assert result.nodes["positions"].command == "load_positions"  # type: ignore[union-attr]
 
@@ -272,8 +261,7 @@ class TestFrozenNodePreservation:
         result = designer.design_thorough(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         assert "positions" in result.nodes
         assert result.nodes["positions"].command == "load_positions"  # type: ignore[union-attr]
 
@@ -284,8 +272,7 @@ class TestFrozenNodePreservation:
             "bench",
             {"max_nodes": 6},
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         assert "positions" in result.nodes
         assert result.nodes["positions"].command == "load_positions"  # type: ignore[union-attr]
 
@@ -297,18 +284,15 @@ class TestFrozenNodePreservation:
                 "researcher": AgentNode(
                     id="researcher",
                     role=AgentRole.RESEARCHER,
-                    timeout=999,
-                ),
+                    timeout=999),
             },
             edges=[],
-            start_node="researcher",
-        )
+            start_node="researcher")
         designer = DesignerAgent()
         result = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"researcher"},
-        )
+            frozen_node_ids={"researcher"})
         assert result.nodes["researcher"].timeout == 999  # type: ignore[union-attr]
 
     def test_design_without_frozen_nodes_unchanged(self) -> None:
@@ -329,23 +313,17 @@ class TestFrozenNodePreservation:
             nodes={
                 "positions": DataNode(
                     id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="solver",
-                    subgraph_exit="solver",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "solver": AgentNode(
                     id="solver",
-                    role=AgentRole.BUILDER,
-                ),
+                    role=AgentRole.BUILDER),
             },
             edges=[Edge(source="positions", target="solver")],
-            start_node="positions",
-        )
+            start_node="positions")
         result = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         assert "positions" in result.nodes
         assert type(result.nodes["positions"]).__name__ == "DataNode"
 
@@ -359,18 +337,13 @@ class TestFrozenNodePreservation:
             nodes={
                 "positions": DataNode(
                     id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="solver",
-                    subgraph_exit="solver",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "solver": AgentNode(
                     id="solver",
-                    role=AgentRole.BUILDER,
-                ),
+                    role=AgentRole.BUILDER),
             },
             edges=[Edge(source="positions", target="solver")],
-            start_node="positions",
-        )
+            start_node="positions")
 
         # Verify _auto_frozen_nodes detects the DataNode but NOT subgraph nodes
         auto_frozen = _auto_frozen_nodes(seed)
@@ -389,18 +362,13 @@ class TestDataNodeRewiring:
             nodes={
                 "positions": DataNode(
                     id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="solver",
-                    subgraph_exit="solver",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "solver": AgentNode(
                     id="solver",
-                    role=AgentRole.BUILDER,
-                ),
+                    role=AgentRole.BUILDER),
             },
             edges=[Edge(source="positions", target="solver")],
-            start_node="positions",
-        )
+            start_node="positions")
 
     def test_minimal_start_node_is_data_node(self) -> None:
         """Designer variant with DataNode has start_node == DataNode ID."""
@@ -409,8 +377,7 @@ class TestDataNodeRewiring:
         wf = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         assert wf.start_node == "positions"
 
     def test_minimal_subgraph_entry_points_to_template_start(self) -> None:
@@ -420,8 +387,7 @@ class TestDataNodeRewiring:
         wf = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         data_node = wf.nodes["positions"]
         assert isinstance(data_node, DataNode)
         assert data_node.subgraph_entry == "researcher"
@@ -433,8 +399,7 @@ class TestDataNodeRewiring:
         wf = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         data_node = wf.nodes["positions"]
         assert isinstance(data_node, DataNode)
         assert data_node.subgraph_exit == "gate_qa"
@@ -446,8 +411,7 @@ class TestDataNodeRewiring:
         wf = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         edge_pairs = [(e.source, e.target) for e in wf.edges]
         assert ("positions", "researcher") not in edge_pairs
 
@@ -466,8 +430,7 @@ class TestDataNodeRewiring:
         wf = designer.design_thorough(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         assert wf.start_node == "positions"
         data_node = wf.nodes["positions"]
         assert isinstance(data_node, DataNode)
@@ -486,8 +449,7 @@ class TestDataNodeRewiring:
             "bench",
             {"max_nodes": 6},
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         assert wf.start_node == "positions"
         data_node = wf.nodes["positions"]
         assert isinstance(data_node, DataNode)
@@ -504,8 +466,7 @@ class TestDataNodeRewiring:
         wf = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         issues = wf.validate_graph()
         # No unreachable-node warnings since subgraph nodes are not injected.
         # Only data dependency warnings may remain.
@@ -525,23 +486,17 @@ class TestDataNodeRewiring:
             nodes={
                 "researcher": DataNode(
                     id="researcher",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="solver",
-                    subgraph_exit="solver",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "solver": AgentNode(
                     id="solver",
-                    role=AgentRole.BUILDER,
-                ),
+                    role=AgentRole.BUILDER),
             },
             edges=[Edge(source="researcher", target="solver")],
-            start_node="researcher",
-        )
+            start_node="researcher")
         wf = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"researcher"},
-        )
+            frozen_node_ids={"researcher"})
         data_node = wf.nodes["researcher"]
         assert isinstance(data_node, DataNode)
         # subgraph_entry must NOT be 'researcher' (self-reference)
@@ -573,33 +528,26 @@ class TestInjectFrozenDataNodeSubgraph:
             nodes={
                 "positions": DataNode(
                     id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="generator",
-                    subgraph_exit="validator",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "generator": AgentNode(
                     id="generator",
                     role=AgentRole.BUILDER,
-                    timeout=300,
-                ),
+                    timeout=300),
                 "processor": AgentNode(
                     id="processor",
                     role=AgentRole.RESEARCHER,
-                    timeout=300,
-                ),
+                    timeout=300),
                 "validator": AgentNode(
                     id="validator",
                     role=AgentRole.CODE_REVIEWER,
-                    timeout=300,
-                ),
+                    timeout=300),
             },
             edges=[
                 Edge(source="positions", target="generator"),
                 Edge(source="generator", target="processor"),
                 Edge(source="processor", target="validator"),
             ],
-            start_node="positions",
-        )
+            start_node="positions")
 
     def test_frozen_data_node_subgraph_not_injected(self) -> None:
         """Freezing a DataNode does NOT inject its seed subgraph nodes.
@@ -609,8 +557,7 @@ class TestInjectFrozenDataNodeSubgraph:
         result = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         # Seed subgraph nodes should NOT be present
         assert "generator" not in result.nodes
         assert "processor" not in result.nodes
@@ -628,25 +575,19 @@ class TestInjectFrozenDataNodeSubgraph:
             nodes={
                 "positions": DataNode(
                     id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="missing",
-                    subgraph_exit="validator",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "validator": AgentNode(
                     id="validator",
                     role=AgentRole.CODE_REVIEWER,
-                    timeout=300,
-                ),
+                    timeout=300),
             },
             edges=[],
-            start_node="positions",
-        )
+            start_node="positions")
         # Should not crash
         result = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         # DataNode is still injected
         assert "positions" in result.nodes
 
@@ -658,8 +599,7 @@ class TestInjectFrozenDataNodeSubgraph:
         result = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         issues = result.validate_graph()
         # No unreachable-node warnings should occur since subgraph nodes
         # are not injected. Only data dependency warnings may remain.
@@ -680,18 +620,13 @@ class TestDataSubgraphDesignerAwareness:
             nodes={
                 "positions": DataNode(
                     id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="solver",
-                    subgraph_exit="solver",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "solver": AgentNode(
                     id="solver",
-                    role=AgentRole.BUILDER,
-                ),
+                    role=AgentRole.BUILDER),
             },
             edges=[Edge(source="positions", target="solver")],
-            start_node="positions",
-        )
+            start_node="positions")
 
     def test_data_subgraph_prompt_language(self) -> None:
         """design_minimal with frozen DataNode + executor strategy → entry node
@@ -702,8 +637,7 @@ class TestDataSubgraphDesignerAwareness:
             "bench",
             seed_workflow=seed,
             frozen_node_ids={"positions"},
-            execution_strategy="executor",
-        )
+            execution_strategy="executor")
         data_node = wf.nodes["positions"]
         assert isinstance(data_node, DataNode)
         entry_node = wf.nodes[data_node.subgraph_entry]
@@ -733,8 +667,7 @@ class TestDataSubgraphDesignerAwareness:
         wf = designer.design_thorough(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         # DataNode + 6 template nodes = 7 total
         # Nodes that should NOT be present in data subgraph template
         assert "study" not in wf.nodes
@@ -759,20 +692,15 @@ class TestDataSubgraphDesignerAwareness:
         nodes: dict = {
             "positions": DataNode(
                 id="positions",
-                inline_items=[DataItem(id="pos1", prompt="test")],
-                subgraph_entry="solver",
-                subgraph_exit="solver",
-            ),
+                inline_items=[DataItem(id="pos1", prompt="test")]),
             "researcher": AgentNode(
                 id="researcher",
                 role=AgentRole.RESEARCHER,
                 writes={".factory/strategy/research.md"},
-                prompt_template="Original prompt.",
-            ),
+                prompt_template="Original prompt."),
             "gate_qa": AgentNode(
                 id="gate_qa",
-                role=AgentRole.BUILDER,
-            ),
+                role=AgentRole.BUILDER),
         }
         edges = [Edge(source="researcher", target="gate_qa")]
         seed = Workflow(
@@ -780,15 +708,11 @@ class TestDataSubgraphDesignerAwareness:
             nodes={
                 "positions": DataNode(
                     id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="solver",
-                    subgraph_exit="solver",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "solver": AgentNode(id="solver", role=AgentRole.BUILDER),
             },
             edges=[Edge(source="positions", target="solver")],
-            start_node="positions",
-        )
+            start_node="positions")
         _rewire_data_nodes(nodes, edges, "researcher", seed, {"positions"})
         # _rewire_data_nodes should NOT have changed researcher's prompt or reads
         researcher = nodes["researcher"]
@@ -812,39 +736,31 @@ class TestDataNodeEvolutionModel:
             nodes={
                 "positions": DataNode(
                     id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="generator",
-                    subgraph_exit="validator",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "generator": AgentNode(
                     id="generator",
                     role=AgentRole.BUILDER,
-                    timeout=300,
-                ),
+                    timeout=300),
                 "processor": AgentNode(
                     id="processor",
                     role=AgentRole.RESEARCHER,
-                    timeout=300,
-                ),
+                    timeout=300),
                 "validator": AgentNode(
                     id="validator",
                     role=AgentRole.CODE_REVIEWER,
-                    timeout=300,
-                ),
+                    timeout=300),
             },
             edges=[
                 Edge(source="positions", target="generator"),
                 Edge(source="generator", target="processor"),
                 Edge(source="processor", target="validator"),
             ],
-            start_node="positions",
-        )
+            start_node="positions")
         designer = DesignerAgent()
         result = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         # Seed subgraph nodes (generator, processor, validator) should NOT be present
         assert "generator" not in result.nodes
         assert "processor" not in result.nodes
@@ -862,25 +778,19 @@ class TestDataNodeEvolutionModel:
             nodes={
                 "positions": DataNode(
                     id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="generator",
-                    subgraph_exit="generator",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "generator": AgentNode(
                     id="generator",
                     role=AgentRole.BUILDER,
-                    timeout=300,
-                ),
+                    timeout=300),
             },
             edges=[Edge(source="positions", target="generator")],
-            start_node="positions",
-        )
+            start_node="positions")
         designer = DesignerAgent()
         result = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         data_node = result.nodes["positions"]
         assert isinstance(data_node, DataNode)
         assert data_node.subgraph_entry == "researcher"
@@ -894,19 +804,14 @@ class TestDataNodeEvolutionModel:
             nodes={
                 "positions": DataNode(
                     id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="solver",
-                    subgraph_exit="solver",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "solver": AgentNode(
                     id="solver",
                     role=AgentRole.BUILDER,
-                    prompt_template="Build chess engine",
-                ),
+                    prompt_template="Build chess engine"),
             },
             edges=[Edge(source="positions", target="solver")],
-            start_node="positions",
-        )
+            start_node="positions")
         designer = DesignerAgent()
         result = designer.design_minimal(
             "bench",
@@ -926,24 +831,18 @@ class TestDataNodeEvolutionModel:
             nodes={
                 "positions": DataNode(
                     id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="solver",
-                    subgraph_exit="solver",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "solver": AgentNode(
                     id="solver",
-                    role=AgentRole.BUILDER,
-                ),
+                    role=AgentRole.BUILDER),
             },
             edges=[Edge(source="positions", target="solver")],
-            start_node="positions",
-        )
+            start_node="positions")
         designer = DesignerAgent()
         result = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         data_node = result.nodes["positions"]
         assert isinstance(data_node, DataNode)
         entry_node = result.nodes[data_node.subgraph_entry]
@@ -958,24 +857,18 @@ class TestDataNodeEvolutionModel:
             nodes={
                 "positions": DataNode(
                     id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="solver",
-                    subgraph_exit="solver",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "solver": AgentNode(
                     id="solver",
-                    role=AgentRole.BUILDER,
-                ),
+                    role=AgentRole.BUILDER),
             },
             edges=[Edge(source="positions", target="solver")],
-            start_node="positions",
-        )
+            start_node="positions")
         designer = DesignerAgent()
         result = designer.design_minimal(
             "bench",
             seed_workflow=seed,
-            frozen_node_ids={"positions"},
-        )
+            frozen_node_ids={"positions"})
         data_node = result.nodes["positions"]
         assert isinstance(data_node, DataNode)
         entry_node = result.nodes[data_node.subgraph_entry]
@@ -991,18 +884,13 @@ class TestDataNodeEvolutionModel:
             nodes={
                 "positions": DataNode(
                     id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")],
-                    subgraph_entry="solver",
-                    subgraph_exit="solver",
-                ),
+                    inline_items=[DataItem(id="pos1", prompt="test")]),
                 "solver": AgentNode(
                     id="solver",
-                    role=AgentRole.BUILDER,
-                ),
+                    role=AgentRole.BUILDER),
             },
             edges=[Edge(source="positions", target="solver")],
-            start_node="positions",
-        )
+            start_node="positions")
         frozen = _auto_frozen_nodes(seed)
         assert frozen == {"positions"}
         assert "solver" not in frozen

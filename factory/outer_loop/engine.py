@@ -42,14 +42,14 @@ PLATEAU_WINDOW = 3
 def _auto_frozen_nodes(workflow: Workflow) -> set[str]:
     """Return node IDs that should always be frozen during mutation.
 
-    Includes ONLY DataNode IDs — their subgraphs are the evolution surface
-    and must remain mutable for the outer loop to improve them.
+    DataNode and its paired JoinNode are auto-frozen — the fork/join
+    structure is fixed, while branch nodes remain mutable.
     """
-    from factory.workflow.primitives import DataNode
+    from factory.workflow.primitives import DataNode, JoinNode
 
     frozen: set[str] = set()
     for nid, node in workflow.nodes.items():
-        if isinstance(node, DataNode):
+        if isinstance(node, DataNode) or isinstance(node, JoinNode):
             frozen.add(nid)
     return frozen
 
@@ -566,9 +566,8 @@ class SwarmEngine:
                     log.warning(
                         "task_instances_no_split",
                         task=type(task).__name__,
-                        msg="Task.instances() does not accept split param, falling back to config (val)",
+                        msg="Task.instances() does not accept split param",
                     )
-                    holdout_instances = list(self._config.holdout_instances)
                 try:
                     train_instances = [inst.id for inst in task.instances(split="train")]
                 except TypeError:
@@ -577,11 +576,6 @@ class SwarmEngine:
                     else:
                         # No split configured anywhere — use all instances (pre-split behavior)
                         train_instances = [inst.id for inst in task.instances()]
-
-            # Fall back to SwarmConfig holdout_instances if Task has no splits
-            if not holdout_instances and self._config.holdout_instances:
-                holdout_instances = list(self._config.holdout_instances)
-                train_instances = list(self._config.training_instances)
 
             if holdout_instances:
                 best_wf = Workflow.from_dict(best.workflow_data)  # type: ignore[arg-type]
