@@ -1549,6 +1549,8 @@ class TestDataNodeLoopSubgraph:
 
         project_path = tmp_path
         _sp.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+        _sp.run(["git", "config", "user.name", "test"], cwd=project_path, check=True)
+        _sp.run(["git", "config", "user.email", "test@test.com"], cwd=project_path, check=True)
         _sp.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=project_path, capture_output=True, check=True)
         (project_path / ".factory").mkdir(parents=True, exist_ok=True)
         counter_file = project_path / "counter.txt"
@@ -1720,6 +1722,8 @@ class TestDiskReadsRescanAfterSetup:
 
         project_path = tmp_path
         _sp.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+        _sp.run(["git", "config", "user.name", "test"], cwd=project_path, check=True)
+        _sp.run(["git", "config", "user.email", "test@test.com"], cwd=project_path, check=True)
         _sp.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=project_path, capture_output=True, check=True)
         (project_path / '.factory').mkdir(parents=True, exist_ok=True)
         project_path / 'counter.txt'
