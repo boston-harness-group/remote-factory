@@ -577,6 +577,14 @@ class SwarmEngine:
                         # No split configured anywhere — use all instances (pre-split behavior)
                         train_instances = [inst.id for inst in task.instances()]
 
+            # Fallback: when the Task has no val split, use the config's
+            # training_instances so holdout evaluation still runs (the
+            # OverfitDetector will see delta≈0 since the sets overlap).
+            if not holdout_instances and self._config.training_instances:
+                holdout_instances = list(self._config.training_instances)
+                if not train_instances:
+                    train_instances = list(self._config.training_instances)
+
             if holdout_instances:
                 best_wf = Workflow.from_dict(best.workflow_data)  # type: ignore[arg-type]
                 # Evaluate WITHOUT individual_id → no CycleRecord stored
