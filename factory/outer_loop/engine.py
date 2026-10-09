@@ -544,6 +544,11 @@ class SwarmEngine:
                 if hasattr(self._strategy, "on_improvement"):
                     self._strategy.on_improvement()  # type: ignore[union-attr]
 
+            # Persist generation artifacts
+            if self._project_dir:
+                from factory.outer_loop.filesystem import save_generation
+                save_generation(self._project_dir, generation, summary, population)
+
             generation += 1
 
         convergence_reason = self._get_convergence_reason(generation)
@@ -600,7 +605,7 @@ class SwarmEngine:
 
         pareto = self._archive.pareto_front()
 
-        return OuterLoopResult(
+        result = OuterLoopResult(
             best_workflow_data=best.workflow_data if best else {},
             best_score=best.score if best and best.score is not None else 0.0,
             val_score=holdout_score_val,
@@ -615,6 +620,14 @@ class SwarmEngine:
             pareto_front=pareto,
             hyperparameter_history=hp_history,
         )
+
+        # Persist best workflow and run report
+        if self._project_dir:
+            from factory.outer_loop.filesystem import save_best, save_map_elites
+            save_best(self._project_dir, result)
+            save_map_elites(self._project_dir, self._archive)
+
+        return result
 
     def _should_terminate(self, generation: int) -> bool:
         if self._budget.exhausted:

@@ -61,6 +61,52 @@ def _sync_working_tree(src: Path, dst: Path) -> None:
             shutil.copy2(item, dest_item)
 
 
+def _copy_branch_artifacts(
+    project_path: Path,
+    run_id: str,
+    item_results: list[dict[str, Any]],
+    worktree_item_map: dict[str, Path],
+    sub_workflow: Workflow,
+) -> None:
+    """Copy each branch's events.jsonl and declared outputs into
+    ``.factory/runs/<run>/items/<id>/`` with sha256 hashes.
+
+    *worktree_item_map* maps item_id → worktree path.
+    """
+    runs_dir = project_path / ".factory" / "runs" / run_id
+    declared_writes: set[str] = set()
+    for node in sub_workflow.nodes.values():
+        declared_writes |= set(node.writes)
+
+    for item_id, wt_path in worktree_item_map.items():
+        if not wt_path.exists():
+            continue
+
+        item_dir = runs_dir / "items" / item_id
+        item_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy events.jsonl
+        events_src = wt_path / ".factory" / "events.jsonl"
+        if events_src.exists():
+            shutil.copy2(events_src, item_dir / "events.jsonl")
+
+        # Copy declared outputs with sha256 hashes
+        hashes: dict[str, str] = {}
+        for wpath in declared_writes:
+            src_file = wt_path / wpath
+            if src_file.exists() and src_file.is_file():
+                dst_file = item_dir / wpath
+                dst_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_file, dst_file)
+                content = src_file.read_bytes()
+                hashes[wpath] = hashlib.sha256(content).hexdigest()
+
+        if hashes:
+            (item_dir / "sha256.json").write_text(
+                json.dumps(hashes, indent=2)
+            )
+
+
 def _find_branch_and_join(
     workflow: Workflow,
     data_node_id: str,
@@ -311,6 +357,7 @@ async def run_fork(
 
     sem = asyncio.Semaphore(node.parallelism)
     worktrees_to_clean: list[tuple[Path, str]] = []
+    worktree_item_map: dict[str, Path] = {}  # item_id → worktree path
     item_results: list[dict[str, Any]] = []
 
     try:
@@ -359,6 +406,7 @@ async def run_fork(
                             capture_output=True,
                         )
                         worktrees_to_clean.append((wt_dir, wt_branch))
+                        worktree_item_map[item.id] = wt_dir
 
                         # Copy uncommitted files from parent working tree
                         _sync_working_tree(project_path, wt_dir)
@@ -494,6 +542,12 @@ async def run_fork(
         with items_path.open("w") as f:
             for ir in item_results:
                 f.write(json.dumps(ir, default=str) + "\n")
+
+        # ── Copy branch artifacts into items/<id>/ ──
+        _copy_branch_artifacts(
+            project_path, run_id, item_results, worktree_item_map,
+            sub_workflow,
+        )
 
     finally:
         # Clean up worktrees
