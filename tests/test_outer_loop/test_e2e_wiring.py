@@ -2,7 +2,7 @@
 
 Tests 1-6 share a single engine run via a class-level fixture that exercises
 the REAL pipeline: SwarmEngine → SwarmEvaluator._evaluate_via_inner_loop →
-git worktree → compose() → InnerLoop._step_with_data_node_inline →
+git worktree → compose() → InnerLoop._step_with_task →
 WorkflowExecutor._execute_data → task.setup/verify.
 
 No AgentNodes. No claude binary. The DataNode subgraph is a single FnNode
@@ -120,7 +120,7 @@ class _SharedState:
     """Lazily populated cache for the shared engine run (tests 1-6).
 
     Runs the REAL path: SwarmEngine → SwarmEvaluator._evaluate_via_inner_loop
-    → worktree → compose() → InnerLoop._step_with_data_node_inline →
+    → worktree → compose() → InnerLoop._step_with_task →
     WorkflowExecutor._execute_data → task.setup/verify.
     """
 
@@ -210,7 +210,7 @@ class TestRealPipelineRun:
     """Tests 1-6 inspect the single shared evolve_generation() result.
 
     The entire pipeline runs for real: worktree isolation, compose(),
-    InnerLoop._step_with_data_node_inline, WorkflowExecutor._execute_data,
+    InnerLoop._step_with_task, WorkflowExecutor._execute_data,
     task.setup/verify.  Only process spawned is `echo ok` (FnNode).
     """
 

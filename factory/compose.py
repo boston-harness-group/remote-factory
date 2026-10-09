@@ -252,18 +252,15 @@ def check_mode_task_compat(
 def compose(workflow: Any, task: Any, project_dir: str | Path, inner_loop_config: Any = None) -> Any:
     """Compose a workflow + task into a task-attached InnerLoop.
 
-    InnerLoop.step() executes the task end-to-end when task is set:
-    iterates task.instances(), runs setup → WorkflowExecutor → verify
-    per instance, and aggregates scores via AggregateMethod.
-
-    Known gap: capability compatibility is not re-validated after
-    outer-loop mutations (e.g. NODE_REMOVE stripping the Builder).
-    Mismatches should be scored as failures (score=0), not crashes.
+    When the workflow has no DataNode, compose() adds an implicit
+    DataNode + JoinNode wrapping the entire graph so ALL task-attached
+    runs go through the data runtime (one InnerLoop path).
 
     1. Protocol check — is this a valid Task?
     2. Composition validation — can this mode run this task?
-    3. Derive evaluator from scoring contract
-    4. Wire up InnerLoop
+    3. Add implicit DataNode+JoinNode if missing
+    4. Derive evaluator from scoring contract
+    5. Wire up InnerLoop
 
     Returns an InnerLoop instance.
     """
@@ -272,6 +269,12 @@ def compose(workflow: Any, task: Any, project_dir: str | Path, inner_loop_config
             f"Expected a Task with four hooks (instances, setup, prompt, verify), "
             f"got {type(task).__name__}"
         )
+
+    # Add implicit DataNode+JoinNode when the graph has no DataNode
+    if not _workflow_has_data_node(workflow):
+        from factory.workflow.wrapping import wrap_with_data_node
+
+        workflow = wrap_with_data_node(workflow)
 
     validate_composition(workflow, task)
 

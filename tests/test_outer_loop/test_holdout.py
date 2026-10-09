@@ -612,7 +612,7 @@ class TestLegacyTaskBackwardCompat:
 class TestDataNodeRespectsSubsetSelector:
     """DataNode workflows must respect _subset_selector (train/val firewall).
 
-    Before the fix, InnerLoop._step_with_data_node_inline() ignored _subset_selector
+    Before the fix, InnerLoop._step_with_task() ignored _subset_selector
     and WorkflowExecutor._execute_data() called task.instances() with no split,
     bypassing the train/val firewall.
     """
@@ -712,7 +712,7 @@ class TestDataNodeRespectsSubsetSelector:
             assert executed_ids == {"s1", "h1"}
 
     def test_inner_loop_passes_subset_selector_to_executor(self) -> None:
-        """InnerLoop._step_with_data_node_inline() passes _subset_selector IDs to executor."""
+        """InnerLoop._step_with_task() passes _subset_selector IDs to executor."""
         from unittest.mock import MagicMock, patch
 
         from factory.inner_loop import InnerLoop
@@ -772,7 +772,7 @@ class TestDataNodeRespectsSubsetSelector:
         with (
             patch.object(WorkflowExecutor, "__init__", mock_init),
             patch("asyncio.run", return_value=mock_result)):
-            loop._step_with_data_node_inline()
+            loop._step_with_task()
 
         assert "allowed_instance_ids" in captured_kwargs, (
             "_subset_selector was not passed to WorkflowExecutor"
@@ -847,7 +847,7 @@ class TestDataNodeRespectsSubsetSelector:
         with (
             patch.object(WorkflowExecutor, "__init__", mock_init),
             patch("asyncio.run", return_value=mock_result)):
-            loop._step_with_data_node_inline()
+            loop._step_with_task()
 
         # allowed_instance_ids should be None (not an empty set)
         # because the empty selector means "no split configured" → allow all

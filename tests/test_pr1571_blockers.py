@@ -1,6 +1,6 @@
 """Tests for PR #1571 code review blockers.
 
-Bug 1: holdout leakage in _step_with_data_node_inline
+Bug 1: holdout leakage in _step_with_task
 Bug 2: empty training set intersection silently becomes 'all'
 Bug 3: _validate_and_fix breaks RELOOP-only gates
 Bug 4: aggregation hardcoded to mean
@@ -53,12 +53,12 @@ def _init_git(path: Path) -> None:
             capture_output=True, check=True)
 
 
-# ── Bug 1: holdout leakage in _step_with_data_node_inline ──────────────────────────
+# ── Bug 1: holdout leakage in _step_with_task ──────────────────────────
 
 
 class TestDataNodeHoldoutLeakage:
     """When holdout_ids are configured and no subset_selector is set,
-    _step_with_data_node_inline must restrict allowed_instance_ids to train-only IDs."""
+    _step_with_task must restrict allowed_instance_ids to train-only IDs."""
 
     def test_data_node_holdout_leakage(self, tmp_path: Path) -> None:
         (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
@@ -125,7 +125,7 @@ class TestDataNodeHoldoutLeakage:
             loop = InnerLoop(project_dir=tmp_path, mode="test", task=task, workflow=wf)
             # No _subset_selector set — holdout_ids should trigger train filtering
             assert not hasattr(loop, '_subset_selector') or getattr(loop, '_subset_selector', None) is None
-            loop._step_with_data_node_inline()
+            loop._step_with_task()
 
             # Verify WorkflowExecutor was constructed with allowed_instance_ids
             call_kwargs = MockExecutor.call_args
@@ -362,7 +362,7 @@ class TestAggregateMethodRespected:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            record = loop._step_with_data_node_inline()
+            record = loop._step_with_task()
 
         # With max aggregation: score should be 0.9, not mean 0.7
         assert record.score_end == 0.9, (
@@ -425,7 +425,7 @@ class TestCeoPathUsesInstanceResultsScores:
 
         # ceo-skill DataNode is rejected (deferred to PR B)
         with pytest.raises(ValueError, match="not supported"):
-            loop._step_with_data_node_inline()
+            loop._step_with_task()
 
 
 # ── Bug 6: halt_reason in CycleRecord ────────────────────────────────────
@@ -482,7 +482,7 @@ class TestHaltReasonInCycleRecord:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            record = loop._step_with_data_node_inline()
+            record = loop._step_with_task()
 
         assert record.eval_details is not None, "eval_details should be set on halt"
         assert record.eval_details.get("halt_reason") == "node 'builder' failed: timeout"
@@ -523,7 +523,7 @@ class TestHaltReasonInCycleRecord:
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             MockExecutor.side_effect = ValueError("empty prompt_template")
 
-            record = loop._step_with_data_node_inline()
+            record = loop._step_with_task()
 
         assert record.score_end == 0.0
         assert record.eval_details is not None

@@ -262,41 +262,46 @@ async def run_fork(
             t0 = time.monotonic()
             async with sem:
                 try:
-                    # Create per-item worktree snapshotted from parent working tree
-                    wt_dir = (
-                        project_path
-                        / ".factory-worktrees"
-                        / f"data-{run_id}-{item_idx}"
-                    )
-                    wt_branch = f"factory/data-{run_id}-{item_idx}"
-                    wt_dir.parent.mkdir(parents=True, exist_ok=True)
+                    if dry_run:
+                        # In dry-run mode, use the project_path directly
+                        # (no worktree creation)
+                        item_project_path = project_path
+                    else:
+                        # Create per-item worktree snapshotted from parent working tree
+                        wt_dir = (
+                            project_path
+                            / ".factory-worktrees"
+                            / f"data-{run_id}-{item_idx}"
+                        )
+                        wt_branch = f"factory/data-{run_id}-{item_idx}"
+                        wt_dir.parent.mkdir(parents=True, exist_ok=True)
 
-                    # Get HEAD commit
-                    rev_result = subprocess.run(
-                        ["git", "rev-parse", "HEAD"],
-                        cwd=project_path,
-                        capture_output=True,
-                        text=True,
-                        check=True,
-                    )
-                    base_commit = rev_result.stdout.strip()
+                        # Get HEAD commit
+                        rev_result = subprocess.run(
+                            ["git", "rev-parse", "HEAD"],
+                            cwd=project_path,
+                            capture_output=True,
+                            text=True,
+                            check=True,
+                        )
+                        base_commit = rev_result.stdout.strip()
 
-                    # Create worktree from HEAD
-                    subprocess.run(
-                        [
-                            "git", "worktree", "add",
-                            str(wt_dir), "-b", wt_branch, base_commit,
-                        ],
-                        cwd=project_path,
-                        check=True,
-                        capture_output=True,
-                    )
-                    worktrees_to_clean.append((wt_dir, wt_branch))
+                        # Create worktree from HEAD
+                        subprocess.run(
+                            [
+                                "git", "worktree", "add",
+                                str(wt_dir), "-b", wt_branch, base_commit,
+                            ],
+                            cwd=project_path,
+                            check=True,
+                            capture_output=True,
+                        )
+                        worktrees_to_clean.append((wt_dir, wt_branch))
 
-                    # Copy uncommitted files from parent working tree
-                    _sync_working_tree(project_path, wt_dir)
+                        # Copy uncommitted files from parent working tree
+                        _sync_working_tree(project_path, wt_dir)
 
-                    item_project_path = wt_dir
+                        item_project_path = wt_dir
 
                     # Create TaskInstance from DataItem when task came from
                     # InnerLoop but items are inline/source_path

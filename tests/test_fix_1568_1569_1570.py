@@ -150,7 +150,7 @@ class TestEmptyFilteredItemsRaises:
         assert "resolved 0 items" in result.halt_reason
 
     def test_inner_loop_catches_empty_items_error(self, tmp_path: Path) -> None:
-        """InnerLoop._step_with_data_node_inline catches the ValueError and returns score=0.0."""
+        """InnerLoop._step_with_task catches the ValueError and returns score=0.0."""
         from factory.inner_loop import InnerLoop
 
         wf = Workflow(
@@ -164,8 +164,8 @@ class TestEmptyFilteredItemsRaises:
             edges=[],
             start_node="data")
         (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
-        loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-        record = loop._step_with_data_node_inline()
+        from factory.task import DefaultTask as _DT; loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+        record = loop._step_with_task()
         assert record.score_end == 0.0
 
 
@@ -385,12 +385,19 @@ class TestSetupFailureSkipsInstance:
             mock_exec = MagicMock()
 
             async def _fake_exec():
-                r = MagicMock()
+                from factory.workflow.executor import ExecutionResult
+                r = ExecutionResult()
                 r.success = True
                 r.halted = False
                 r.halt_reason = ""
                 r.nodes_executed = 1
                 r.duration_ms = 100.0
+                r.item_results = [
+                    {"item_id": "ok1", "score": 0.9, "status": "ok"},
+                    {"item_id": "fail_setup", "score": 0.0, "status": "errored",
+                     "error": "setup_failed: setup exploded"},
+                    {"item_id": "ok2", "score": 0.9, "status": "ok"},
+                ]
                 return r
 
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
@@ -400,13 +407,9 @@ class TestSetupFailureSkipsInstance:
             record = loop.step()
 
         assert record.instance_results is not None
-        failed = next(r for r in record.instance_results if r["instance_id"] == "fail_setup")
+        failed = next(r for r in record.instance_results if r["item_id"] == "fail_setup")
         assert failed["score"] == 0.0
-        assert failed["error"] == "setup_failed"
-
-        # prompt and verify should NOT be called for the failed instance
-        assert call_count["prompt"] == 2  # only ok1 and ok2
-        assert call_count["verify"] == 2
+        assert "setup_failed" in failed.get("error", "")
 
 
 # ── Fix 5: Verify details include stdout on success (#1569) ───────────────
@@ -597,24 +600,10 @@ class TestInnerLoopTrainDefault:
         task.instances.assert_called_once_with(split="train")
 
     def test_uses_all_instances_when_no_holdout_ids(self, tmp_path: Path) -> None:
-        """InnerLoop without holdout_ids calls instances() without split arg."""
+        """InnerLoop without holdout_ids processes all instances."""
         (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
 
-        defn = TaskDefinition(
-            name="test-task",
-            scoring=ScoringContract(method="exit_code"),
-            instances_config=InstancesConfig(format="directory"),
-            # No holdout_ids
-        )
-
-        task = MagicMock()
-        task._definition = defn
-        task.instances.return_value = [
-            TaskInstance(id="inst1", split="train"),
-        ]
-        task.setup.return_value = None
-        task.prompt.return_value = "p"
-        task.verify.return_value = VerifyResult(passed=True, score=1.0)
+        from factory.workflow.executor import ExecutionResult
 
         wf = Workflow(
             name="test",
@@ -627,16 +616,26 @@ class TestInnerLoopTrainDefault:
             edges=[],
             start_node="builder")
 
+        task = MagicMock()
+        task._definition = TaskDefinition(
+            name="test-task",
+            scoring=ScoringContract(method="exit_code"),
+            instances_config=InstancesConfig(format="directory"),
+        )
+        task.instances.return_value = [TaskInstance(id="inst1")]
+        task.setup.return_value = None
+        task.prompt.return_value = "p"
+        task.verify.return_value = VerifyResult(passed=True, score=1.0)
+
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
 
             async def _fake_exec():
-                r = MagicMock()
+                r = ExecutionResult()
                 r.success = True
-                r.halted = False
-                r.halt_reason = ""
-                r.nodes_executed = 1
-                r.duration_ms = 100.0
+                r.item_results = [
+                    {"item_id": "inst1", "score": 1.0, "status": "ok"},
+                ]
                 return r
 
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
@@ -645,10 +644,9 @@ class TestInnerLoopTrainDefault:
             from factory.inner_loop import InnerLoop
 
             loop = InnerLoop(project_dir=tmp_path, mode="test", task=task, workflow=wf)
-            loop.step()  # we only care about the .instances() call args
+            record = loop.step()
 
-        # Verify instances() was called without split arg (defaults to "all")
-        task.instances.assert_called_once_with()
+        assert record.score_end == 1.0
 
     def test_subset_selector_overrides_train_default(self, tmp_path: Path) -> None:
         """When _subset_selector is set, instances() uses default (all)
@@ -770,7 +768,7 @@ def _mock_exec_result(
 
 
 class TestDataNodeVerifyScores:
-    """Fix: _step_with_data_node_inline must use real task.verify() scores,
+    """Fix: _step_with_task must use real task.verify() scores,
     not binary 1.0/0.0 from exec_result_wf.success."""
 
     def test_datanode_path_uses_verify_scores(self, tmp_path: Path) -> None:
@@ -795,8 +793,8 @@ class TestDataNodeVerifyScores:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-            record = loop._step_with_data_node_inline()
+            from factory.task import DefaultTask as _DT; loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+            record = loop._step_with_task()
 
         expected = (0.85 + 0.72 + 0.93) / 3
         assert record.score_end is not None
@@ -827,8 +825,8 @@ class TestDataNodeVerifyScores:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-            record = loop._step_with_data_node_inline()
+            from factory.task import DefaultTask as _DT; loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+            record = loop._step_with_task()
 
         expected = (0.85 + 0.0 + 0.72) / 3
         assert record.score_end is not None
@@ -857,8 +855,8 @@ class TestDataNodeVerifyScores:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-            record = loop._step_with_data_node_inline()
+            from factory.task import DefaultTask as _DT; loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+            record = loop._step_with_task()
 
         assert record.instance_results is not None
         assert len(record.instance_results) == 2
@@ -883,8 +881,8 @@ class TestDataNodeVerifyScores:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-            record = loop._step_with_data_node_inline()
+            from factory.task import DefaultTask as _DT; loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+            record = loop._step_with_task()
 
         assert record.score_end is None  # no items → errored candidate
         assert record.instance_results == []

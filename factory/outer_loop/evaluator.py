@@ -475,6 +475,11 @@ class SwarmEvaluator:
                 details=details,
             )
         except Exception as exc:
+            # Re-raise UnsupportedStrategyError so ceo-skill failures
+            # propagate loudly instead of being silently scored as 0.
+            from factory.inner_loop import UnsupportedStrategyError
+            if isinstance(exc, UnsupportedStrategyError):
+                raise
             log.error("inner_loop_eval_failed", error=str(exc), exc_info=True)
             return EvalResult(
                 score=0.0,

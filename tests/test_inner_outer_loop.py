@@ -636,7 +636,9 @@ class TestDataNodeIntegration:
 
     @staticmethod
     def _make_data_workflow() -> Workflow:
-        from factory.workflow.primitives import DataItem, DataNode, Edge, FnNode, Workflow
+        from factory.workflow.primitives import (
+            DataItem, DataNode, Edge, FnNode, JoinNode, Workflow,
+        )
 
         return Workflow(
             name="data_integration",
@@ -650,9 +652,12 @@ class TestDataNodeIntegration:
                     parallelism=1),
                 "sub_start": FnNode(id="sub_start", command="echo start"),
                 "sub_end": FnNode(id="sub_end", command="echo end"),
+                "join": JoinNode(id="join", sources=["sub_end"]),
             },
             edges=[
+                Edge(source="data", target="sub_start"),
                 Edge(source="sub_start", target="sub_end"),
+                Edge(source="sub_end", target="join"),
             ],
             start_node="data")
 
@@ -681,8 +686,8 @@ class TestDataNodeIntegration:
         r.duration_ms = 100.0
         return r
 
-    def test_data_node_routes_through_step_with_data_node_inline(self, tmp_path: Path) -> None:
-        """DataNode workflow routes through InnerLoop._step_with_data_node_inline()."""
+    def test_data_node_routes_through_step_with_task(self, tmp_path: Path) -> None:
+        """DataNode workflow routes through InnerLoop._step_with_task()."""
         from unittest.mock import AsyncMock, patch
 
         from factory.inner_loop import InnerLoop
@@ -694,12 +699,10 @@ class TestDataNodeIntegration:
         mock_result = ExecutionResult()
         mock_result.success = True
         mock_result.item_results = [
-            {"item_id": "inst-1", "score": 1.0, "passed": True},
+            {"item_id": "inst-1", "score": 1.0, "status": "ok"},
         ]
 
         loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=task)
-
-        assert loop._workflow_has_data_node() is True
 
         with patch(
             "factory.workflow.executor.WorkflowExecutor.execute",
@@ -737,36 +740,40 @@ class TestDataNodeIntegration:
         task.setup.assert_not_called()
         task.verify.assert_not_called()
 
-    def test_no_data_node_uses_manual_per_instance_loop(self, tmp_path: Path) -> None:
-        """Without DataNode, InnerLoop uses the manual per-instance loop."""
+    def test_no_data_node_gets_auto_wrapped(self, tmp_path: Path) -> None:
+        """Without DataNode, InnerLoop auto-wraps with DataNode+JoinNode."""
         from unittest.mock import patch
 
         from factory.inner_loop import InnerLoop
         from factory.task import ScoringContract, TaskDefinition, TaskInstance, VerifyResult
+        from factory.workflow.executor import ExecutionResult
+        from factory.workflow.primitives import DataNode
 
         wf = self._make_plain_workflow()
         task = MagicMock()
+        task._definition = TaskDefinition(name="mock", scoring=ScoringContract(method="exit_code"))
         task.instances.return_value = [TaskInstance(id="inst-1")]
-        task.definition = TaskDefinition(name="mock", scoring=ScoringContract(method="exit_code"))
         task.setup.return_value = None
         task.prompt.return_value = "test prompt"
         task.verify.return_value = VerifyResult(passed=True, score=0.75)
 
+        mock_result = ExecutionResult()
+        mock_result.success = True
+        mock_result.item_results = [
+            {"item_id": "inst-1", "score": 0.75, "status": "ok"},
+        ]
+
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
-            mock_exec.execute = self._async_return(self._make_exec_result())
+            mock_exec.execute = self._async_return(mock_result)
             MockExecutor.return_value = mock_exec
 
             loop = InnerLoop(project_dir=tmp_path, mode="test", task=task, workflow=wf)
             record = loop.step()
 
-        task.instances.assert_called_once()
-        task.setup.assert_called_once()
-        task.prompt.assert_called_once()
-        task.verify.assert_called_once()
+        # The workflow should now have a DataNode (auto-wrapped)
+        assert any(isinstance(n, DataNode) for n in loop.workflow.nodes.values())
         assert record.score_end == pytest.approx(0.75)
-        assert record.instance_results is not None
-        assert len(record.instance_results) == 1
 
     def test_compute_features_detects_data_node(self) -> None:
         """compute_features returns has_data_node=1 at index 8 for DataNode workflows."""
@@ -792,11 +799,12 @@ class TestDataNodeIntegration:
 
         wf = self._make_data_workflow()
         task = MagicMock()
+        task._definition = None
 
         mock_result = ExecutionResult()
         mock_result.success = True
         mock_result.item_results = [
-            {"item_id": "inst-1", "score": 1.0, "passed": True},
+            {"item_id": "inst-1", "score": 1.0, "status": "ok"},
         ]
 
         loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=task)
@@ -812,7 +820,6 @@ class TestDataNodeIntegration:
 
         features = compute_features(wf)
         assert features[8] == 1
-        assert loop._workflow_has_data_node() is True
 
 
 # ── DataNode compose() validation (PR #1483 fix 8) ───────────────

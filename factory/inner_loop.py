@@ -28,11 +28,18 @@ from typing import Any, Protocol, runtime_checkable
 
 import structlog
 
-from factory.compose import IncompatibleCompositionError
 from factory.cycle_analyzer import CycleAnalyzer, CycleRecord
-from factory.workflow.primitives import DataNode, Workflow
+from factory.workflow.primitives import Workflow
 
 log = structlog.get_logger()
+
+
+class UnsupportedStrategyError(ValueError):
+    """Raised when an execution strategy is not supported for this workflow type.
+
+    This error must propagate through the evaluator (not be swallowed)
+    so that ceo-skill / ceo-tool failures are visible in tests.
+    """
 
 
 @dataclass
@@ -160,7 +167,6 @@ class InnerLoop:
         self._inner_loop_config = inner_loop_config
         self._step_count = 0
         self._history: list[CycleRecord] = []
-        self._has_data_node: bool | None = None
         self._ceo_cost_warned = False
         self._validate_frozen_nodes()
 
@@ -282,14 +288,6 @@ class InnerLoop:
         self._step_count += 1
         self._history.append(record)
         return record
-
-    def _workflow_has_data_node(self) -> bool:
-        if getattr(self, '_has_data_node', None) is None:
-            self._has_data_node = (
-                self.workflow is not None
-                and any(isinstance(n, DataNode) for n in self.workflow.nodes.values())
-            )
-        return bool(self._has_data_node)
 
     def _ensure_ephemeral_mode(self) -> str:
         """Register self.workflow as an ephemeral mode for CEO subprocess discovery.
@@ -413,247 +411,10 @@ class InnerLoop:
         )
 
     def _step_with_task(self, directives: dict[str, Any] | None = None) -> CycleRecord:
-        """Task-driven step: setup → WorkflowExecutor → verify per instance."""
-        assert self.task is not None
-        assert self.workflow is not None
-        import asyncio
-        import statistics
+        """Task-driven step via the data runtime (single path).
 
-        from factory.compose import validate_composition
-        from factory.models import AggregateMethod, InnerLoopConfig
-        from factory.workflow.executor import ExecutionResult, WorkflowExecutor
-
-        if directives:
-            self._write_directives(directives)
-
-        if self._workflow_has_data_node():
-            return self._step_with_data_node_inline(directives)
-
-        # Belt-and-suspenders: catch post-mutation composition failures
-        # (e.g. NODE_REMOVE stripping the Builder after initial composition)
-        try:
-            validate_composition(self.workflow, self.task)
-        except IncompatibleCompositionError as exc:
-            log.warning(
-                "composition_incompatible",
-                workflow=getattr(self.workflow, "name", "unknown"),
-                task=getattr(self.task, "name", "unknown"),
-                error=str(exc),
-            )
-            self._step_count += 1
-            record = CycleRecord(
-                cycle_number=self._step_count,
-                mode=self.mode,
-                started_at=None,
-                ended_at=None,
-                duration_s=0.0,
-                score_start=None,
-                score_end=0.0,
-                score_delta=None,
-            )
-            self._history.append(record)
-            return record
-
-        # One-time cost warning for CEO subprocess strategies
-        if self.execution_strategy in ("ceo-skill", "ceo-tool") and not self._ceo_cost_warned:
-            log.warning(
-                "ceo_subprocess_cost_warning",
-                execution_strategy=self.execution_strategy,
-                note="CEO subprocess evaluation is 5-10x more expensive per evaluation than executor",
-            )
-            self._ceo_cost_warned = True
-
-        event_offset = self._count_lines(self.factory_dir / "events.jsonl")
-
-        t0 = time.monotonic()
-        workflow = self.workflow
-
-        # Default to train split when holdout_ids are configured and no
-        # subset_selector is set, to prevent holdout leakage into training.
-        subset_selector = getattr(self, "_subset_selector", None)
-        _defn = getattr(self.task, "_definition", None)
-        _holdout_ids = (
-            getattr(getattr(_defn, "instances_config", None), "holdout_ids", None)
-            if _defn is not None
-            else None
-        )
-        if subset_selector is None and _holdout_ids:
-            try:
-                all_instances = list(self.task.instances(split="train"))
-            except TypeError:
-                log.warning('task_instances_no_split', task=type(self.task).__name__)
-                all_instances = list(self.task.instances())
-        else:
-            all_instances = list(self.task.instances())
-        if subset_selector is not None:
-            selected_ids = subset_selector.select(
-                [inst.id for inst in all_instances]
-            )
-            if selected_ids:
-                selected_set = set(selected_ids)
-                all_instances = [i for i in all_instances if i.id in selected_set]
-            # If selected_ids is empty, skip filtering (allow all instances)
-
-        instance_results: list[dict[str, Any]] = []
-        scores: list[float] = []
-
-        # Pre-validate workflow so evolved candidates with empty prompts
-        # get score=0 instead of crashing on every instance.
-        if self.execution_strategy not in ("ceo-skill", "ceo-tool"):
-            try:
-                from factory.workflow.validation import validate_workflow
-
-                issues = validate_workflow(workflow)
-                if issues:
-                    raise ValueError(
-                        f"Workflow '{workflow.name}' has validation errors:\n"
-                        + "\n".join(f"  - {i}" for i in issues)
-                    )
-            except ValueError as exc:
-                log.warning(
-                    "workflow_validation_failed",
-                    error=str(exc),
-                    workflow=getattr(workflow, "name", "unknown"),
-                )
-                duration_s = time.monotonic() - t0
-                record = CycleRecord(
-                    cycle_number=self._step_count + 1,
-                    mode=self.mode,
-                    started_at=None,
-                    ended_at=None,
-                    duration_s=duration_s,
-                    score_start=None,
-                    score_end=0.0,
-                    score_delta=None,
-                )
-                record.frozen_nodes = sorted(self.frozen_nodes)
-                record.mutable_node_ids = sorted(self.mutable_nodes())
-                self._step_count += 1
-                self._history.append(record)
-                return record
-
-        for inst in all_instances:
-            try:
-                try:
-                    self.task.setup(inst, self.project_dir)
-                except Exception as setup_exc:
-                    log.warning(
-                        "instance_setup_failed",
-                        instance_id=inst.id,
-                        error=str(setup_exc),
-                    )
-                    instance_results.append({
-                        "instance_id": inst.id,
-                        "passed": False,
-                        "score": 0.0,
-                        "error": "setup_failed",
-                    })
-                    scores.append(0.0)
-                    continue
-
-                prompt_text = self.task.prompt(inst)
-
-                exec_result: _SubprocessExecutionResult | ExecutionResult
-                if self.execution_strategy in ("ceo-skill", "ceo-tool"):
-                    engine = "tool" if self.execution_strategy == "ceo-tool" else "skill"
-                    exec_result = self._run_ceo_subprocess(prompt_text, engine=engine)
-                else:
-                    executor = WorkflowExecutor(
-                        workflow,
-                        self.project_dir,
-                        initial_context=prompt_text,
-                        validate=False,
-                    )
-                    exec_result = asyncio.run(executor.execute())
-
-                vr = self.task.verify(inst, self.project_dir)
-
-                vr_details = dict(vr.details)
-                vr_details["executor_success"] = exec_result.success
-                vr_details["executor_nodes_executed"] = exec_result.nodes_executed
-                vr_details["executor_duration_ms"] = exec_result.duration_ms
-                if exec_result.halted:
-                    vr_details["executor_halt_reason"] = exec_result.halt_reason
-
-                instance_results.append({
-                    "instance_id": inst.id,
-                    "passed": vr.passed,
-                    "score": vr.score,
-                    "details": vr_details,
-                })
-                scores.append(vr.score)
-            except Exception as exc:
-                instance_results.append({
-                    "instance_id": inst.id,
-                    "passed": False,
-                    "score": 0.0,
-                    "error": str(exc),
-                })
-                scores.append(0.0)
-
-        aggregate_method = (
-            self._inner_loop_config.aggregate
-            if self._inner_loop_config
-            else InnerLoopConfig().aggregate
-        )
-
-        if not scores:
-            aggregate_score = 0.0
-        elif aggregate_method == AggregateMethod.mean:
-            aggregate_score = statistics.mean(scores)
-        elif aggregate_method == AggregateMethod.median:
-            aggregate_score = statistics.median(scores)
-        elif aggregate_method == AggregateMethod.max:
-            aggregate_score = max(scores)
-        elif aggregate_method == AggregateMethod.all_pass:
-            aggregate_score = 1.0 if all(s >= 1.0 for s in scores) else 0.0
-        else:
-            aggregate_score = statistics.mean(scores)
-
-        duration_s = time.monotonic() - t0
-
-        analyzer = CycleAnalyzer(
-            self.factory_dir,
-            workflow=self.workflow,
-            event_offset=event_offset,
-        )
-        cost_record = analyzer.latest()
-        total_cost_usd = cost_record.total_cost_usd if cost_record else 0.0
-        cost_by_agent = cost_record.cost_by_agent if cost_record else {}
-
-        record = CycleRecord(
-            cycle_number=self._step_count + 1,
-            mode=self.mode,
-            started_at=None,
-            ended_at=None,
-            duration_s=duration_s,
-            score_start=None,
-            score_end=aggregate_score,
-            score_delta=None,
-            instance_results=instance_results,
-            total_cost_usd=total_cost_usd,
-            cost_by_agent=cost_by_agent,
-        )
-        record.frozen_nodes = sorted(self.frozen_nodes)
-        record.mutable_node_ids = sorted(self.mutable_nodes())
-
-        self._write_cycle_summary(
-            returncode=0,
-            event_offset=event_offset,
-            duration_ms=int(duration_s * 1000),
-            builder_committed=False,
-            experiments=0,
-            test_score=aggregate_score,
-            instance_results=instance_results,
-        )
-
-        self._step_count += 1
-        self._history.append(record)
-        return record
-
-    def _step_with_data_node_inline(self, directives: dict[str, Any] | None = None) -> CycleRecord:
-        """Execute DataNode workflows.
-
+        ALL task-attached runs go through the DataNode path:
+        compose() guarantees the workflow has a DataNode+JoinNode.
         Two modes controlled by ``_verify_only`` (set by the evaluator):
         - False (default): full executor run — plan → data fork → summarize.
         - True: setup + verify per item only, no branch workflow / side effects.
@@ -662,17 +423,28 @@ class InnerLoop:
         """
         import asyncio
 
-        t0 = time.monotonic()
+        assert self.task is not None
         assert self.workflow is not None
 
+        if directives:
+            self._write_directives(directives)
+
+        # Ensure workflow has a DataNode — add implicit wrapping if missing
+        # (compose() normally does this, but InnerLoop can be created directly)
+        from factory.workflow.primitives import DataNode as _DataNode
+        if not any(isinstance(n, _DataNode) for n in self.workflow.nodes.values()):
+            from factory.workflow.wrapping import wrap_with_data_node
+            self.workflow = wrap_with_data_node(self.workflow)
+
+        t0 = time.monotonic()
+
         if self.execution_strategy in ('ceo-skill', 'ceo-tool'):
-            raise ValueError(
+            raise UnsupportedStrategyError(
                 "DataNode workflows are not supported with ceo-skill / ceo-tool "
                 "until PR B.  Use execution_strategy='executor'."
             )
 
         from factory.models import InnerLoopConfig
-        from factory.workflow.primitives import DataNode as _DataNode
 
         # Get allowed instance IDs from subset selector (train/val firewall)
         subset_selector = getattr(self, '_subset_selector', None)
@@ -1025,7 +797,7 @@ class InnerLoop:
         summary: dict[str, Any] = {
             "mode": self.mode,
             "score": round(score, 4),
-            "scoring_method": ("task_verify" if self._workflow_has_data_node() else "pytest_pass_rate") if test_score is not None else "heuristic",
+            "scoring_method": "task_verify" if (self.task is not None and test_score is not None) else ("pytest_pass_rate" if test_score is not None else "heuristic"),
             "heuristic_score": round(heuristic_score, 2),
             "cost_usd": round(total_cost, 2),
             "agents_spawned": agents_spawned,

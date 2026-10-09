@@ -1068,7 +1068,7 @@ class TestAgentFnInjection:
         """agent_fn propagates to DataNode per-item sub-executors."""
         from unittest.mock import AsyncMock
 
-        from factory.workflow.primitives import DataItem, DataNode
+        from factory.workflow.primitives import DataItem, DataNode, JoinNode
 
         mock_fn = AsyncMock(return_value=("sub output", 0))
 
@@ -1082,8 +1082,12 @@ class TestAgentFnInjection:
                     id="sub_agent",
                     role=AgentRole.BUILDER,
                     prompt_template="build"),
+                "join": JoinNode(id="join", sources=["sub_agent"]),
             },
-            edges=[],
+            edges=[
+                Edge(source="data", target="sub_agent"),
+                Edge(source="sub_agent", target="join"),
+            ],
             start_node="data")
 
         executor = WorkflowExecutor(wf, tmp_project, agent_fn=mock_fn)
