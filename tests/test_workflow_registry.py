@@ -45,6 +45,57 @@ class TestDiscovery:
         assert entries["local"].source == "project"
 
 
+def _write_project_workflow(project: Path, name: str) -> None:
+    wf_dir = project / ".factory" / "workflows"
+    wf_dir.mkdir(parents=True)
+    (wf_dir / f"{name}.py").write_text(
+        "from factory.workflow.definitions import design_workflow\n"
+        "\n"
+        f'meta = {{"name": "{name}", "description": "Project-local"}}\n'
+        "\n"
+        "def workflow():\n"
+        "    wf = design_workflow()\n"
+        f'    wf.name = "{name}"\n'
+        "    return wf\n"
+    )
+
+
+class TestDiscoveryAfterPluginRegistration:
+    """Plugins register callables at startup, before any lookup runs discovery."""
+
+    def test_get_workflow_finds_project_workflow(self, tmp_path: Path) -> None:
+        WorkflowRegistry.register_callable("composed", lambda: None, source="package")
+        _write_project_workflow(tmp_path, "local")
+
+        wf = WorkflowRegistry.get_workflow("local", tmp_path)
+
+        assert wf is not None
+        assert wf.name == "local"
+
+    def test_list_workflows_includes_project_and_registered(self, tmp_path: Path) -> None:
+        WorkflowRegistry.register_callable("composed", lambda: None, source="package")
+        _write_project_workflow(tmp_path, "local")
+
+        names = {entry.name for entry in WorkflowRegistry.list_workflows(tmp_path)}
+
+        assert {"local", "composed", "design"} <= names
+
+    def test_discover_keeps_registered_callables(self) -> None:
+        WorkflowRegistry.register_callable("composed", lambda: None, source="package")
+
+        entries = WorkflowRegistry.discover()
+
+        assert entries["composed"].source == "package"
+
+    def test_get_workflow_discovers_a_second_project(self, tmp_path: Path) -> None:
+        first, second = tmp_path / "first", tmp_path / "second"
+        _write_project_workflow(first, "one")
+        _write_project_workflow(second, "two")
+
+        assert WorkflowRegistry.get_workflow("one", first) is not None
+        assert WorkflowRegistry.get_workflow("two", second) is not None
+
+
 # ── get_workflow ─────────────────────────────────────────────────
 
 
