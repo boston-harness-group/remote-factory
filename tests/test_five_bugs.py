@@ -9,13 +9,11 @@ BUG 5: FnNode with empty command AND callable_name silently produces empty outpu
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-from typing import Any, Iterator, Literal
+from typing import Any, Iterator
 
 import pytest
 
-from factory.testing import DummyTask, FakeAgent
 from factory.task import Task, TaskDefinition, TaskInstance, VerifyResult
 
 
@@ -47,7 +45,6 @@ def _make_simple_workflow(name: str = "test-wf"):
     from factory.workflow.primitives import (
         AgentNode,
         AgentRole,
-        Edge,
         Workflow,
     )
 
@@ -141,7 +138,6 @@ async def test_bug2_agent_stdout_does_not_overwrite_tool_written_file(tmp_path: 
     from factory.workflow.primitives import (
         AgentNode,
         AgentRole,
-        Edge,
         Workflow,
     )
     from factory.workflow.executor import WorkflowExecutor
@@ -307,12 +303,9 @@ def test_bug4_reflector_filters_invalid_node_targets():
     """Reflector must drop suggestions targeting nodes not in the workflow."""
     from factory.outer_loop.reflector import (
         MutationSuggestion,
-        OuterLoopReflector,
-        ReflectionReport,
     )
 
     # A suggestion targeting a non-existent node should be filtered
-    report = ReflectionReport()
     real_nodes = {"builder", "researcher"}
 
     suggestion_real = MutationSuggestion(

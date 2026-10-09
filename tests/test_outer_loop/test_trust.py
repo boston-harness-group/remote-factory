@@ -11,29 +11,20 @@ or silent failures.
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import json
-import os
-import shutil
 import subprocess
-import time
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
 import pytest
 
 from factory.cycle_analyzer import CycleRecord
-from factory.models import ItemResult, ItemStatus
 from factory.outer_loop.engine import SwarmEngine
 from factory.outer_loop.evaluator import SwarmEvaluator
-from factory.outer_loop.models import EvalResult, SwarmConfig
-from factory.outer_loop.mutations import MutationStrategy, WeightedRandomStrategy, mutate_prompt
-from factory.outer_loop.population import Population
+from factory.outer_loop.models import SwarmConfig
 from factory.outer_loop.reflector import (
     MutationSuggestion,
     OuterLoopReflector,
-    ReflectionReport,
     _filter_suggestions,
 )
 from factory.task import Task, TaskDefinition, TaskInstance, VerifyResult
@@ -417,7 +408,7 @@ class TestTrainValFirewall:
             designer=None,
         )
 
-        result = engine.run(wf)
+        engine.run(wf)  # side-effect: populates evaluator._cycle_records
 
         # Check that training evaluations only used train items
         for ind_id, rec in evaluator._cycle_records.items():

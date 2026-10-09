@@ -90,7 +90,7 @@ def assert_run_trustworthy(
     # 4. trajectory.jsonl
     traj_path = ol_dir / "trajectory.jsonl"
     if traj_path.exists():
-        lines = [l.strip() for l in traj_path.read_text().splitlines() if l.strip()]
+        lines = [ln.strip() for ln in traj_path.read_text().splitlines() if ln.strip()]
         _check("trajectory_has_entries", len(lines) > 0, "trajectory.jsonl is empty")
     else:
         _check("trajectory_exists", False, f"Missing {traj_path}")
