@@ -113,7 +113,6 @@ def _make_config(**overrides: object) -> SwarmConfig:
         "tournament_size": 2,
         "mutation_rate": 0.3,
         "training_instances": ["s1", "s2", "s3"],
-        "holdout_instances": [],
     }
     defaults.update(overrides)
     return SwarmConfig(**defaults)  # type: ignore[arg-type]
@@ -225,7 +224,8 @@ class TestReflectorFirewall:
         reflector = OuterLoopReflector(k=1)
         holdout_rec = CycleRecord(
             cycle_number=1, mode=None, started_at=None, ended_at=None,
-            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None,)
+            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None,
+            split="val",)
         train_rec = CycleRecord(
             cycle_number=2, mode=None, started_at=None, ended_at=None,
             duration_s=1.0, score_start=None, score_end=0.6, score_delta=None,)
@@ -276,7 +276,8 @@ class TestCycleRecordSplit:
     def test_cycle_record_split_train(self) -> None:
         rec = CycleRecord(
             cycle_number=1, mode=None, started_at=None, ended_at=None,
-            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None,)
+            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None,
+            split="train",)
         assert rec.split == "train"
 
 
