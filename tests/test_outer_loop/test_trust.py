@@ -624,7 +624,7 @@ class TestPlantedSolution:
             "factory.outer_loop.engine.apply_random_mutation",
             side_effect=_planted_mutate,
         ):
-            summary = engine.evolve_generation(pop, generation=0, project_dir=str(project))
+            _summary = engine.evolve_generation(pop, generation=0, project_dir=str(project))
 
         # ── Harvest results ──────────────────────────────────────
         # Find the offspring (non-seed individual)
