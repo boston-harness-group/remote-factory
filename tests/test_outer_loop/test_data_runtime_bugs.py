@@ -184,19 +184,66 @@ class TestBug1SplitLabel:
 # ── Bug 2: per-item cost ────────────────────────────────────────────
 
 
-class TestBug2PerItemCost:
-    """ItemResult.cost > 0 after branch execution."""
+COST_PER_AGENT_CALL = 0.01
 
-    def test_item_cost_nonzero(self, tmp_path: Path) -> None:
-        """After branch execution, ItemResult.cost should be > 0."""
+
+async def _cost_emitting_agent(
+    role: str,
+    task: str,
+    project_path: Any,
+    *,
+    model: Any = None,
+    timeout: float = 600.0,
+    node_id: str | None = None,
+    **kw: Any,
+) -> tuple[str, int]:
+    """Mock agent_fn that writes an agent.completed event with known cost."""
+    from factory.events import emit_event
+
+    proj = Path(project_path)
+    emit_event(
+        proj,
+        "agent.completed",
+        agent=role,
+        data={"total_cost_usd": COST_PER_AGENT_CALL, "return_code": 0},
+    )
+    return "ok", 0
+
+
+def _make_agent_workflow() -> Workflow:
+    """Workflow with DataNode → AgentNode → JoinNode for cost testing."""
+    from factory.workflow.primitives import AgentNode, AgentRole
+
+    return Workflow(
+        name="cost-test",
+        nodes={
+            "data": DataNode(id="data", parallelism=2),
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="Build {project_path}",
+            ),
+            "join": JoinNode(id="join", sources=["builder"]),
+        },
+        edges=[
+            Edge(source="data", target="builder"),
+            Edge(source="builder", target="join"),
+        ],
+        start_node="data",
+    )
+
+
+class TestBug2PerItemCost:
+    """ItemResult.cost equals real agent cost from events — never fabricated."""
+
+    def test_item_cost_from_agent_events(self, tmp_path: Path) -> None:
+        """Each item's cost equals the sum of agent costs emitted during its branch."""
         from factory.workflow.data_runtime import run_fork
 
         project = _bootstrap(tmp_path)
-        wf = _make_test_workflow()
+        wf = _make_agent_workflow()
         task = _SplitTask()
 
-        # dry_run=True won't produce real cost, so use dry_run=False
-        # but with a simple FnNode branch (no real agent)
         results = asyncio.run(run_fork(
             wf,
             wf.nodes["data"],  # type: ignore[arg-type]
@@ -204,30 +251,55 @@ class TestBug2PerItemCost:
             project,
             dry_run=False,
             task=task,
-            run_id="cost-test",
+            run_id="cost-exact",
+            split="train",
+            agent_fn=_cost_emitting_agent,
+        ))
+
+        # Train split: t1, t2, t3 → 3 items, each gets 1 agent call
+        assert len(results) == 3
+        for r in results:
+            assert r["cost"] == pytest.approx(COST_PER_AGENT_CALL), (
+                f"Item {r['item_id']} cost={r['cost']}, "
+                f"expected {COST_PER_AGENT_CALL}"
+            )
+
+    def test_no_agent_branch_cost_is_zero(self, tmp_path: Path) -> None:
+        """Branch with only FnNodes → cost stays 0.0 (no fabrication)."""
+        from factory.workflow.data_runtime import run_fork
+
+        project = _bootstrap(tmp_path)
+        wf = _make_test_workflow()  # FnNode only, no agent
+        task = _SplitTask()
+
+        results = asyncio.run(run_fork(
+            wf,
+            wf.nodes["data"],  # type: ignore[arg-type]
+            "data",
+            project,
+            dry_run=False,
+            task=task,
+            run_id="zero-cost",
             split="train",
         ))
 
         assert len(results) > 0
-        # At least non-errored items should have cost > 0
-        non_errored = [r for r in results if r["status"] != "errored"]
-        assert len(non_errored) > 0, "Expected some non-errored items"
-        for r in non_errored:
-            assert r["cost"] > 0, (
-                f"Item {r['item_id']} has cost={r['cost']}, expected > 0"
+        for r in results:
+            assert r["cost"] == 0.0, (
+                f"Item {r['item_id']} cost={r['cost']}, "
+                f"expected 0.0 for FnNode-only branch"
             )
 
-    def test_cycle_record_sums_costs(self) -> None:
-        """CycleRecord.from_run() sums per-item costs into total_cost_usd."""
+    def test_cycle_record_sums_exact_costs(self) -> None:
+        """CycleRecord.from_run() sums per-item costs into total_cost_usd exactly."""
         items = [
-            {"item_id": "a", "status": "ok", "score": 0.8, "cost": 0.10},
-            {"item_id": "b", "status": "ok", "score": 0.6, "cost": 0.15},
-            {"item_id": "c", "status": "errored", "score": 0.0, "cost": 0.05},
+            {"item_id": "a", "status": "ok", "score": 0.8, "cost": 0.01},
+            {"item_id": "b", "status": "ok", "score": 0.6, "cost": 0.01},
+            {"item_id": "c", "status": "errored", "score": 0.0, "cost": 0.01},
         ]
         record = CycleRecord.from_run(items, aggregate="mean")
-        expected_cost = 0.10 + 0.15 + 0.05
-        assert record.total_cost_usd == pytest.approx(expected_cost), (
-            f"Expected total_cost_usd={expected_cost}, got {record.total_cost_usd}"
+        assert record.total_cost_usd == pytest.approx(0.03), (
+            f"Expected total_cost_usd=0.03, got {record.total_cost_usd}"
         )
 
 

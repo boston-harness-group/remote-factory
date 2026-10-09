@@ -401,6 +401,10 @@ async def run_fork(
 
                     branch_cost = 0.0
                     try:
+                        from datetime import datetime, timezone as _tz
+
+                        _cost_start = datetime.now(_tz.utc)
+
                         item_executor = WorkflowExecutor(
                             sub_workflow.model_copy(deep=True),
                             item_project_path,
@@ -419,18 +423,24 @@ async def run_fork(
                         base_files |= setup_files
 
                         item_executor.completed_files = base_files
-                        branch_result = await item_executor.execute()
-                        branch_cost = branch_result.duration_ms / 1000.0  # fallback
-                        # Read real cost from the branch executor result
-                        # (populated by agent_fn / runner when available)
-                        if hasattr(branch_result, 'cost') and branch_result.cost > 0:
-                            branch_cost = branch_result.cost
-                        else:
-                            # Sum agent costs from events
-                            for ev in branch_result.events:
-                                if ev.get("type") == "node.completed":
-                                    branch_cost = branch_result.duration_ms / 1000.0
-                                    break
+                        await item_executor.execute()
+
+                        # Read real agent cost from events emitted by
+                        # invoke_agent (agent.completed → total_cost_usd).
+                        # Never fabricate cost from duration — if cost is
+                        # unknown, leave it as 0.0.
+                        from factory.events import sum_agent_costs
+
+                        branch_cost = sum_agent_costs(
+                            item_project_path, since=_cost_start,
+                        )
+                        if branch_cost == 0.0:
+                            log.warning(
+                                "item_cost_zero",
+                                item_id=item.id,
+                                reason="no agent cost in events; "
+                                "branch may have no agent nodes",
+                            )
                     finally:
                         item_json_path.unlink(missing_ok=True)
 
