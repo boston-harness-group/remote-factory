@@ -30,6 +30,21 @@ from factory.workflow.primitives import (
 log = structlog.get_logger()
 
 _SYNC_EXCLUDE = {".git", ".factory-worktrees"}
+_SCAN_EXCLUDE = {".git", ".factory-worktrees", "__pycache__", ".venv", "node_modules"}
+
+
+def _scan_workspace(root: Path) -> set[str]:
+    """Return relative paths of all files in *root*, excluding VCS/build dirs."""
+    result: set[str] = set()
+    for item in root.rglob("*"):
+        if item.is_file():
+            rel = str(item.relative_to(root))
+            # Skip excluded directory trees
+            parts = rel.split("/")
+            if any(p in _SCAN_EXCLUDE for p in parts):
+                continue
+            result.add(rel)
+    return result
 
 
 def _sync_working_tree(src: Path, dst: Path) -> None:
@@ -348,6 +363,12 @@ async def run_fork(
                         )
                         # Include current_item.json so subgraph nodes don't block
                         base_files = (completed_files or set()) | {".factory/current_item.json"}
+
+                        # Rescan workspace after setup() — any files created
+                        # by Task.setup() must count as available to branch nodes.
+                        setup_files = _scan_workspace(item_project_path)
+                        base_files |= setup_files
+
                         item_executor.completed_files = base_files
                         await item_executor.execute()
                     finally:

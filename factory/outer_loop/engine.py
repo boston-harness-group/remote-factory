@@ -552,7 +552,7 @@ class SwarmEngine:
         # End-of-run holdout evaluation (firewall: only runs after evolution)
         best = self._archive.best()
         audit_result = None
-        holdout_score_val = 0.0
+        holdout_score_val: float | None = None
         task = self._config.get_task()
 
         if best:
@@ -596,7 +596,7 @@ class SwarmEngine:
                     training_score=best.score,
                 )
             else:
-                log.info("holdout_no_instances", msg="No holdout instances declared — skipping holdout evaluation")
+                log.warning("holdout_skipped_no_val_instances", msg="Task has no val split — holdout evaluation skipped, val_score stays None")
 
         pareto = self._archive.pareto_front()
 

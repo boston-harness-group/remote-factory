@@ -165,7 +165,7 @@ def save_best(
         json.dumps(result.best_workflow_data, indent=2, default=str)
     )
 
-    if result.val_score > 0 or result.overfit_flag:
+    if (result.val_score is not None and result.val_score > 0) or result.overfit_flag:
         audit = {
             "val_score": result.val_score,
             "overfit_flag": result.overfit_flag,

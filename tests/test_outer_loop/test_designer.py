@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from factory.outer_loop.designer import DesignerAgent
 from factory.outer_loop.models import MutationType
 from factory.workflow.primitives import (
@@ -418,7 +416,6 @@ class TestDataNodeRewiring:
         outgoing = [e.target for e in wf.edges if e.source == "positions"]
         assert len(outgoing) >= 1
 
-    @pytest.mark.skip(reason="subgraph_entry/exit removed — uses edge-based DataNode")
     def test_minimal_without_data_node_unchanged(self) -> None:
         """Designer without frozen DataNode retains original start_node."""
         designer = DesignerAgent()
@@ -427,45 +424,6 @@ class TestDataNodeRewiring:
         edge_sources = {e.source for e in wf.edges}
         assert "positions" not in edge_sources
 
-    @pytest.mark.skip(reason="subgraph_entry/exit removed — uses edge-based DataNode")
-    def test_thorough_start_node_is_data_node(self) -> None:
-        """design_thorough variant with DataNode has start_node == DataNode ID."""
-        designer = DesignerAgent()
-        seed = self._seed_with_data_node()
-        wf = designer.design_thorough(
-            "bench",
-            seed_workflow=seed,
-            frozen_node_ids={"positions"})
-        assert wf.start_node == "positions"
-        data_node = wf.nodes["positions"]
-        assert isinstance(data_node, DataNode)
-        # Data-native thorough template starts with researcher (no study node)
-        assert data_node.subgraph_entry == "researcher"
-        assert data_node.subgraph_exit == "gate_qa"
-        # No explicit edge from DataNode to subgraph_entry
-        edge_pairs = [(e.source, e.target) for e in wf.edges]
-        assert ("positions", "researcher") not in edge_pairs
-
-    @pytest.mark.skip(reason="subgraph_entry/exit removed — uses edge-based DataNode")
-    def test_custom_start_node_is_data_node(self) -> None:
-        """design_custom variant with DataNode has start_node == DataNode ID."""
-        designer = DesignerAgent()
-        seed = self._seed_with_data_node()
-        wf = designer.design_custom(
-            "bench",
-            {"max_nodes": 6},
-            seed_workflow=seed,
-            frozen_node_ids={"positions"})
-        assert wf.start_node == "positions"
-        data_node = wf.nodes["positions"]
-        assert isinstance(data_node, DataNode)
-        assert data_node.subgraph_entry == "researcher"
-        assert data_node.subgraph_exit == "gate_qa"
-        # No explicit edge from DataNode to subgraph_entry
-        edge_pairs = [(e.source, e.target) for e in wf.edges]
-        assert ("positions", "researcher") not in edge_pairs
-
-    @pytest.mark.skip(reason="subgraph_entry/exit removed — uses edge-based DataNode")
     def test_rewired_workflow_validates_graph(self) -> None:
         """Rewired workflow with DataNode passes validate_graph() without structural issues."""
         designer = DesignerAgent()
@@ -482,43 +440,6 @@ class TestDataNodeRewiring:
             if "no predecessor writes" not in i
         ]
         assert structural == [], f"Validation issues: {structural}"
-
-    @pytest.mark.skip(reason="subgraph_entry/exit removed — uses edge-based DataNode")
-    def test_data_node_id_collision_with_start(self) -> None:
-        """DataNode ID == template start_node must not create self-referential subgraph_entry."""
-        designer = DesignerAgent()
-        # Create a seed where the DataNode ID is 'researcher' — same as
-        # the minimal template's start_node.
-        seed = Workflow(
-            name="seed",
-            nodes={
-                "researcher": DataNode(
-                    id="researcher",
-                    inline_items=[DataItem(id="pos1", prompt="test")]),
-                "solver": AgentNode(
-                    id="solver",
-                    role=AgentRole.BUILDER),
-            },
-            edges=[Edge(source="researcher", target="solver")],
-            start_node="researcher")
-        wf = designer.design_minimal(
-            "bench",
-            seed_workflow=seed,
-            frozen_node_ids={"researcher"})
-        data_node = wf.nodes["researcher"]
-        assert isinstance(data_node, DataNode)
-        # subgraph_entry must NOT be 'researcher' (self-reference)
-        assert data_node.subgraph_entry != "researcher"
-        # It should point to the first node reachable from original start via edges
-        assert data_node.subgraph_entry == "builder"
-        # No structural issues — no orphaned subgraph nodes since they
-        # are not injected.
-        issues = wf.validate_graph()
-        structural = [
-            i for i in issues
-            if "no predecessor writes" not in i
-        ]
-        assert structural == [], f"Structural issues: {structural}"
 
 
 class TestInjectFrozenDataNodeSubgraph:
@@ -557,7 +478,6 @@ class TestInjectFrozenDataNodeSubgraph:
             ],
             start_node="positions")
 
-    @pytest.mark.skip(reason="subgraph_entry/exit removed — uses edge-based DataNode")
     def test_frozen_data_node_subgraph_not_injected(self) -> None:
         """Freezing a DataNode does NOT inject its seed subgraph nodes.
         Template nodes replace the subgraph."""
@@ -575,31 +495,6 @@ class TestInjectFrozenDataNodeSubgraph:
         assert "researcher" in result.nodes
         assert "builder" in result.nodes
         assert "gate_qa" in result.nodes
-
-    @pytest.mark.skip(reason="subgraph_entry/exit removed — uses edge-based DataNode")
-    def test_inject_frozen_data_node_missing_subgraph_entry(self) -> None:
-        """DataNode with missing subgraph_entry skips prompt propagation."""
-        designer = DesignerAgent()
-        seed = Workflow(
-            name="seed",
-            nodes={
-                "positions": DataNode(
-                    id="positions",
-                    inline_items=[DataItem(id="pos1", prompt="test")]),
-                "validator": AgentNode(
-                    id="validator",
-                    role=AgentRole.CODE_REVIEWER,
-                    timeout=300),
-            },
-            edges=[],
-            start_node="positions")
-        # Should not crash
-        result = designer.design_minimal(
-            "bench",
-            seed_workflow=seed,
-            frozen_node_ids={"positions"})
-        # DataNode is still injected
-        assert "positions" in result.nodes
 
     def test_inject_frozen_data_node_validates(self) -> None:
         """Variant with frozen DataNode passes validation cleanly.
@@ -638,7 +533,6 @@ class TestDataSubgraphDesignerAwareness:
             edges=[Edge(source="positions", target="solver")],
             start_node="positions")
 
-    @pytest.mark.skip(reason="subgraph_entry/exit removed — uses edge-based DataNode")
     def test_data_subgraph_prompt_language(self) -> None:
         """design_minimal with frozen DataNode + executor strategy → entry node
         prompt contains role framing + 'current_item.json' but NOT generic 'data item' filler."""
@@ -649,9 +543,10 @@ class TestDataSubgraphDesignerAwareness:
             seed_workflow=seed,
             frozen_node_ids={"positions"},
             execution_strategy="executor")
-        data_node = wf.nodes["positions"]
-        assert isinstance(data_node, DataNode)
-        entry_node = wf.nodes[data_node.subgraph_entry]
+        # Find branch entry via edges from the DataNode
+        entry_targets = [e.target for e in wf.edges if e.source == "positions"]
+        assert len(entry_targets) >= 1
+        entry_node = wf.nodes[entry_targets[0]]
         assert isinstance(entry_node, AgentNode)
         prompt = entry_node.prompt_template or ""
         assert "current_item.json" in prompt
@@ -781,9 +676,8 @@ class TestDataNodeEvolutionModel:
         assert "builder" in result.nodes
         assert "gate_qa" in result.nodes
 
-    @pytest.mark.skip(reason="subgraph_entry/exit removed — uses edge-based DataNode")
-    def test_datanode_subgraph_points_to_template(self) -> None:
-        """After design_minimal with frozen DataNode, subgraph_entry should
+    def test_datanode_edge_points_to_template(self) -> None:
+        """After design_minimal with frozen DataNode, the DataNode edge should
         point to template's researcher (not seed's generator)."""
         seed = Workflow(
             name="seed",
@@ -803,12 +697,11 @@ class TestDataNodeEvolutionModel:
             "bench",
             seed_workflow=seed,
             frozen_node_ids={"positions"})
-        data_node = result.nodes["positions"]
-        assert isinstance(data_node, DataNode)
-        assert data_node.subgraph_entry == "researcher"
-        assert data_node.subgraph_exit == "gate_qa"
+        # DataNode should have an edge to the template's entry node
+        entry_targets = [e.target for e in result.edges if e.source == "positions"]
+        assert len(entry_targets) >= 1
+        assert "researcher" in entry_targets
 
-    @pytest.mark.skip(reason="subgraph_entry/exit removed — uses edge-based DataNode")
     def test_prompt_propagation_by_role(self) -> None:
         """When seed subgraph has a BUILDER node with prompt_template,
         the template's BUILDER node should receive that prompt."""
@@ -836,9 +729,8 @@ class TestDataNodeEvolutionModel:
         assert isinstance(builder_node, AgentNode)
         assert builder_node.prompt_template == "Build chess engine"
 
-    @pytest.mark.skip(reason="subgraph_entry/exit removed — uses edge-based DataNode")
-    def test_subgraph_entry_reads_current_item(self) -> None:
-        """After design_minimal with frozen DataNode, the subgraph entry node
+    def test_branch_entry_reads_current_item(self) -> None:
+        """After design_minimal with frozen DataNode, the branch entry node
         must have '.factory/current_item.json' in its reads set."""
         seed = Workflow(
             name="seed",
@@ -857,14 +749,14 @@ class TestDataNodeEvolutionModel:
             "bench",
             seed_workflow=seed,
             frozen_node_ids={"positions"})
-        data_node = result.nodes["positions"]
-        assert isinstance(data_node, DataNode)
-        entry_node = result.nodes[data_node.subgraph_entry]
+        # Find branch entry via edges
+        entry_targets = [e.target for e in result.edges if e.source == "positions"]
+        assert len(entry_targets) >= 1
+        entry_node = result.nodes[entry_targets[0]]
         assert isinstance(entry_node, AgentNode)
         assert ".factory/current_item.json" in entry_node.reads
 
-    @pytest.mark.skip(reason="subgraph_entry/exit removed — uses edge-based DataNode")
-    def test_subgraph_entry_prompt_mentions_current_item(self) -> None:
+    def test_branch_entry_prompt_mentions_current_item(self) -> None:
         """After design_minimal with frozen DataNode, the entry node's
         prompt_template must contain 'current_item.json'."""
         seed = Workflow(
@@ -884,9 +776,10 @@ class TestDataNodeEvolutionModel:
             "bench",
             seed_workflow=seed,
             frozen_node_ids={"positions"})
-        data_node = result.nodes["positions"]
-        assert isinstance(data_node, DataNode)
-        entry_node = result.nodes[data_node.subgraph_entry]
+        # Find branch entry via edges
+        entry_targets = [e.target for e in result.edges if e.source == "positions"]
+        assert len(entry_targets) >= 1
+        entry_node = result.nodes[entry_targets[0]]
         assert isinstance(entry_node, AgentNode)
         assert "current_item.json" in (entry_node.prompt_template or "")
 

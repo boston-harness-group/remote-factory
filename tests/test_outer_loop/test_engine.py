@@ -353,11 +353,10 @@ class TestSwarmEngineRun:
         assert result.best_score >= 0.6
 
     def test_run_holdout_audit(self) -> None:
+        """When Task has no val split, holdout eval is skipped and val_score stays None."""
         config = _make_config(budget=15, population_size=2)
 
         def mock_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
-            if "h1" in instances:
-                return EvalResult(score=0.0, benchmark_score=0.6, hygiene_score=0.6)
             return EvalResult(score=0.0, benchmark_score=0.7, hygiene_score=0.7)
 
         evaluator = SwarmEvaluator(config, evaluator_fn=mock_eval)
@@ -365,8 +364,10 @@ class TestSwarmEngineRun:
         wf = _make_workflow()
 
         result = engine.run(wf)
-        assert result.val_score > 0
-        assert isinstance(result.overfit_flag, bool)
+        # No holdout_ids configured → val_score stays None
+        assert result.val_score is None
+        # overfit_flag defaults to False when no audit ran
+        assert result.overfit_flag is False
 
     def test_run_hyperparameter_history(self) -> None:
         config = _make_config(budget=15, population_size=2)

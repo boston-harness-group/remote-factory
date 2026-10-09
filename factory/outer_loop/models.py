@@ -215,7 +215,7 @@ class OuterLoopResult(BaseModel):
 
     best_workflow_data: dict[str, object] = Field(default_factory=dict)
     best_score: float = 0.0
-    val_score: float = 0.0
+    val_score: float | None = None
     overfit_flag: bool = False
     trajectory: list[GenerationSummary] = Field(default_factory=list)
     total_cost_usd: float = 0.0

@@ -1665,7 +1665,6 @@ class TestDataNodeLoopSubgraph:
 class TestDiskReadsRescanAfterSetup:
     """setup()-created files must appear in sub-executor completed_files."""
 
-    @pytest.mark.skip(reason="Requires worktree-aware setup file propagation — PR B")
     def test_setup_created_file_in_completed_files(self, tmp_path: Path) -> None:
         """When task.setup() writes a file declared in a subgraph node's reads,
         the sub-executor's completed_files must include it."""
