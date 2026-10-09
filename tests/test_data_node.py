@@ -1722,8 +1722,8 @@ class TestDiskReadsRescanAfterSetup:
         _sp.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
         _sp.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=project_path, capture_output=True, check=True)
         (project_path / '.factory').mkdir(parents=True, exist_ok=True)
-        counter_file = project_path / 'counter.txt'
-        pp = str(project_path)
+        project_path / 'counter.txt'
+        str(project_path)
 
         call_count = 0
 

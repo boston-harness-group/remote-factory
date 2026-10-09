@@ -660,9 +660,27 @@ class TestUserGateInteractive:
         assert verdict.type == VerdictType.HALT
 
     async def test_user_gate_halt_stops_workflow(self, tmp_project: Path) -> None:
-        """User responding 'halt' terminates the full workflow."""
-        wf = _user_gate_workflow()
-        executor = WorkflowExecutor(wf, tmp_project, dry_run=False, input_fn=lambda _: "halt")
+        """User responding 'halt' terminates the full workflow.
+
+        Uses a workflow whose FnNode actually creates a.txt so the gate
+        gets its reads satisfied, then input_fn='halt' stops the workflow.
+        """
+        wf = Workflow(
+            name="user_gate_wf",
+            nodes={
+                "a": FnNode(id="a", command="touch a.txt", writes={"a.txt"}),
+                "gate": GateNode(id="gate", evaluator_type="user", reads={"a.txt"}),
+                "b": FnNode(id="b", command="echo b", writes={"b.txt"}),
+            },
+            edges=[
+                Edge(source="a", target="gate"),
+                Edge(source="gate", target="b", condition=VerdictType.PROCEED),
+                Edge(source="gate", target="a", condition=VerdictType.RELOOP),
+            ],
+            start_node="a")
+        executor = WorkflowExecutor(
+            wf, tmp_project, dry_run=False,
+            input_fn=lambda _: "halt")
         result = await executor.execute()
         assert result.halted
         assert "gate" in result.halt_reason
@@ -1064,11 +1082,29 @@ class TestAgentFnInjection:
         mock_fn.assert_called_once()
 
     async def test_agent_fn_propagates_to_data_node_sub_executor(
-        self, tmp_project: Path) -> None:
+        self, tmp_path: Path) -> None:
         """agent_fn propagates to DataNode per-item sub-executors."""
+        import subprocess as _sp
         from unittest.mock import AsyncMock
 
         from factory.workflow.primitives import DataItem, DataNode, JoinNode
+
+        # Need a real git repo for worktree-based DataNode execution
+        project = tmp_path
+        (project / ".factory").mkdir(parents=True, exist_ok=True)
+        _sp.run(["git", "init"], cwd=project, capture_output=True, check=True)
+        _sp.run(
+            ["git", "commit", "--allow-empty", "-m", "init"],
+            cwd=project, capture_output=True, check=True,
+            env={
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@test.com",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@test.com",
+                "HOME": str(tmp_path),
+                "PATH": "/usr/bin:/bin:/usr/local/bin",
+            },
+        )
 
         mock_fn = AsyncMock(return_value=("sub output", 0))
 
@@ -1090,7 +1126,7 @@ class TestAgentFnInjection:
             ],
             start_node="data")
 
-        executor = WorkflowExecutor(wf, tmp_project, agent_fn=mock_fn)
+        executor = WorkflowExecutor(wf, project, agent_fn=mock_fn)
         result = await executor.execute()
 
         assert result.success

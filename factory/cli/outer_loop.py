@@ -564,11 +564,26 @@ def _cmd_reflect(args: argparse.Namespace) -> int:
     records: list[tuple[str, float, CycleRecord | None]] = []
     needs_eval: list[tuple[str, Workflow]] = []
 
+    from factory.cycle_analyzer import CycleRecord as _CycleRecord
+
     for mode_name in registry.list_modes():
         saved = saved_results.get(mode_name)
         if saved is not None:
             score = float(saved.get("score", 0.0))
-            records.append((mode_name, score, None))
+            rec = _CycleRecord(
+                cycle_number=0,
+                mode=mode_name,
+                started_at=None,
+                ended_at=None,
+                duration_s=float(saved.get("duration_s", 0.0)),
+                score_start=None,
+                score_end=score,
+                score_delta=None,
+                total_cost_usd=float(saved.get("cost", 0.0)),
+                kept=int(saved.get("kept", 0)),
+                reverted=int(saved.get("reverted", 0)),
+            )
+            records.append((mode_name, score, rec))
             continue
         wf = registry.load(mode_name)
         if wf is not None:

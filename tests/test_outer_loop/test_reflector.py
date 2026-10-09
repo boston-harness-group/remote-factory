@@ -186,7 +186,8 @@ class TestOuterLoopReflector:
             mock_proc.stdout = payload
             mock_proc.returncode = 0
 
-            with patch("subprocess.run", return_value=mock_proc):
+            with patch("subprocess.run", return_value=mock_proc), \
+                 patch("time.sleep"):
                 report = reflector.reflect(records, generation=0)
                 assert isinstance(report, ReflectionReport)
 

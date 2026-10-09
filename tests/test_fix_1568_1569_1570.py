@@ -164,7 +164,8 @@ class TestEmptyFilteredItemsRaises:
             edges=[],
             start_node="data")
         (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
-        from factory.task import DefaultTask as _DT; loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+        from factory.task import DefaultTask as _DT
+        loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
         record = loop._step_with_task()
         assert record.score_end == 0.0
 
@@ -793,7 +794,8 @@ class TestDataNodeVerifyScores:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            from factory.task import DefaultTask as _DT; loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+            from factory.task import DefaultTask as _DT
+            loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
             record = loop._step_with_task()
 
         expected = (0.85 + 0.72 + 0.93) / 3
@@ -825,7 +827,8 @@ class TestDataNodeVerifyScores:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            from factory.task import DefaultTask as _DT; loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+            from factory.task import DefaultTask as _DT
+            loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
             record = loop._step_with_task()
 
         expected = (0.85 + 0.0 + 0.72) / 3
@@ -855,7 +858,8 @@ class TestDataNodeVerifyScores:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            from factory.task import DefaultTask as _DT; loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+            from factory.task import DefaultTask as _DT
+            loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
             record = loop._step_with_task()
 
         assert record.instance_results is not None
@@ -881,7 +885,8 @@ class TestDataNodeVerifyScores:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            from factory.task import DefaultTask as _DT; loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+            from factory.task import DefaultTask as _DT
+            loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
             record = loop._step_with_task()
 
         assert record.score_end is None  # no items → errored candidate
