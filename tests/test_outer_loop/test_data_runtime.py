@@ -423,3 +423,120 @@ class TestBug4SplitFiltering:
         assert item_ids == {"t1", "t2"}, (
             f"Expected {{t1, t2}}, got {item_ids}"
         )
+
+
+# ── Bug 5: branch crash → failed (not errored) ───────────────────
+
+
+async def _crashing_agent(
+    role: str,
+    task: str,
+    project_path: Any,
+    *,
+    model: Any = None,
+    timeout: float = 600.0,
+    node_id: str | None = None,
+    **kw: Any,
+) -> tuple[str, int]:
+    """Agent function that always raises during branch execution."""
+    raise RuntimeError("simulated branch crash")
+
+
+def _make_crashing_workflow() -> Workflow:
+    """Workflow with DataNode → AgentNode (crashes) → JoinNode."""
+    from factory.workflow.primitives import AgentNode, AgentRole
+
+    return Workflow(
+        name="crash-test",
+        nodes={
+            "data": DataNode(id="data", parallelism=2),
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="Build {project_path}",
+            ),
+            "join": JoinNode(id="join", sources=["builder"]),
+        },
+        edges=[
+            Edge(source="data", target="builder"),
+            Edge(source="builder", target="join"),
+        ],
+        start_node="data",
+    )
+
+
+class TestBug5BranchCrashProducesFailed:
+    """A branch execution crash must produce status=failed (score=0),
+    NOT status=errored (which would exclude the item from scoring).
+
+    Errored is reserved for setup/infrastructure failures.
+    """
+
+    def test_branch_crash_is_failed_not_errored(self, tmp_path: Path) -> None:
+        """Agent that raises during execution → failed with score=0.0."""
+        from factory.workflow.data_runtime import run_fork
+
+        project = _bootstrap(tmp_path)
+        wf = _make_crashing_workflow()
+        task = _SplitTask()
+
+        # dry_run=False so the executor actually invokes the agent_fn
+        # (dry_run skips execution entirely)
+        results = asyncio.run(run_fork(
+            wf,
+            wf.nodes["data"],  # type: ignore[arg-type]
+            "data",
+            project,
+            dry_run=False,
+            task=task,
+            run_id="crash-test",
+            split="train",
+            agent_fn=_crashing_agent,
+        ))
+
+        assert len(results) == 3, f"Expected 3 train items, got {len(results)}"
+        for r in results:
+            assert r["status"] == "failed", (
+                f"Item {r['item_id']} has status={r['status']!r}, "
+                f"expected 'failed' (not 'errored') for branch crash"
+            )
+            assert r["score"] == 0.0, (
+                f"Item {r['item_id']} has score={r['score']}, expected 0.0"
+            )
+            assert r["error"] is not None, (
+                f"Item {r['item_id']} should have error message"
+            )
+            assert "branch_failed" in r["error"], (
+                f"Error should indicate branch failure: {r['error']}"
+            )
+
+    def test_setup_failure_is_still_errored(self, tmp_path: Path) -> None:
+        """Task.setup() failure → errored (infrastructure), not failed."""
+        from factory.workflow.data_runtime import run_fork
+
+        class _FailSetupTask(_SplitTask):
+            def setup(self, instance: TaskInstance, workspace: Path) -> None:
+                raise OSError("disk full")
+
+        project = _bootstrap(tmp_path)
+        wf = _make_test_workflow()
+        task = _FailSetupTask()
+
+        results = asyncio.run(run_fork(
+            wf,
+            wf.nodes["data"],  # type: ignore[arg-type]
+            "data",
+            project,
+            dry_run=True,
+            task=task,
+            run_id="setup-fail",
+            split="train",
+        ))
+
+        assert len(results) == 3
+        for r in results:
+            assert r["status"] == "errored", (
+                f"Item {r['item_id']} has status={r['status']!r}, "
+                f"expected 'errored' for setup failure"
+            )
+            assert "setup_failed" in r["error"]

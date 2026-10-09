@@ -446,6 +446,9 @@ async def run_fork(
                     item_json_path.parent.mkdir(parents=True, exist_ok=True)
                     item_json_path.write_text(json.dumps(item.model_dump()))
 
+                    # ── Branch execution ──────────────────────────
+                    # Exceptions here are branch failures (scored 0),
+                    # NOT infrastructure errors (which are excluded).
                     branch_cost = 0.0
                     try:
                         from datetime import datetime, timezone as _tz
@@ -472,6 +475,15 @@ async def run_fork(
                         item_executor.completed_files = base_files
                         await item_executor.execute()
 
+                        # Branch halted (e.g. agent crash caught by
+                        # executor) → surface as an exception so the
+                        # branch-level except produces status=failed.
+                        if item_executor.result.halted:
+                            raise RuntimeError(
+                                item_executor.result.halt_reason
+                                or "branch workflow halted"
+                            )
+
                         # Read real agent cost from events emitted by
                         # invoke_agent (agent.completed → total_cost_usd).
                         # Never fabricate cost from duration — if cost is
@@ -488,6 +500,23 @@ async def run_fork(
                                 reason="no agent cost in events; "
                                 "branch may have no agent nodes",
                             )
+                    except Exception as branch_exc:
+                        # Branch execution crashed → failed (score=0),
+                        # NOT errored (which would exclude from scoring).
+                        duration_s = time.monotonic() - t0
+                        log.warning(
+                            "branch_execution_failed",
+                            item_id=item.id,
+                            error=str(branch_exc),
+                        )
+                        return ItemResult(
+                            item_id=item.id,
+                            split=split,
+                            status=ItemStatus.failed,
+                            score=0.0,
+                            error=f"branch_failed: {branch_exc}",
+                            duration_s=duration_s,
+                        ).model_dump()
                     finally:
                         item_json_path.unlink(missing_ok=True)
 
@@ -520,6 +549,8 @@ async def run_fork(
                     ).model_dump()
 
                 except Exception as exc:
+                    # Infrastructure / workspace errors → errored
+                    # (excluded from scoring).
                     duration_s = time.monotonic() - t0
                     return ItemResult(
                         item_id=item.id,
