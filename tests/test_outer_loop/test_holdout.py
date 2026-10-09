@@ -651,11 +651,16 @@ class TestDataNodeRespectsSubsetSelector:
         data_node = DataNode(
             id="data",
             task_ref="dummy")
+        from factory.workflow.primitives import JoinNode
         process_node = FnNode(id="process", command="echo ok")
+        join_node = JoinNode(id="join", sources=["process"])
         wf = Workflow(
             name="test_datanode_filter",
-            nodes={"data": data_node, "process": process_node},
-            edges=[],
+            nodes={"data": data_node, "process": process_node, "join": join_node},
+            edges=[
+                Edge(source="data", target="process"),
+                Edge(source="process", target="join"),
+            ],
             start_node="data")
 
         # Only allow train IDs
@@ -687,6 +692,8 @@ class TestDataNodeRespectsSubsetSelector:
         from factory.workflow.executor import WorkflowExecutor
         from factory.workflow.primitives import DataItem, DataNode
 
+        from factory.workflow.primitives import JoinNode
+
         data_node = DataNode(
             id="data",
             inline_items=[
@@ -694,10 +701,14 @@ class TestDataNodeRespectsSubsetSelector:
                 DataItem(id="h1", metadata={}),
             ])
         process_node = FnNode(id="process", command="echo ok")
+        join_node = JoinNode(id="join", sources=["process"])
         wf = Workflow(
             name="test_no_filter",
-            nodes={"data": data_node, "process": process_node},
-            edges=[Edge(source="data", target="process")],
+            nodes={"data": data_node, "process": process_node, "join": join_node},
+            edges=[
+                Edge(source="data", target="process"),
+                Edge(source="process", target="join"),
+            ],
             start_node="data")
 
         # No allowed_instance_ids — should process all
