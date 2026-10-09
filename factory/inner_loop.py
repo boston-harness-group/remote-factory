@@ -449,6 +449,9 @@ class InnerLoop:
         # Get allowed instance IDs from subset selector (train/val firewall)
         subset_selector = getattr(self, '_subset_selector', None)
         allowed_instance_ids: set[str] | None = None
+        # Determine the split for this run — default to 'train' unless
+        # the subset selector provides IDs that belong to a different split.
+        _run_split: str = getattr(self, '_split', 'train')
 
         _defn = getattr(self.task, '_definition', None) if self.task is not None else None
         _holdout_ids = (
@@ -469,6 +472,17 @@ class InnerLoop:
             selected = subset_selector.select(all_ids)
             if selected:
                 allowed_instance_ids = set(selected)
+                # Detect split from the selected IDs: if all selected IDs are
+                # val items, use split="val"; if all are train, use split="train";
+                # otherwise use "all" to avoid filtering out valid items.
+                if _holdout_ids:
+                    holdout_set = set(_holdout_ids)
+                    if all(sid in holdout_set for sid in selected):
+                        _run_split = 'val'
+                    elif not any(sid in holdout_set for sid in selected):
+                        _run_split = 'train'
+                    else:
+                        _run_split = 'all'
 
         verify_only = getattr(self, '_verify_only', False)
 
@@ -496,6 +510,7 @@ class InnerLoop:
                     allowed_instance_ids=allowed_instance_ids,
                     task=self.task,
                     run_id=getattr(self, '_run_id', ''),
+                    split=_run_split,  # type: ignore[arg-type]
                 ))
             except ValueError as exc:
                 log.warning("evaluate_fork_failed", error=str(exc))
@@ -523,6 +538,7 @@ class InnerLoop:
                     self.project_dir,
                     allowed_instance_ids=allowed_instance_ids,
                     task=self.task,
+                    split=_run_split,  # type: ignore[arg-type]
                 )
                 exec_result_wf = asyncio.run(executor.execute())
             except ValueError as exc:

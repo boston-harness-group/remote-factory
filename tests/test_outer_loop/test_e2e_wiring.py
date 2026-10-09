@@ -684,14 +684,15 @@ class TestEngineRunE2E:
             inner_loop_factory=True,
             project_dir=project)
 
-        # Pass instance IDs that don't match any task instances → 0 items
+        # Pass instance IDs that don't match any task instances → error
         result = evaluator.evaluate(wf, str(project), ["nonexistent_x", "nonexistent_y"])
 
         assert result.score == 0.0, (
-            f"Expected score 0.0 for 0-item DataNode, got {result.score}"
+            f"Expected score 0.0 for invalid-subset DataNode, got {result.score}"
         )
-        assert "0 items" in result.details.get("halt_reason", ""), (
-            f"Expected halt_reason with 0 items, got {result.details}"
+        halt_reason = result.details.get("halt_reason", "")
+        assert "0 items" in halt_reason or "not in split" in halt_reason, (
+            f"Expected halt_reason about 0 items or invalid subset, got {result.details}"
         )
 
     def test_no_validation_rejection(self) -> None:

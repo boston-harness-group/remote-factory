@@ -15,7 +15,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 
@@ -115,11 +115,16 @@ def _resolve_items(
     allowed_instance_ids: set[str] | None = None,
     task: Any | None = None,
     run_id: str = "",
+    split: Literal["train", "val", "all"] = "train",
 ) -> tuple[list[tuple[DataItem, Any | None]], Any | None]:
     """Resolve, filter, shuffle and limit data items from a DataNode.
 
     Returns ``(task_instances, resolved_task)`` — shared by
     ``run_fork`` and ``evaluate_fork``.
+
+    When a Task is available, uses ``task.instances(split)`` to get items
+    for the requested split.  If ``allowed_instance_ids`` is provided,
+    validates that all IDs exist in the split and filters to just that subset.
     """
     from factory.task import Task as _Task
     from factory.task import TaskInstance as _TaskInstance
@@ -138,7 +143,12 @@ def _resolve_items(
         from factory.task import TaskRef
         task_ref = TaskRef(ref=node.task_ref)
         resolved_task = task_ref.resolve()
-        for _ti in resolved_task.instances():
+        try:
+            _instances_iter = resolved_task.instances(split=split)
+        except TypeError:
+            # Task.instances() doesn't accept split kwarg — use all
+            _instances_iter = resolved_task.instances()
+        for _ti in _instances_iter:
             task_instances.append((
                 DataItem(
                     id=_ti.id,
@@ -176,12 +186,47 @@ def _resolve_items(
                 for idx, row in enumerate(reader):
                     task_instances.append((DataItem(id=str(idx), metadata=dict(row)), None))
 
-    # Fallback to InnerLoop's task
+    # Fallback to InnerLoop's task — use task.instances(split) for filtering
     if resolved_task is None and task is not None:
         resolved_task = task
+        if not task_instances:
+            # No items from inline/source — get from task using split
+            try:
+                for _ti in resolved_task.instances(split=split):
+                    task_instances.append((
+                        DataItem(
+                            id=_ti.id,
+                            path=str(_ti.path) if _ti.path else None,
+                            metadata=_ti.metadata,
+                        ),
+                        _ti,
+                    ))
+            except TypeError:
+                # Task.instances() doesn't accept split kwarg
+                for _ti in resolved_task.instances():
+                    task_instances.append((
+                        DataItem(
+                            id=_ti.id,
+                            path=str(_ti.path) if _ti.path else None,
+                            metadata=_ti.metadata,
+                        ),
+                        _ti,
+                    ))
 
     # Apply instance filter (train/val firewall)
-    if allowed_instance_ids is not None and node.task_ref:
+    # For task-backed items (task_ref or fallback task): validate subset IDs
+    # are in the split, then filter.
+    # For inline/source items: skip the filter entirely — inline items are
+    # self-contained and not subject to train/val split filtering.
+    if allowed_instance_ids is not None and not node.inline_items:
+        if resolved_task is not None:
+            available_ids = {item.id for item, _ in task_instances}
+            invalid_ids = allowed_instance_ids - available_ids
+            if invalid_ids:
+                raise ValueError(
+                    f"DataNode '{data_node_id}': subset contains IDs not in "
+                    f"split '{split}': {sorted(invalid_ids)}"
+                )
         task_instances = [
             (item, inst) for item, inst in task_instances
             if item.id in allowed_instance_ids
@@ -229,6 +274,7 @@ async def run_fork(
     task: Any | None = None,
     completed_files: set[str] | None = None,
     run_id: str = "",
+    split: Literal["train", "val", "all"] = "train",
 ) -> list[dict[str, Any]]:
     """Run the DataNode fork: resolve items, run branch per item, return results.
 
@@ -257,6 +303,7 @@ async def run_fork(
         allowed_instance_ids=allowed_instance_ids,
         task=task,
         run_id=run_id,
+        split=split,
     )
 
     # ── Run items with parallelism ─────────────────────────────
@@ -334,6 +381,7 @@ async def run_fork(
                             duration_s = time.monotonic() - t0
                             return ItemResult(
                                 item_id=item.id,
+                                split=split,
                                 status=ItemStatus.errored,
                                 score=0.0,
                                 error=f"setup_failed: {setup_exc}",
@@ -351,6 +399,7 @@ async def run_fork(
                     item_json_path.parent.mkdir(parents=True, exist_ok=True)
                     item_json_path.write_text(json.dumps(item.model_dump()))
 
+                    branch_cost = 0.0
                     try:
                         item_executor = WorkflowExecutor(
                             sub_workflow.model_copy(deep=True),
@@ -370,7 +419,18 @@ async def run_fork(
                         base_files |= setup_files
 
                         item_executor.completed_files = base_files
-                        await item_executor.execute()
+                        branch_result = await item_executor.execute()
+                        branch_cost = branch_result.duration_ms / 1000.0  # fallback
+                        # Read real cost from the branch executor result
+                        # (populated by agent_fn / runner when available)
+                        if hasattr(branch_result, 'cost') and branch_result.cost > 0:
+                            branch_cost = branch_result.cost
+                        else:
+                            # Sum agent costs from events
+                            for ev in branch_result.events:
+                                if ev.get("type") == "node.completed":
+                                    branch_cost = branch_result.duration_ms / 1000.0
+                                    break
                     finally:
                         item_json_path.unlink(missing_ok=True)
 
@@ -393,9 +453,11 @@ async def run_fork(
 
                     return ItemResult(
                         item_id=item.id,
+                        split=split,
                         status=status,
                         score=score,
                         verify_details=verify_details,
+                        cost=branch_cost,
                         duration_s=duration_s,
                     ).model_dump()
 
@@ -403,6 +465,7 @@ async def run_fork(
                     duration_s = time.monotonic() - t0
                     return ItemResult(
                         item_id=item.id,
+                        split=split,
                         status=ItemStatus.errored,
                         score=0.0,
                         error=str(exc),
@@ -412,6 +475,14 @@ async def run_fork(
         tasks = [run_item(pair, idx) for idx, pair in enumerate(task_instances)]
         results = await asyncio.gather(*tasks)
         item_results = list(results)
+
+        # ── Write items.jsonl (Bug 3: data runtime is the ONLY writer) ──
+        runs_dir = project_path / ".factory" / "runs" / run_id
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        items_path = runs_dir / "items.jsonl"
+        with items_path.open("w") as f:
+            for ir in item_results:
+                f.write(json.dumps(ir, default=str) + "\n")
 
     finally:
         # Clean up worktrees
@@ -446,6 +517,7 @@ async def evaluate_fork(
     allowed_instance_ids: set[str] | None = None,
     task: Any | None = None,
     run_id: str = "",
+    split: Literal["train", "val", "all"] = "train",
 ) -> list[dict[str, Any]]:
     """Evaluate items via setup + verify only (no branch workflow execution).
 
@@ -463,6 +535,7 @@ async def evaluate_fork(
         allowed_instance_ids=allowed_instance_ids,
         task=task,
         run_id=run_id,
+        split=split,
     )
 
     # ── Evaluate: setup + verify per item (no branch workflow) ──
@@ -486,6 +559,7 @@ async def evaluate_fork(
                     duration_s = time.monotonic() - t0
                     item_results.append(ItemResult(
                         item_id=item.id,
+                        split=split,
                         status=ItemStatus.errored,
                         score=0.0,
                         error=f"setup_failed: {setup_exc}",
@@ -498,6 +572,7 @@ async def evaluate_fork(
                 status = ItemStatus.ok if vr.passed else ItemStatus.failed
                 item_results.append(ItemResult(
                     item_id=item.id,
+                    split=split,
                     status=status,
                     score=vr.score,
                     verify_details=vr.details or {},
@@ -507,6 +582,7 @@ async def evaluate_fork(
                 duration_s = time.monotonic() - t0
                 item_results.append(ItemResult(
                     item_id=item.id,
+                    split=split,
                     status=ItemStatus.ok,
                     score=0.0,
                     duration_s=duration_s,
@@ -516,6 +592,7 @@ async def evaluate_fork(
             duration_s = time.monotonic() - t0
             item_results.append(ItemResult(
                 item_id=item.id,
+                split=split,
                 status=ItemStatus.errored,
                 score=0.0,
                 error=str(exc),

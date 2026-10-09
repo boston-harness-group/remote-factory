@@ -12,7 +12,7 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 
@@ -79,6 +79,7 @@ class ExecutionResult:
         self.completed_files: set[str] = set()
         self.node_outputs: dict[str, str] = {}
         self.duration_ms: float = 0.0
+        self.cost: float = 0.0
         self.item_results: list[dict[str, Any]] = []
 
 
@@ -96,10 +97,11 @@ class WorkflowExecutor:
         initial_context: str | None = None,
         agent_fn: Callable[..., Any] | None = None,
         input_fn: Callable[[str], str] | None = None,
-        allowed_instance_ids: set[str] | None = None,
         validate: bool = True,
         auto_write_outputs: bool = True,
         task: Any = None,  # factory.task.Task — use Any to avoid circular import
+        split: Literal["train", "val", "all"] = "train",
+        allowed_instance_ids: set[str] | None = None,
     ) -> None:
         if validate:
             from factory.workflow.validation import validate_workflow
@@ -117,6 +119,7 @@ class WorkflowExecutor:
         self.dry_run = dry_run
         self.auto_approve = auto_approve
         self._allowed_instance_ids = allowed_instance_ids
+        self._split = split
         self._task = task
         if agent_fn is not None:
             self._agent_fn = agent_fn
@@ -774,6 +777,7 @@ class WorkflowExecutor:
                 task=self._task,
                 completed_files=self.completed_files,
                 run_id=self.run_id,
+                split=self._split,
             )
         except Exception as exc:
             elapsed = (time.monotonic() - start) * 1000

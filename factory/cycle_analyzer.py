@@ -151,6 +151,9 @@ class CycleRecord:
         else:
             score = statistics.mean(scores)
 
+        # Sum per-item costs into total
+        total_cost = sum(float(r.get("cost", 0.0)) for r in item_results)
+
         return cls(
             cycle_number=cycle_number,
             mode=mode,
@@ -161,6 +164,7 @@ class CycleRecord:
             score_end=score,
             score_delta=None,
             errored=errored_count,
+            total_cost_usd=total_cost,
             instance_results=item_results,
         )
 
