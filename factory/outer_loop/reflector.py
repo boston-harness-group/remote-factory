@@ -51,6 +51,37 @@ class ReflectionReport:
     typed_suggestions: list[MutationSuggestion] = field(default_factory=list)
 
 
+def _filter_suggestions(
+    suggestions: list[MutationSuggestion],
+    valid_node_ids: set[str],
+) -> list[MutationSuggestion]:
+    """Drop mutation suggestions targeting nodes that don't exist in the workflow.
+
+    Keeps suggestions whose target is:
+    - A known node ID
+    - A known role name (agent roles like "builder")
+    - A generic target like "any"
+    - A knob name (contains no dots, doesn't look like a node ID)
+    """
+    # Operators that target knob names or roles, not node IDs
+    _NON_NODE_OPERATORS = {"knob_mutate", "node_insert"}
+
+    result: list[MutationSuggestion] = []
+    for s in suggestions:
+        if s.operator in _NON_NODE_OPERATORS:
+            result.append(s)
+        elif s.target in valid_node_ids or s.target == "any":
+            result.append(s)
+        else:
+            log.debug(
+                "reflector_dropped_suggestion",
+                operator=s.operator,
+                target=s.target,
+                reason="target node not in workflow",
+            )
+    return result
+
+
 class OuterLoopReflector:
     """Two-stage contrastive reflection on CycleRecord exhaust.
 
@@ -125,6 +156,18 @@ class OuterLoopReflector:
 
         if self._llm_reflect_enabled:
             self._llm_reflect(top_k, bottom_k, records, report)
+
+        # Collect real node IDs from CycleRecords and filter suggestions
+        # to prevent the reflector from targeting invented node names.
+        all_node_ids: set[str] = set()
+        for _, _, rec in valid:
+            if rec is not None:
+                all_node_ids.update(rec.node_trace.keys())
+                all_node_ids.update(rec.mutable_node_ids)
+        if all_node_ids:
+            report.typed_suggestions = _filter_suggestions(
+                report.typed_suggestions, all_node_ids,
+            )
 
         if self._project_dir:
             self._save_report(report, generation)

@@ -398,15 +398,8 @@ class SwarmEvaluator:
                 if instances:
                     from factory.outer_loop.subset import FixedSubsetSelector
                     loop._subset_selector = FixedSubsetSelector(instances)
-                # Verify-only mode: skip branch workflow execution and
-                # only run setup + verify per item.  The first evaluation
-                # for a given workflow runs the full executor so pre/post-
-                # fork nodes (plan, summarize) execute once; all subsequent
-                # evaluations use the fast verify-only path.
-                if not getattr(self, '_has_run_full_workflow', False):
-                    self._has_run_full_workflow = True
-                else:
-                    loop._verify_only = True
+                # Every candidate must run the full workflow — no
+                # verify-only shortcut.
             else:
                 loop = InnerLoop(
                     project_dir=wt_path,

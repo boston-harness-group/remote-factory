@@ -159,6 +159,14 @@ class FnNode(Node):
     callable_name: str | None = None
     notes: str = ""
 
+    @model_validator(mode="after")
+    def _require_command_or_callable(self) -> FnNode:
+        if not self.command and not self.callable_name:
+            raise ValueError(
+                f"FnNode '{self.id}' must have either command or callable_name set"
+            )
+        return self
+
 
 class GateNode(Node):
     """Decision node that produces a Verdict."""

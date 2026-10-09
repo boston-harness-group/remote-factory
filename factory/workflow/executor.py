@@ -1122,11 +1122,14 @@ class WorkflowExecutor:
 
         # Persist output to node.writes paths (mirrors _run_llm pattern).
         # Skip when auto_write_outputs is False (e.g., tests using FakeAgent).
+        # Never overwrite a file the agent already created during its run —
+        # only write stdout to the file when the file does not exist.
         if node.writes and self.auto_write_outputs:
             for wpath in node.writes:
                 fpath = self.project_path / wpath
-                fpath.parent.mkdir(parents=True, exist_ok=True)
-                fpath.write_text(stdout)
+                if not fpath.exists():
+                    fpath.parent.mkdir(parents=True, exist_ok=True)
+                    fpath.write_text(stdout)
 
         return stdout
 

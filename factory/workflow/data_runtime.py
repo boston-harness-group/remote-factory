@@ -466,6 +466,7 @@ async def run_fork(
                         split=split,
                         status=status,
                         score=score,
+                        passed=passed,
                         verify_details=verify_details,
                         cost=branch_cost,
                         duration_s=duration_s,
@@ -585,6 +586,7 @@ async def evaluate_fork(
                     split=split,
                     status=status,
                     score=vr.score,
+                    passed=vr.passed,
                     verify_details=vr.details or {},
                     duration_s=duration_s,
                 ).model_dump())

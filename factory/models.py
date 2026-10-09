@@ -127,6 +127,7 @@ class ItemResult(BaseModel):
     split: str = "train"
     status: ItemStatus
     score: float = 0.0
+    passed: bool = False
     verify_details: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
     cost: float = 0.0

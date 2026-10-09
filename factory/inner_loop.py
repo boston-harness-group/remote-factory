@@ -415,9 +415,7 @@ class InnerLoop:
 
         ALL task-attached runs go through the DataNode path:
         compose() guarantees the workflow has a DataNode+JoinNode.
-        Two modes controlled by ``_verify_only`` (set by the evaluator):
-        - False (default): full executor run — plan → data fork → summarize.
-        - True: setup + verify per item only, no branch workflow / side effects.
+        Every evaluation runs the full workflow — no verify-only shortcut.
 
         ceo-skill / ceo-tool are rejected until PR B.
         """
@@ -484,85 +482,40 @@ class InnerLoop:
                     else:
                         _run_split = 'all'
 
-        verify_only = getattr(self, '_verify_only', False)
+        # Full path: WorkflowExecutor runs plan → data → join → summarize
+        from factory.workflow.executor import WorkflowExecutor
 
-        if verify_only:
-            # Fast path: setup + verify only (no workflow execution)
-            from factory.workflow.data_runtime import evaluate_fork
+        try:
+            executor = WorkflowExecutor(
+                self.workflow,
+                self.project_dir,
+                allowed_instance_ids=allowed_instance_ids,
+                task=self.task,
+                split=_run_split,  # type: ignore[arg-type]
+            )
+            exec_result_wf = asyncio.run(executor.execute())
+        except ValueError as exc:
+            log.warning(
+                "workflow_validation_failed",
+                error=str(exc),
+                workflow=getattr(self.workflow, "name", "unknown"),
+            )
+            duration_s = time.monotonic() - t0
+            record = CycleRecord(
+                cycle_number=self._step_count + 1,
+                mode=self.mode,
+                started_at=None, ended_at=None,
+                duration_s=duration_s,
+                score_start=None, score_end=0.0, score_delta=None,
+            )
+            record.frozen_nodes = sorted(self.frozen_nodes)
+            record.mutable_node_ids = sorted(self.mutable_nodes())
+            record.eval_details = {'halt_reason': str(exc)}
+            self._step_count += 1
+            self._history.append(record)
+            return record
 
-            data_node_id: str | None = None
-            data_node: _DataNode | None = None
-            for nid, n in self.workflow.nodes.items():
-                if isinstance(n, _DataNode):
-                    data_node_id = nid
-                    data_node = n
-                    break
-
-            if data_node_id is None or data_node is None:
-                raise ValueError("No DataNode found in workflow")
-
-            try:
-                raw_items = asyncio.run(evaluate_fork(
-                    self.workflow,
-                    data_node,
-                    data_node_id,
-                    self.project_dir,
-                    allowed_instance_ids=allowed_instance_ids,
-                    task=self.task,
-                    run_id=getattr(self, '_run_id', ''),
-                    split=_run_split,  # type: ignore[arg-type]
-                ))
-            except ValueError as exc:
-                log.warning("evaluate_fork_failed", error=str(exc))
-                duration_s = time.monotonic() - t0
-                record = CycleRecord(
-                    cycle_number=self._step_count + 1,
-                    mode=self.mode,
-                    started_at=None, ended_at=None,
-                    duration_s=duration_s,
-                    score_start=None, score_end=0.0, score_delta=None,
-                )
-                record.frozen_nodes = sorted(self.frozen_nodes)
-                record.mutable_node_ids = sorted(self.mutable_nodes())
-                record.eval_details = {'halt_reason': str(exc)}
-                self._step_count += 1
-                self._history.append(record)
-                return record
-        else:
-            # Full path: WorkflowExecutor runs plan → data → join → summarize
-            from factory.workflow.executor import WorkflowExecutor
-
-            try:
-                executor = WorkflowExecutor(
-                    self.workflow,
-                    self.project_dir,
-                    allowed_instance_ids=allowed_instance_ids,
-                    task=self.task,
-                    split=_run_split,  # type: ignore[arg-type]
-                )
-                exec_result_wf = asyncio.run(executor.execute())
-            except ValueError as exc:
-                log.warning(
-                    "workflow_validation_failed",
-                    error=str(exc),
-                    workflow=getattr(self.workflow, "name", "unknown"),
-                )
-                duration_s = time.monotonic() - t0
-                record = CycleRecord(
-                    cycle_number=self._step_count + 1,
-                    mode=self.mode,
-                    started_at=None, ended_at=None,
-                    duration_s=duration_s,
-                    score_start=None, score_end=0.0, score_delta=None,
-                )
-                record.frozen_nodes = sorted(self.frozen_nodes)
-                record.mutable_node_ids = sorted(self.mutable_nodes())
-                record.eval_details = {'halt_reason': str(exc)}
-                self._step_count += 1
-                self._history.append(record)
-                return record
-
-            raw_items = exec_result_wf.item_results or []
+        raw_items = exec_result_wf.item_results or []
 
         duration_s = time.monotonic() - t0
 
@@ -578,11 +531,12 @@ class InnerLoop:
             mode=self.mode,
             duration_s=duration_s,
             cycle_number=self._step_count + 1,
+            workflow=self.workflow,
         )
         record.frozen_nodes = sorted(self.frozen_nodes)
         record.mutable_node_ids = sorted(self.mutable_nodes())
 
-        if not verify_only and exec_result_wf.halt_reason:
+        if exec_result_wf.halt_reason:
             record.eval_details = {'halt_reason': exec_result_wf.halt_reason}
 
         self._step_count += 1

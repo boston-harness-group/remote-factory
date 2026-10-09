@@ -107,6 +107,7 @@ class CycleRecord:
         mode: str | None = None,
         duration_s: float = 0.0,
         cycle_number: int = 1,
+        workflow: Workflow | None = None,
     ) -> CycleRecord:
         """Build a CycleRecord from item results with configured aggregation.
 
@@ -115,6 +116,10 @@ class CycleRecord:
         - failed items count with their score
         - all_pass = 1.0 only if every non-errored score >= 1.0
         - if most items errored, the candidate is errored (score_end=None)
+
+        When *workflow* is provided, populates ``node_trace`` and
+        ``mutable_node_ids`` so downstream consumers (reflector, mutations)
+        can reference real node IDs instead of inventing them.
         """
         import statistics
 
@@ -123,9 +128,25 @@ class CycleRecord:
         ]
         errored_count = len(item_results) - len(non_errored)
 
+        # Build node_trace from workflow if available
+        node_trace: dict[str, NodeTrace] = {}
+        mutable_node_ids: list[str] = []
+        if workflow is not None:
+            for nid, node in workflow.nodes.items():
+                role = getattr(node, "role", None)
+                role_str = role.value if role else None
+                node_trace[nid] = NodeTrace(
+                    node_id=nid,
+                    node_type=type(node).__name__,
+                    role=role_str,
+                    declared_writes=set(node.writes),
+                    declared_reads=set(node.reads),
+                )
+            mutable_node_ids = sorted(workflow.nodes.keys())
+
         # If most items errored, the candidate is errored
         if len(non_errored) == 0 or errored_count > len(non_errored):
-            return cls(
+            record = cls(
                 cycle_number=cycle_number,
                 mode=mode,
                 started_at=None,
@@ -136,7 +157,10 @@ class CycleRecord:
                 score_delta=None,
                 errored=errored_count,
                 instance_results=item_results,
+                node_trace=node_trace,
+                mutable_node_ids=mutable_node_ids,
             )
+            return record
 
         scores = [float(r.get("score", 0.0)) for r in non_errored]
 
@@ -166,6 +190,8 @@ class CycleRecord:
             errored=errored_count,
             total_cost_usd=total_cost,
             instance_results=item_results,
+            node_trace=node_trace,
+            mutable_node_ids=mutable_node_ids,
         )
 
 

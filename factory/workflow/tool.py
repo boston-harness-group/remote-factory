@@ -125,9 +125,14 @@ def _rebuild_workflow(cache_data: dict) -> Workflow:
                 focus=info.get("focus"),
             )
         elif ntype == "FnNode":
+            fn_cmd = info.get("command", "")
+            fn_callable = info.get("callable_name")
+            if not fn_cmd and not fn_callable:
+                fn_cmd = "true"
             nodes[nid] = FnNode(
                 **common,  # type: ignore[arg-type]
-                command=info.get("command", ""),
+                command=fn_cmd,
+                callable_name=fn_callable,
                 notes=info.get("notes", ""),
             )
         elif ntype == "ForkNode":
@@ -141,7 +146,7 @@ def _rebuild_workflow(cache_data: dict) -> Workflow:
                 sources=info.get("sources", []),
             )
         else:
-            nodes[nid] = FnNode(**common, command="", notes="")  # type: ignore[arg-type]
+            nodes[nid] = FnNode(**common, command="true", notes="fallback")  # type: ignore[arg-type]
 
     edges = []
     for e in cache_data.get("edges", []):
