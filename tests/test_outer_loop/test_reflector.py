@@ -1270,3 +1270,39 @@ class TestExperimentContextInDetails:
         assert all(b is not None for b in captured_budgets)
         expected = int(8000 * 0.85) // 2
         assert all(b == expected for b in captured_budgets)
+
+
+# ── Tests moved from test_coverage_gaps.py ─────────────────────────
+
+
+class TestReflectorHandlesEmptyHistory:
+    """Verifies reflector degrades gracefully with no prior generations."""
+
+    def test_empty_records_returns_empty_report(self) -> None:
+        reflector = OuterLoopReflector(k=2)
+        report = reflector.reflect([], generation=0)
+        assert report.failure_patterns == []
+        assert report.success_patterns == []
+        assert report.mutation_suggestions == []
+        assert report.top_k_ids == []
+        assert report.bottom_k_ids == []
+
+    def test_single_record_returns_empty_report(self) -> None:
+        reflector = OuterLoopReflector(k=2)
+        records = [("only1", 0.5, _make_record(0.5, [_make_step("builder")], kept=1))]
+        report = reflector.reflect(records, generation=0)
+        assert report.failure_patterns == []
+        assert report.success_patterns == []
+
+    def test_all_none_records_returns_empty_report(self) -> None:
+        reflector = OuterLoopReflector(k=2)
+        records: list[tuple[str, float, CycleRecord | None]] = [
+            ("a", 0.5, None),
+            ("b", 0.3, None),
+            ("c", 0.7, None),
+        ]
+        report = reflector.reflect(records, generation=0)
+        assert report.failure_patterns == []
+        assert report.success_patterns == []
+        assert report.top_k_ids == []
+        assert report.bottom_k_ids == []

@@ -1,8 +1,9 @@
-"""Tests for issues #1568, #1569, #1570 — holdout parsing, empty-set scoring,
-split filtering, setup failure propagation, verify details, instance substitution,
-and inner loop train default.
+"""Tests for factory/inner_loop.py and inner loop behavior.
 
-These tests cover both execution paths:
+Covers holdout parsing, empty-set scoring, split filtering, setup failure
+propagation, verify details, instance substitution, and train default.
+
+Tests both execution paths:
 - InnerLoop._step_with_task (factory/inner_loop.py)
 - WorkflowExecutor._execute_data (factory/workflow/executor.py)
 """

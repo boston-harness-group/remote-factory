@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import subprocess
+
 from factory.cycle_analyzer import CycleRecord
 from factory.outer_loop.evaluator import CycleRecordCache, FitnessCache, SwarmEvaluator
 from factory.outer_loop.models import EvalResult, SwarmConfig
@@ -16,6 +18,7 @@ from factory.workflow.primitives import (
     Edge,
     FnNode,
     GateNode,
+    VerdictType,
     Workflow,
 )
 
@@ -446,3 +449,182 @@ class TestGraphValidationPreCheck:
         result = evaluator.evaluate(wf, "/tmp/test", ["t1"])
         assert result.score == 0.0
         assert call_count == 0, "Evaluator fn should not be called for invalid workflow"
+
+
+# ── Tests moved from test_coverage_gaps.py ─────────────────────────
+
+
+def _make_workflow(name: str = "test_wf") -> Workflow:
+    """Full workflow with gate + reloop for engine tests."""
+    return Workflow(
+        name=name,
+        nodes={
+            "study": FnNode(
+                id="study", command="factory study", writes={".factory/obs.md"},
+            ),
+            "researcher": AgentNode(
+                id="researcher", role=AgentRole.RESEARCHER,
+                prompt_template="Research the project",
+                reads={".factory/obs.md"}, writes={".factory/research.md"},
+            ),
+            "strategist": AgentNode(
+                id="strategist", role=AgentRole.STRATEGIST,
+                prompt_template="Create a strategy",
+                reads={".factory/research.md"}, writes={".factory/current.md"},
+            ),
+            "builder": AgentNode(
+                id="builder", role=AgentRole.BUILDER,
+                prompt_template="Build the changes",
+                reads={".factory/current.md"}, writes={".factory/build.md"},
+            ),
+            "gate": GateNode(
+                id="gate", evaluator_type="fn",
+                reads={".factory/build.md"},
+            ),
+            "done": FnNode(id="done", command="echo done"),
+        },
+        edges=[
+            Edge(source="study", target="researcher"),
+            Edge(source="researcher", target="strategist"),
+            Edge(source="strategist", target="builder"),
+            Edge(source="builder", target="gate"),
+            Edge(source="gate", target="builder", condition=VerdictType.RELOOP),
+            Edge(source="gate", target="done", condition=VerdictType.PROCEED),
+        ],
+        start_node="study",
+    )
+
+
+class TestWorktreeCleanupWithLockedFiles:
+    """Verifies behavior when worktree remove fails due to file locks."""
+
+    def test_cleanup_falls_back_to_rmtree_on_git_failure(self, tmp_path: Path) -> None:
+        """When `git worktree remove` fails, cleanup falls back to rmtree."""
+        wt_path = tmp_path / "fake-worktree"
+        wt_path.mkdir()
+        (wt_path / "locked_file.txt").write_text("locked")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=60)
+            SwarmEvaluator._cleanup_worktree(str(tmp_path), wt_path)
+
+        assert not wt_path.exists() or not list(wt_path.iterdir())
+
+    def test_cleanup_handles_already_removed_worktree(self, tmp_path: Path) -> None:
+        """Cleanup should not crash if the worktree path doesn't exist."""
+        wt_path = tmp_path / "nonexistent-worktree"
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+            SwarmEvaluator._cleanup_worktree(str(tmp_path), wt_path)
+
+
+class TestEvaluatorSkipsDuplicateWorkflows:
+    """Cache dedup logic — the bug that survived 242 tests."""
+
+    def test_cache_deduplicates_identical_workflows(self) -> None:
+        """Two evaluations of same workflow+instances call evaluator once."""
+        config = _make_config()
+        call_count = 0
+
+        def counting_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
+            nonlocal call_count
+            call_count += 1
+            return EvalResult(score=0.0, benchmark_score=0.8, hygiene_score=0.7)
+
+        evaluator = SwarmEvaluator(config, evaluator_fn=counting_eval)
+        wf = _make_workflow()
+        evaluator.evaluate(wf, "/tmp/test", ["t1", "t2"])
+        evaluator.evaluate(wf, "/tmp/test", ["t1", "t2"])
+        assert call_count == 1
+
+    def test_different_instances_are_not_deduped(self) -> None:
+        """Same workflow but different instance sets produce separate evaluations."""
+        config = _make_config()
+        call_count = 0
+
+        def counting_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
+            nonlocal call_count
+            call_count += 1
+            score = 0.5 + 0.1 * len(instances)
+            return EvalResult(score=0.0, benchmark_score=score, hygiene_score=0.6)
+
+        evaluator = SwarmEvaluator(config, evaluator_fn=counting_eval)
+        wf = _make_workflow()
+        evaluator.evaluate(wf, "/tmp/test", ["t1"])
+        evaluator.evaluate(wf, "/tmp/test", ["t1", "t2"])
+        assert call_count == 2
+
+    def test_structurally_identical_workflows_share_cache(self) -> None:
+        """Two workflow objects with identical structure share cache entry."""
+        config = _make_config()
+        call_count = 0
+
+        def counting_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
+            nonlocal call_count
+            call_count += 1
+            return EvalResult(score=0.0, benchmark_score=0.7, hygiene_score=0.6)
+
+        evaluator = SwarmEvaluator(config, evaluator_fn=counting_eval)
+        wf1 = _make_workflow("test_wf")
+        wf2 = _make_workflow("test_wf")
+        evaluator.evaluate(wf1, "/tmp/test", ["t1"])
+        evaluator.evaluate(wf2, "/tmp/test", ["t1"])
+        assert call_count == 1
+
+
+class TestWorktreeCreationFailsGracefullyOnDiskFull:
+    """Verifies helpful error instead of raw git crash when worktree add fails."""
+
+    def test_create_worktree_raises_runtime_error(self) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["git", "worktree", "add"],
+                returncode=128,
+                stdout="",
+                stderr="fatal: No space left on device",
+            )
+            import pytest
+            with pytest.raises(RuntimeError, match="No space left on device"):
+                SwarmEvaluator._create_worktree("/tmp/fake-project", "test-label")
+
+    def test_inner_loop_eval_returns_zero_score_on_worktree_failure(self) -> None:
+        """When worktree creation fails, return score=0.0 with error details."""
+        config = _make_config()
+
+        def mock_inner_loop_factory(wf: Workflow) -> str:
+            return "test-mode"
+
+        evaluator = SwarmEvaluator(config, inner_loop_factory=mock_inner_loop_factory)
+        wf = _make_workflow()
+
+        with patch.object(
+            SwarmEvaluator, "_create_worktree",
+            side_effect=RuntimeError("fatal: No space left on device"),
+        ):
+            result = evaluator._evaluate_via_inner_loop(wf, "/tmp/fake", ["t1"])
+
+        assert result.score == 0.0
+        assert "error" in result.details
+
+
+class TestOuterLoopWithGraphExplorationRequired:
+    """Validates graph fallback fix propagates to outer loop context."""
+
+    def test_evaluator_copies_factory_artifacts_to_worktree(self) -> None:
+        config = _make_config()
+        call_log: list[dict[str, object]] = []
+
+        def tracking_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
+            call_log.append({
+                "project_dir": project_dir,
+                "workflow_name": wf.name,
+                "node_count": len(wf.nodes),
+            })
+            return EvalResult(score=0.0, benchmark_score=0.5, hygiene_score=0.5)
+
+        evaluator = SwarmEvaluator(config, evaluator_fn=tracking_eval)
+        wf = _make_workflow()
+        result = evaluator.evaluate(wf, "/tmp/test", ["t1"])
+        assert result.score > 0
+        assert len(call_log) == 1

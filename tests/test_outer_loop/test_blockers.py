@@ -1,13 +1,8 @@
-"""Tests for PR #1571 code review blockers.
+"""Tests for outer-loop data pipeline integrity.
 
-Bug 1: holdout leakage in _step_with_task
-Bug 2: empty training set intersection silently becomes 'all'
-Bug 3: _validate_and_fix breaks RELOOP-only gates
-Bug 4: aggregation hardcoded to mean
-Bug 5: CEO-strategy DataNode path has no firewall
-Bug 6: halt_reason never reaches CycleRecord
-Bug 7: allowed_instance_ids filter drops all inline/source_path items
-Bug 8: aggregate config from source project reaches inner loop via compose()
+Covers holdout leakage, empty training set intersection, RELOOP gate
+validation, aggregation methods, CEO-strategy DataNode path, halt_reason
+propagation, inline items filtering, and aggregate config propagation.
 """
 
 from __future__ import annotations

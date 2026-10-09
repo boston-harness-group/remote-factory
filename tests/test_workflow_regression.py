@@ -1,7 +1,7 @@
-"""Regression tests that reproduce the exact bug conditions from issues #1534, #1535, #1508, #1541.
+"""Workflow regression tests — reproduction of executor and validation bugs.
 
-Each test constructs the workflow state that existed when the bug shipped,
-then proves the new infrastructure (validator + FakeAgent) catches it.
+Each test constructs the workflow state that existed when a bug shipped,
+then proves the validator, executor, or FakeAgent catches it.
 """
 import json
 from pathlib import Path

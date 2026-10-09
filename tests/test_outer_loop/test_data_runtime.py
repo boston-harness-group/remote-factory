@@ -1,9 +1,7 @@
-"""Unit tests for data_runtime bug fixes (Bugs 1-4 from PR #1581 review).
+"""Unit tests for factory/workflow/data_runtime.py.
 
-Bug 1 — SPLIT LABEL: ItemResult.split must match the requested split.
-Bug 2 — PER-ITEM COST: ItemResult.cost must be > 0 with real agent runs.
-Bug 3 — ITEM STORE: .factory/runs/<run>/items.jsonl must be written.
-Bug 4 — SPLITS: data runtime uses task.instances(split) + subset validation.
+Covers split labeling, per-item cost, item store (items.jsonl),
+and split filtering via task.instances(split).
 """
 
 from __future__ import annotations

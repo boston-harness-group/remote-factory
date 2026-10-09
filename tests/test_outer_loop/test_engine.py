@@ -577,3 +577,95 @@ class TestSkipReEvaluation:
 
         # The None-scored individual MUST be evaluated
         assert len(eval_calls) >= 1
+
+
+# ── Tests moved from test_coverage_gaps.py ─────────────────────────
+
+
+class TestBudgetExhaustedDuringEvaluation:
+    """Verifies partial results are saved when budget runs out mid-generation."""
+
+    def test_partial_results_saved_on_budget_exhaustion(self) -> None:
+        config = _make_config(budget=5, population_size=3)
+        eval_count = 0
+
+        def counting_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
+            nonlocal eval_count
+            eval_count += 1
+            return EvalResult(
+                score=0.0, benchmark_score=0.5 + eval_count * 0.01,
+                hygiene_score=0.6, cost_usd=0.1,
+            )
+
+        evaluator = SwarmEvaluator(config, evaluator_fn=counting_eval)
+        engine = SwarmEngine(config, evaluator)
+        wf = _make_workflow()
+        result = engine.run(wf)
+
+        assert result.convergence_reason == "budget_exhausted"
+        assert result.total_evaluations > 0
+        assert result.total_evaluations <= config.budget + 2
+        assert result.best_score > 0
+        assert len(result.trajectory) >= 1
+
+    def test_engine_stops_evaluating_when_budget_exhausted(self) -> None:
+        config = _make_config(budget=3, population_size=2)
+        eval_count = 0
+
+        def counting_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
+            nonlocal eval_count
+            eval_count += 1
+            return EvalResult(
+                score=0.0, benchmark_score=0.6, hygiene_score=0.7, cost_usd=0.1,
+            )
+
+        evaluator = SwarmEvaluator(config, evaluator_fn=counting_eval)
+        engine = SwarmEngine(config, evaluator)
+        wf = _make_workflow()
+        result = engine.run(wf)
+
+        assert result.convergence_reason == "budget_exhausted"
+        assert eval_count <= config.budget + 2
+
+
+class TestConvergenceAllCandidatesIdentical:
+    """Verifies engine detects population diversity = 0 and exits gracefully."""
+
+    def test_identical_scores_trigger_early_stop_or_plateau(self) -> None:
+        config = _make_config(budget=100, population_size=3)
+
+        def flat_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
+            return EvalResult(
+                score=0.0, benchmark_score=0.5, hygiene_score=0.5,
+                cost_usd=0.01, complexity=float(len(wf.nodes)),
+            )
+
+        evaluator = SwarmEvaluator(config, evaluator_fn=flat_eval)
+        strategy = WeightedRandomStrategy(mutation_rate=0.3)
+        engine = SwarmEngine(config, evaluator, strategy=strategy)
+        wf = _make_workflow()
+        result = engine.run(wf)
+
+        assert result.convergence_reason in (
+            "budget_exhausted", "target_score_reached", "plateau",
+            "diversity_collapse", "early_stop_unchanged", "unknown",
+        )
+        assert result.generations_completed >= 1
+
+    def test_diversity_metric_is_low_with_identical_features(self) -> None:
+        from factory.outer_loop.population import MAPElitesArchive
+        from factory.outer_loop.models import Individual
+
+        archive = MAPElitesArchive()
+        for i in range(5):
+            ind = Individual(
+                id=f"ind_{i}",
+                workflow_data={"name": f"wf_{i}"},
+                score=0.5,
+                features=(3, 0, 2, 1),
+                generation=0,
+            )
+            archive.add(ind)
+
+        assert archive.size == 1
+        assert archive.diversity_metric() == 1.0
