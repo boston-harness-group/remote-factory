@@ -330,10 +330,14 @@ class SwarmEngine:
             wf = Workflow.from_dict(ind.workflow_data)  # type: ignore[arg-type]
             ev = self._evaluator.evaluate(wf, project_dir, instances, individual_id=ind.id)
             self._budget.consume(1, cost_usd=ev.cost_usd)
-            updated = ind.model_copy(update={"score": ev.score, "cost_usd": ev.cost_usd})
+            updates: dict[str, object] = {"score": ev.score, "cost_usd": ev.cost_usd}
+            if ev.errored:
+                updates["errored"] = True
+            updated = ind.model_copy(update=updates)
             population.remove(ind.id)
             population.add(updated)
-            self._archive.add(updated)
+            if not ev.errored:
+                self._archive.add(updated)
 
         # Reflect on this generation's results
         if generation > 0 or len(population.individuals) >= 2:
@@ -397,9 +401,16 @@ class SwarmEngine:
                 self._mode_registry.register(ind.id, generation, child_wf)
             eval_result = self._evaluator.evaluate(child_wf, project_dir, instances, individual_id=ind.id)
             self._budget.consume(1, cost_usd=eval_result.cost_usd)
-            updated = ind.model_copy(update={"score": eval_result.score, "cost_usd": eval_result.cost_usd})
+            child_updates: dict[str, object] = {
+                "score": eval_result.score,
+                "cost_usd": eval_result.cost_usd,
+            }
+            if eval_result.errored:
+                child_updates["errored"] = True
+            updated = ind.model_copy(update=child_updates)
             population.add(updated)
-            self._archive.add(updated)
+            if not eval_result.errored:
+                self._archive.add(updated)
 
         # Cleanup non-surviving ephemeral mode files
         if self._mode_registry:
@@ -535,6 +546,19 @@ class SwarmEngine:
             summaries.append(summary)
             if summary.hyperparameters:
                 hp_history.append(summary.hyperparameters)
+
+            # If every candidate in this generation errored, raise — never
+            # return best_score=0.0 as if the harness were simply bad.
+            evaluated = [
+                ind for ind in population.individuals
+                if ind.score is not None
+            ]
+            if evaluated and all(ind.errored for ind in evaluated):
+                raise RuntimeError(
+                    f"All {len(evaluated)} candidates in generation "
+                    f"{generation} errored during evaluation — aborting. "
+                    f"Check evaluator logs for details."
+                )
 
             # Plateau detection with adaptive response
             if self._detect_plateau():

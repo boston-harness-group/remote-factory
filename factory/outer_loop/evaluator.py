@@ -476,6 +476,7 @@ class SwarmEvaluator:
             log.error("inner_loop_eval_failed", error=str(exc), exc_info=True)
             return EvalResult(
                 score=0.0,
+                errored=True,
                 details={"error": str(exc), "evaluation_method": "inner_loop"},
             )
         finally:

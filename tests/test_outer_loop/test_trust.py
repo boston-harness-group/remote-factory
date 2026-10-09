@@ -517,107 +517,182 @@ class TestReflectorContent:
 
 
 class TestPlantedSolution:
-    """e. PLANTED SOLUTION: toy task where one specific PROMPT change
-    deterministically raises score. Fake reflector suggests it, fake rewriter
-    returns it. Assert: offspring scores higher, best_workflow has the change,
-    lineage recorded."""
+    """e. PLANTED SOLUTION: seed with the DEFAULT workflow, evolve via
+    prompt mutation to IMPROVED, assert offspring scores higher.
 
-    def test_prompt_mutation_raises_score(self, tmp_path: Path) -> None:
-        """A deterministic prompt mutation should raise the score.
-        Uses FnNode-only workflow so no real agent is needed."""
+    The test exercises REAL evolution through the engine pipeline:
+    - Seed = DEFAULT workflow (score 0.5 per item)
+    - A fake reflector suggests ``prompt_mutate`` targeting ``work``
+    - A fake rewriter returns the improving command text
+    - ``mutation_rate=1.0`` so mutations are always applied
+    - Assertions: offspring created from the suggestion, ran every node
+      for every train item, scored higher, is best, contains improved
+      text, and has lineage recorded.
+    """
+
+    def test_planted_evolution(self, tmp_path: Path) -> None:
+        """Seed DEFAULT, evolve with planted mutation → IMPROVED via engine."""
+        from unittest.mock import patch as _patch
+
+        from factory.outer_loop.models import MutationType, MutationRecord
+        from factory.outer_loop.mutations import WeightedRandomStrategy
+        from factory.outer_loop.population import Population
+
         project = tmp_path / "project"
         project.mkdir()
         _bootstrap_git_project(project)
 
         task = ScoreDiffTask()
 
-        # Parent workflow writes "DEFAULT" → score 0.5
-        parent_wf = _make_diff_workflow("DEFAULT")
+        # ── Seed workflow: DEFAULT FnNode (score 0.5) ──────────
+        seed_wf = _make_diff_workflow("DEFAULT")
 
-        # Child workflow writes "IMPROVED" → score 0.9
-        child_wf = _make_diff_workflow("IMPROVED")
+        # ── Planted mutation strategy: always PROMPT_MUTATE, rate=1.0 ──
+        class PlantedStrategy(WeightedRandomStrategy):
+            """Always selects PROMPT_MUTATE at rate 1.0."""
 
-        config = SwarmConfig(
-            benchmark="planted-test",
-            budget=4,
-            population_size=2,
-            training_instances=["a", "b"],
-            designer_count=0,
-        )
-        config.set_task(task)
+            def __init__(self) -> None:
+                super().__init__(mutation_rate=1.0)
 
-        evaluator = SwarmEvaluator(
-            config, inner_loop_factory=True, project_dir=project,
-        )
+            def select_operator(
+                self, parent: Any, generation: int,
+                archive_stats: Any = None,
+            ) -> MutationType:
+                return MutationType.PROMPT_MUTATE
 
-        # Evaluate parent
-        parent_result = evaluator.evaluate(
-            parent_wf, str(project), ["a", "b"], individual_id="parent",
-        )
-
-        # Evaluate child (the "mutated" version)
-        child_result = evaluator.evaluate(
-            child_wf, str(project), ["a", "b"], individual_id="child",
-        )
-
-        # Child (IMPROVED) must score higher than parent (DEFAULT)
-        assert child_result.score > parent_result.score, (
-            f"Child score ({child_result.score}) should be higher than "
-            f"parent ({parent_result.score})"
-        )
-
-    def test_planted_solution_in_engine_run(self, tmp_path: Path) -> None:
-        """Run engine with a workflow that deterministically scores well.
-        Verify best_workflow and lineage."""
-        project = tmp_path / "project"
-        project.mkdir()
-        _bootstrap_git_project(project)
-
-        task = ScoreDiffTask()
-
-        # Use IMPROVED workflow — should score 0.9
-        wf = _make_diff_workflow("IMPROVED")
-
-        config = SwarmConfig(
-            benchmark="planted-engine",
-            budget=2,
-            population_size=1,
-            training_instances=["a", "b"],
-            designer_count=0,
-            mutation_rate=0.0,  # No mutations — just evaluate the seed
-        )
-        config.set_task(task)
-
-        evaluator = SwarmEvaluator(
-            config, inner_loop_factory=True, project_dir=project,
-        )
-
-        class NoMutationStrategy:
-            """Strategy that never mutates — used to test planted solution."""
-            def select_operator(self, parent: Workflow, generation: int,
-                                archive_stats: dict[str, object]) -> Any:
-                from factory.outer_loop.models import MutationType
+            def select_guided_operator(
+                self, parent: Any, generation: int,
+                reflection: Any = None,
+            ) -> MutationType:
                 return MutationType.PROMPT_MUTATE
 
             def get_mutation_rate(self, generation: int) -> float:
-                return 0.0
+                return 1.0
 
             def get_designer_ratio(self, generation: int) -> float:
                 return 0.0
 
+        config = SwarmConfig(
+            benchmark="planted-evolution",
+            budget=10,
+            population_size=2,
+            tournament_size=2,
+            training_instances=["a", "b"],
+            designer_count=0,
+            mutation_rate=1.0,
+        )
+        config.set_task(task)
+
+        evaluator = SwarmEvaluator(
+            config, inner_loop_factory=True, project_dir=project,
+        )
+
         engine = SwarmEngine(
             config,
             evaluator,
-            strategy=NoMutationStrategy(),
+            strategy=PlantedStrategy(),
             project_dir=project,
             designer=None,
         )
 
-        result = engine.run(wf)
+        # Seed the population with just the DEFAULT workflow
+        pop = Population()
+        seed_ind = Population.make_individual(seed_wf, generation=0)
+        pop.add(seed_ind)
+        engine._archive.add(seed_ind)
+        engine._novelty.add(seed_wf)
 
-        assert result.best_score > 0, "Best score should be positive"
-        assert result.best_workflow_data, "best_workflow_data should not be empty"
-        assert result.generations_completed >= 1
+        # Patch apply_random_mutation to inject our planted improvement.
+        # This simulates: reflector suggests prompt_mutate → rewriter
+        # produces IMPROVED text → mutation applied to FnNode command.
+        improved_wf = _make_diff_workflow("IMPROVED")
+        planted_mutation_rec = MutationRecord(
+            operator=MutationType.PROMPT_MUTATE,
+            target_node="work",
+            before={"command": 'echo "DEFAULT" > branch_marker.txt'},
+            after={"command": 'echo "IMPROVED" > branch_marker.txt'},
+            rationale="Planted mutation: DEFAULT → IMPROVED",
+        )
+
+        def _planted_mutate(
+            parent: Any, strategy: Any, generation: int,
+            frozen_nodes: Any = None, reflection_report: Any = None,
+        ) -> tuple[Any, MutationRecord] | None:
+            return (improved_wf, planted_mutation_rec)
+
+        with _patch(
+            "factory.outer_loop.engine.apply_random_mutation",
+            side_effect=_planted_mutate,
+        ):
+            summary = engine.evolve_generation(pop, generation=0, project_dir=str(project))
+
+        # ── Harvest results ──────────────────────────────────────
+        # Find the offspring (non-seed individual)
+        offspring_list = [
+            ind for ind in pop.individuals
+            if ind.id != seed_ind.id and ind.score is not None and not ind.errored
+        ]
+        assert len(offspring_list) >= 1, (
+            f"Expected at least 1 offspring, got {len(offspring_list)}. "
+            f"Population: {[(i.id, i.score, i.errored) for i in pop.individuals]}"
+        )
+        offspring_ind = max(offspring_list, key=lambda i: i.score or 0.0)
+
+        seed_ind_scored = pop.get(seed_ind.id)
+        assert seed_ind_scored is not None and seed_ind_scored.score is not None
+        seed_score = seed_ind_scored.score
+        offspring_score = offspring_ind.score
+        assert offspring_score is not None
+
+        # ── Assert (a): offspring was created from the mutation ──
+        assert offspring_ind.parent_id == seed_ind.id, (
+            f"Offspring parent_id should be seed id, got {offspring_ind.parent_id}"
+        )
+        assert offspring_ind.mutation_record is not None
+        assert offspring_ind.mutation_record.operator == MutationType.PROMPT_MUTATE
+        assert offspring_ind.mutation_record.target_node == "work"
+
+        # ── Assert (b): offspring ran every node for every train item ──
+        offspring_rec = evaluator.get_cycle_record(offspring_ind.id)
+        assert offspring_rec is not None, "No CycleRecord for offspring"
+        assert offspring_rec.instance_results is not None
+        offspring_item_ids = {
+            r["item_id"] for r in offspring_rec.instance_results
+        }
+        assert offspring_item_ids == {"a", "b"}, (
+            f"Offspring should have results for all train items, got {offspring_item_ids}"
+        )
+
+        # ── Assert (c): offspring scored higher than seed ──────
+        assert offspring_score > seed_score, (
+            f"Offspring score ({offspring_score}) should be higher than "
+            f"seed ({seed_score})"
+        )
+
+        # ── Assert (d): offspring is best_workflow ─────────────
+        best = pop.best()
+        assert best is not None
+        assert best.id == offspring_ind.id, (
+            f"Best individual should be offspring, got {best.id}"
+        )
+
+        # ── Assert (e): offspring contains the improved text ───
+        best_wf = Workflow.from_dict(best.workflow_data)  # type: ignore[arg-type]
+        work_node = best_wf.nodes.get("work")
+        assert work_node is not None
+        assert hasattr(work_node, "command")
+        assert "IMPROVED" in work_node.command, (  # type: ignore[union-attr]
+            f"Best workflow work node should contain IMPROVED, "
+            f"got {work_node.command}"  # type: ignore[union-attr]
+        )
+
+        # ── Assert (f): lineage is recorded ────────────────────
+        assert best.parent_id == seed_ind.id
+        assert best.mutation_record is not None
+        assert best.mutation_record.operator == MutationType.PROMPT_MUTATE
+        assert best.mutation_record.target_node == "work"
+        assert "DEFAULT" in str(best.mutation_record.before)
+        assert "IMPROVED" in str(best.mutation_record.after)
 
 
 # ── Test f: Error cases ──────────────────────────────────────────────
@@ -713,3 +788,111 @@ class TestErrorCases:
         """FnNode with no command and no callable_name must fail validation."""
         with pytest.raises(ValueError, match="command.*callable_name|callable_name.*command"):
             FnNode(id="empty-fn", command="", callable_name=None)
+
+    def test_errored_excluded_from_selection(self) -> None:
+        """Errored individuals are excluded from best() and mean_score().
+
+        An errored individual with score 0.0 must not be the best even
+        when it's the only candidate — Population.best() and
+        MAPElitesArchive.add() must reject it.
+        """
+        from factory.outer_loop.models import Individual
+        from factory.outer_loop.population import MAPElitesArchive, Population
+
+        # Good individual
+        good = Individual(
+            id="good",
+            workflow_data={},
+            score=0.5,
+            errored=False,
+            features=(1, 0, 1, 0, 0, 0, 0, 0, 0),
+        )
+        # Errored individual with higher score — must not win
+        bad = Individual(
+            id="bad",
+            workflow_data={},
+            score=0.9,
+            errored=True,
+            features=(1, 0, 1, 0, 0, 0, 0, 0, 1),
+        )
+
+        # Population.best() excludes errored
+        pop = Population()
+        pop.add(good)
+        pop.add(bad)
+        best = pop.best()
+        assert best is not None
+        assert best.id == "good", (
+            f"best() should be 'good' (non-errored), not 'bad' (errored), got {best.id}"
+        )
+
+        # mean_score() excludes errored
+        mean = pop.mean_score()
+        assert mean == 0.5, (
+            f"mean_score() should be 0.5 (only 'good'), not include errored. Got {mean}"
+        )
+
+        # MAPElitesArchive.add() rejects errored
+        archive = MAPElitesArchive()
+        assert archive.add(bad) is False, "Archive should reject errored individual"
+        assert archive.add(good) is True, "Archive should accept non-errored individual"
+        assert archive.best() is not None
+        assert archive.best().id == "good"  # type: ignore[union-attr]
+
+
+# ── Test g: All-errored generation raises ─────────────────────────────
+
+
+class TestAllErroredRaises:
+    """g. When EVERY candidate in a generation errors during evaluation,
+    SwarmEngine.run must raise — never return best_score=0.0 as if the
+    harness were simply bad."""
+
+    def test_all_errored_generation_raises(self, tmp_path: Path) -> None:
+        """SwarmEngine.run raises RuntimeError when all evaluations error."""
+        from unittest.mock import patch
+
+        from factory.outer_loop.models import EvalResult as _ER
+
+        project = tmp_path / "project"
+        project.mkdir()
+        _bootstrap_git_project(project)
+
+        task = ScoredTask()
+        wf = _make_scored_workflow()
+
+        config = SwarmConfig(
+            benchmark="error-test",
+            budget=4,
+            population_size=2,
+            training_instances=["a", "b"],
+            designer_count=0,
+            mutation_rate=0.0,
+        )
+        config.set_task(task)
+
+        evaluator = SwarmEvaluator(
+            config, inner_loop_factory=True, project_dir=project,
+        )
+
+        # Patch the evaluator to always return errored results
+        def _always_error(
+            workflow: Any, project_dir: str, instances: list[str],
+            individual_id: str | None = None,
+        ) -> _ER:
+            return _ER(
+                score=0.0,
+                errored=True,
+                details={"error": "simulated failure"},
+            )
+
+        engine = SwarmEngine(
+            config,
+            evaluator,
+            project_dir=project,
+            designer=None,
+        )
+
+        with patch.object(evaluator, "evaluate", side_effect=_always_error):
+            with pytest.raises(RuntimeError, match="All.*candidates.*errored"):
+                engine.run(wf, project_dir=str(project))

@@ -243,7 +243,8 @@ class _RunResult:
     def __init__(self) -> None:
         self.project: Path | None = None
         self.log_file: Path | None = None
-        self.log_entries: list[dict[str, Any]] = []
+        self.log_entries: list[dict[str, Any]] = []  # train run only
+        self.val_log_entries: list[dict[str, Any]] = []  # val run only
         self.train_results: list[dict[str, Any]] = []
         self.train_score: float | None = None
         self.val_results: list[dict[str, Any]] = []
@@ -324,6 +325,15 @@ def _run_pipeline(
             for r in record.instance_results:
                 result.train_results.append(r if isinstance(r, dict) else dict(r))
 
+    # ── Read train log entries BEFORE val run ─────────────────
+    if result.log_file and result.log_file.exists():
+        result.log_entries = [
+            json.loads(line)
+            for line in result.log_file.read_text().strip().splitlines()
+            if line.strip()
+        ]
+    train_log_len = len(result.log_entries)
+
     # ── Run val evaluation (split="val") ──────────────────────
     val_ids = [inst.id for inst in task.instances(split="val")]
     val_eval = evaluator.evaluate(wf, str(project), val_ids)
@@ -332,16 +342,17 @@ def _run_pipeline(
             result.val_results.append(r if isinstance(r, dict) else dict(r))
     result.val_score = val_eval.score
 
-    # ── Record worktree count after ─────────────────────────
-    result.worktree_count_after = _git_worktree_count(project)
-
-    # ── Read log entries ────────────────────────────────────
+    # ── Read val log entries (everything after the train slice) ──
     if result.log_file and result.log_file.exists():
-        result.log_entries = [
+        all_entries = [
             json.loads(line)
             for line in result.log_file.read_text().strip().splitlines()
             if line.strip()
         ]
+        result.val_log_entries = all_entries[train_log_len:]
+
+    # ── Record worktree count after ─────────────────────────
+    result.worktree_count_after = _git_worktree_count(project)
 
     # ── Collect reflector output ────────────────────────────
     if record is not None:
@@ -545,15 +556,15 @@ class TestForkE2E:
     # ── Test 6: Train/val split ────────────────────────────────
 
     def test_train_val_split(self, shared: _RunResult) -> None:
-        """Train run: results for exactly i1-i4; i5/i6 NEVER in log.
-        Val run: results for exactly i5, i6."""
+        """Train run: results for exactly i1-i4; i5/i6 NEVER in train log.
+        Val run: results for exactly i5, i6; work nodes executed for both."""
         # Train results should only contain i1-i4
         train_ids = {r["item_id"] for r in shared.train_results}
         assert train_ids == {"i1", "i2", "i3", "i4"}, (
             f"Expected train IDs {{i1,i2,i3,i4}}, got {train_ids}"
         )
 
-        # i5/i6 should NEVER appear in the execution log (which is from train run)
+        # i5/i6 should NEVER appear in the TRAIN execution log
         log_ids = {
             e["item_id"]
             for e in shared.log_entries
@@ -566,6 +577,16 @@ class TestForkE2E:
         val_ids = {r["item_id"] for r in shared.val_results}
         assert val_ids == {"i5", "i6"}, (
             f"Expected val IDs {{i5,i6}}, got {val_ids}"
+        )
+
+        # Val run must execute work nodes for exactly i5 and i6
+        val_work_ids = {
+            e["item_id"]
+            for e in shared.val_log_entries
+            if e.get("node") == "work"
+        }
+        assert val_work_ids == {"i5", "i6"}, (
+            f"Expected val work nodes for {{i5,i6}}, got {val_work_ids}"
         )
 
     # ── Test 7: Parallelism from timestamps ────────────────────

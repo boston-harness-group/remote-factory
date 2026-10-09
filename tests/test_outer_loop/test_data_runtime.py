@@ -156,28 +156,6 @@ class TestBug1SplitLabel:
         for r in results:
             assert r["split"] == "train"
 
-    def test_evaluate_fork_split(self, tmp_path: Path) -> None:
-        """evaluate_fork with split='val' → every ItemResult has split='val'."""
-        from factory.workflow.data_runtime import evaluate_fork
-
-        project = _bootstrap(tmp_path)
-        wf = _make_test_workflow()
-        task = _SplitTask()
-
-        results = asyncio.run(evaluate_fork(
-            wf,
-            wf.nodes["data"],  # type: ignore[arg-type]
-            "data",
-            project,
-            task=task,
-            run_id="eval-val",
-            split="val",
-        ))
-
-        assert len(results) > 0
-        for r in results:
-            assert r["split"] == "val"
-
 
 # ── Bug 2: per-item cost ────────────────────────────────────────────
 

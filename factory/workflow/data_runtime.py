@@ -165,8 +165,7 @@ def _resolve_items(
 ) -> tuple[list[tuple[DataItem, Any | None]], Any | None]:
     """Resolve, filter, shuffle and limit data items from a DataNode.
 
-    Returns ``(task_instances, resolved_task)`` — shared by
-    ``run_fork`` and ``evaluate_fork``.
+    Returns ``(task_instances, resolved_task)`` — used by ``run_fork``.
 
     When a Task is available, uses ``task.instances(split)`` to get items
     for the requested split.  If ``allowed_instance_ids`` is provided,
@@ -573,96 +572,3 @@ async def run_fork(
     return item_results
 
 
-async def evaluate_fork(
-    workflow: Workflow,
-    data_node: DataNode,
-    data_node_id: str,
-    project_path: Path,
-    *,
-    allowed_instance_ids: set[str] | None = None,
-    task: Any | None = None,
-    run_id: str = "",
-    split: Literal["train", "val", "all"] = "train",
-) -> list[dict[str, Any]]:
-    """Evaluate items via setup + verify only (no branch workflow execution).
-
-    Used by the outer-loop evaluator for val / all_pass evaluations where
-    only scores matter.  Avoids running the branch workflow (which would
-    produce side effects like log entries and file mutations).
-    """
-    from factory.task import TaskInstance as _TaskInstance
-
-    node = data_node
-
-    # ── Resolve data items (shared with run_fork) ────────────
-    task_instances, resolved_task = _resolve_items(
-        node, data_node_id, project_path,
-        allowed_instance_ids=allowed_instance_ids,
-        task=task,
-        run_id=run_id,
-        split=split,
-    )
-
-    # ── Evaluate: setup + verify per item (no branch workflow) ──
-    item_results: list[dict[str, Any]] = []
-
-    for item, inst_or_none in task_instances:
-        inst = inst_or_none
-        t0 = time.monotonic()
-        try:
-            if resolved_task is not None and inst is None:
-                inst = _TaskInstance(
-                    id=item.id,
-                    path=Path(item.path) if item.path else None,
-                    metadata=item.metadata or {},
-                )
-
-            if resolved_task is not None and inst is not None:
-                try:
-                    resolved_task.setup(inst, project_path)
-                except Exception as setup_exc:
-                    duration_s = time.monotonic() - t0
-                    item_results.append(ItemResult(
-                        item_id=item.id,
-                        split=split,
-                        status=ItemStatus.errored,
-                        score=0.0,
-                        error=f"setup_failed: {setup_exc}",
-                        duration_s=duration_s,
-                    ).model_dump())
-                    continue
-
-                vr = resolved_task.verify(inst, project_path)
-                duration_s = time.monotonic() - t0
-                status = ItemStatus.ok if vr.passed else ItemStatus.failed
-                item_results.append(ItemResult(
-                    item_id=item.id,
-                    split=split,
-                    status=status,
-                    score=vr.score,
-                    passed=vr.passed,
-                    verify_details=vr.details or {},
-                    duration_s=duration_s,
-                ).model_dump())
-            else:
-                duration_s = time.monotonic() - t0
-                item_results.append(ItemResult(
-                    item_id=item.id,
-                    split=split,
-                    status=ItemStatus.ok,
-                    score=0.0,
-                    duration_s=duration_s,
-                ).model_dump())
-
-        except Exception as exc:
-            duration_s = time.monotonic() - t0
-            item_results.append(ItemResult(
-                item_id=item.id,
-                split=split,
-                status=ItemStatus.errored,
-                score=0.0,
-                error=str(exc),
-                duration_s=duration_s,
-            ).model_dump())
-
-    return item_results

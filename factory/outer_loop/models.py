@@ -54,6 +54,7 @@ class Individual(BaseModel):
     parent_id: str | None = None
     mutation_record: MutationRecord | None = None
     cost_usd: float = 0.0
+    errored: bool = False
 
     @field_validator("features", mode="before")
     @classmethod
@@ -193,6 +194,7 @@ class EvalResult(BaseModel):
     hygiene_score: float = 0.0
     cost_usd: float = 0.0
     complexity: float = 0.0
+    errored: bool = False
     details: dict[str, object] = Field(default_factory=dict)
 
 
