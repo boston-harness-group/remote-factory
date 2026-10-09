@@ -482,6 +482,46 @@ class InnerLoop:
                     else:
                         _run_split = 'all'
 
+        # Val/holdout split: setup + verify only — no branch workflow
+        # execution.  Avoids side-effects (log entries, file mutations)
+        # that would pollute the train evaluation's artifacts.
+        if _run_split == 'val':
+            from factory.workflow.primitives import DataNode as _DN
+            from factory.workflow.data_runtime import evaluate_fork
+
+            data_nodes = [
+                (nid, n) for nid, n in self.workflow.nodes.items()
+                if isinstance(n, _DN)
+            ]
+            if data_nodes:
+                dn_id, dn = data_nodes[0]
+                raw_items = asyncio.run(evaluate_fork(
+                    self.workflow,
+                    dn,
+                    dn_id,
+                    self.project_dir,
+                    allowed_instance_ids=allowed_instance_ids,
+                    task=self.task,
+                    split="val",
+                ))
+
+                duration_s = time.monotonic() - t0
+                agg = self._inner_loop_config.aggregate if self._inner_loop_config else InnerLoopConfig().aggregate
+                agg_str = agg.value if hasattr(agg, 'value') else str(agg)
+                record = CycleRecord.from_run(
+                    raw_items,
+                    aggregate=agg_str,
+                    mode=self.mode,
+                    duration_s=duration_s,
+                    cycle_number=self._step_count + 1,
+                    workflow=self.workflow,
+                )
+                record.frozen_nodes = sorted(self.frozen_nodes)
+                record.mutable_node_ids = sorted(self.mutable_nodes())
+                self._step_count += 1
+                self._history.append(record)
+                return record
+
         # Full path: WorkflowExecutor runs plan → data → join → summarize
         from factory.workflow.executor import WorkflowExecutor
 

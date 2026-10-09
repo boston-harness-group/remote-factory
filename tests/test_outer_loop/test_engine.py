@@ -579,6 +579,48 @@ class TestSkipReEvaluation:
         assert len(eval_calls) >= 1
 
 
+class TestZeroMutationRateSkipsOffspring:
+    """When mutation_rate=0.0, evolve_generation must NOT create offspring."""
+
+    def test_zero_mutation_rate_no_offspring(self) -> None:
+        """evolve_generation with mutation_rate=0.0 evaluates existing pop only."""
+        eval_calls: list[str] = []
+
+        def tracking_eval(
+            wf: Workflow, project_dir: str, instances: list[str],
+        ) -> EvalResult:
+            eval_calls.append(wf.name)
+            return EvalResult(
+                score=0.0, benchmark_score=0.6, hygiene_score=0.7,
+                cost_usd=0.05, complexity=float(len(wf.nodes)),
+            )
+
+        config = _make_config(
+            budget=50,
+            population_size=2,
+            mutation_rate=0.0,
+            designer_count=0,
+        )
+        evaluator = SwarmEvaluator(config, evaluator_fn=tracking_eval)
+        strategy = WeightedRandomStrategy(mutation_rate=0.0)
+        engine = SwarmEngine(config, evaluator, strategy=strategy)
+
+        # Manually seed population with one unevaluated individual
+        pop = Population()
+        wf = _make_workflow()
+        ind = Population.make_individual(wf, generation=0)
+        pop.add(ind)
+
+        summary = engine.evolve_generation(pop, generation=0)
+
+        # Zero offspring: only the seed was evaluated
+        assert summary.novel_count == 0
+        assert summary.rejected_duplicates == 0
+        assert len(summary.mutations_applied) == 0
+        # Population size should be unchanged (no offspring added)
+        assert pop.size == 1
+
+
 # ── Tests moved from test_coverage_gaps.py ─────────────────────────
 
 

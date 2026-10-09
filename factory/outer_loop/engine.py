@@ -356,31 +356,32 @@ class SwarmEngine:
         offspring: list[tuple[Workflow, MutationRecord, str]] = []
 
         mutation_rate = self._strategy.get_mutation_rate(generation)
-        for _ in range(self._config.population_size):
-            parent = self._archive.sample_parent(
-                self._config.tournament_size,
-                rank_weighted=self._config.rank_weighted_selection,
-            )
-            if parent is None:
-                continue
-            parent_wf = Workflow.from_dict(parent.workflow_data)  # type: ignore[arg-type]
-            mutation_result = apply_random_mutation(
-                parent_wf,
-                self._strategy,
-                generation,
-                frozen_nodes=set(self._config.frozen_node_ids) | _auto_frozen_nodes(parent_wf),
-                reflection_report=self._last_reflection,
-            )
-            if mutation_result is None:
-                continue
-            child_wf, mutation_rec = mutation_result
-            if self._novelty.is_novel(child_wf):
-                self._novelty.add(child_wf)
-                offspring.append((child_wf, mutation_rec, parent.id))
-                mutations_applied.append(mutation_rec)
-                novel_count += 1
-            else:
-                rejected_dupes += 1
+        if mutation_rate > 0.0:
+            for _ in range(self._config.population_size):
+                parent = self._archive.sample_parent(
+                    self._config.tournament_size,
+                    rank_weighted=self._config.rank_weighted_selection,
+                )
+                if parent is None:
+                    continue
+                parent_wf = Workflow.from_dict(parent.workflow_data)  # type: ignore[arg-type]
+                mutation_result = apply_random_mutation(
+                    parent_wf,
+                    self._strategy,
+                    generation,
+                    frozen_nodes=set(self._config.frozen_node_ids) | _auto_frozen_nodes(parent_wf),
+                    reflection_report=self._last_reflection,
+                )
+                if mutation_result is None:
+                    continue
+                child_wf, mutation_rec = mutation_result
+                if self._novelty.is_novel(child_wf):
+                    self._novelty.add(child_wf)
+                    offspring.append((child_wf, mutation_rec, parent.id))
+                    mutations_applied.append(mutation_rec)
+                    novel_count += 1
+                else:
+                    rejected_dupes += 1
 
         # Evaluate offspring and add to population
         for child_wf, mutation_rec, parent_id in offspring:
