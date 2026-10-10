@@ -479,6 +479,94 @@ class Workflow(BaseModel):
         )
 
 
+# ── plugin role registration ─────────────────────────────────────
+
+
+# Roles registered through register_agent_role, keyed by value. Lets
+# re-registration be idempotent while builtin collisions still raise.
+_registered_plugin_roles: dict[str, AgentRole] = {}
+
+
+def _rebuild_role_schemas() -> None:
+    """Rebuild the Pydantic core schemas of models defined in this module.
+
+    Pydantic freezes an enum's valid values into the model's core schema at
+    class-definition time, so a newly added ``AgentRole`` member is invisible
+    to validation until every model referencing it is rebuilt. Iterating in
+    ``vars()`` order visits children before the models that embed them
+    (``Workflow``, ``Factory``), which is the order the schema graph needs.
+    """
+    import sys
+
+    module = sys.modules[__name__]
+    for obj in vars(module).values():
+        if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
+            obj.model_rebuild(force=True)
+
+
+def register_agent_role(role: str, name: str | None = None) -> AgentRole:
+    """Register a plugin-defined agent role, making it usable in workflow graphs.
+
+    Extends ``AgentRole`` with a new member so the role can appear in
+    ``AgentNode.role`` and ``GateNode.evaluator_role`` — plain enum mutation
+    (the workaround plugins used before this API) leaves Pydantic's frozen
+    schema stale, and workflows containing the role then fail JSON
+    validation. This function performs the insertion and rebuilds the
+    affected schemas, so serialization roundtrips work.
+
+    ``role`` is the role value used in graphs, prompts, and the CLI (e.g.
+    ``"paper-reader"``). The enum member name is derived from it (``PAPER_READER``)
+    unless ``name`` is given explicitly.
+
+    Idempotent: re-registering an existing name with the same value returns
+    the existing member. Raises ``ValueError`` on name or value collisions
+    with existing members, or when the derived member name is not a valid
+    Python identifier.
+    """
+    if not role or not role.strip():
+        raise ValueError("agent role value must be a non-empty string")
+    role = role.strip()
+    if name is None:
+        name = role.upper().replace("-", "_")
+    if not name.isidentifier():
+        raise ValueError(
+            f"agent role {role!r} does not map to a valid enum member name ({name!r})"
+        )
+
+    previously = _registered_plugin_roles.get(role)
+    if previously is not None:
+        if previously.name != name:
+            raise ValueError(
+                f"agent role {role!r} is already registered with member name "
+                f"{previously.name!r}, not {name!r}"
+            )
+        return previously
+
+    by_name = AgentRole._member_map_.get(name)
+    if by_name is not None:
+        raise ValueError(
+            f"agent role name {name!r} already exists with value {by_name.value!r}"
+        )
+    if role in AgentRole._value2member_map_:
+        raise ValueError(
+            f"agent role value {role!r} is already taken by member "
+            f"{AgentRole._value2member_map_[role].name!r}"
+        )
+
+    member = str.__new__(AgentRole, role)
+    member._name_ = name
+    member._value_ = role
+    AgentRole._member_map_[name] = member
+    AgentRole._value2member_map_[role] = member
+    type.__setattr__(AgentRole, name, member)
+    if name not in AgentRole._member_names_:
+        AgentRole._member_names_.append(name)
+
+    _registered_plugin_roles[role] = member
+    _rebuild_role_schemas()
+    return member
+
+
 # ── factory ──────────────────────────────────────────────────────
 
 

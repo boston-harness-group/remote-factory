@@ -51,6 +51,16 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 _USER_PROMPTS_DIR = Path.home() / ".factory" / "agents" / "prompts"
 
 
+def _is_plugin_role(role: str) -> bool:
+    """True if the role was registered by a plugin (not a builtin role)."""
+    try:
+        from factory.plugins import get_registry
+
+        return role in get_registry().agent_roles
+    except Exception:
+        return False
+
+
 def resolve_prompt(
     role: AgentRole,
     project_path: Path | None = None,
@@ -112,9 +122,16 @@ def resolve_prompt(
         override_hint = (
             f" or {project_path / '.factory' / 'agents' / f'{role}.md'}" if project_path else ""
         )
+        plugin_hint = ""
+        if _is_plugin_role(role):
+            plugin_hint = (
+                f" Role '{role}' is plugin-registered; its prompt file likely did "
+                "not ship with the plugin (check the built wheel's data files)."
+            )
         raise FileNotFoundError(
             f"No prompt found for agent role '{role}'. "
             f"Expected at {default_path}, {_USER_PROMPTS_DIR / f'{role}.md'}{override_hint}"
+            f"{plugin_hint}"
         )
 
     prompt = default_path.read_text()
