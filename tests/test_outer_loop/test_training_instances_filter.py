@@ -6,6 +6,7 @@ task.instances(split='train'), completely ignoring config.training_instances.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Iterator, Literal
 
 from factory.outer_loop.engine import SwarmEngine
@@ -87,7 +88,7 @@ def _make_workflow() -> Workflow:
 class TestTrainingInstancesFilter:
     """Verify that config.training_instances filters task.instances(split='train')."""
 
-    def test_training_instances_limits_task_split(self) -> None:
+    def test_training_instances_limits_task_split(self, tmp_path: Path) -> None:
         """Only instances in BOTH task split AND config.training_instances are used."""
         seen_instances: list[list[str]] = []
 
@@ -104,7 +105,7 @@ class TestTrainingInstancesFilter:
         config.set_task(_SplitAwareTask())
 
         evaluator = SwarmEvaluator(config, evaluator_fn=tracking_eval)
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
 
         pop = Population()
         wf = _make_workflow()
@@ -122,7 +123,7 @@ class TestTrainingInstancesFilter:
             # Order should be preserved from task.instances()
             assert call_instances == ["a", "c"]
 
-    def test_training_instances_empty_uses_all(self) -> None:
+    def test_training_instances_empty_uses_all(self, tmp_path: Path) -> None:
         """When training_instances is empty, all task split instances are used."""
         seen_instances: list[list[str]] = []
 
@@ -139,7 +140,7 @@ class TestTrainingInstancesFilter:
         config.set_task(_SplitAwareTask())
 
         evaluator = SwarmEvaluator(config, evaluator_fn=tracking_eval)
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
 
         pop = Population()
         wf = _make_workflow()

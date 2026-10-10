@@ -545,7 +545,7 @@ class TestLegacyTaskBackwardCompat:
         # Verify calls were made (fallback worked)
         assert len(call_log) > 0
 
-    def test_run_with_legacy_task_no_crash(self) -> None:
+    def test_run_with_legacy_task_no_crash(self, tmp_path: Path) -> None:
         """Full run() with LegacyTask doesn't crash."""
         from factory.outer_loop.engine import SwarmEngine
 
@@ -560,7 +560,7 @@ class TestLegacyTaskBackwardCompat:
             return EvalResult(score=0.5, benchmark_score=0.5, hygiene_score=0.7)
 
         evaluator = SwarmEvaluator(config, evaluator_fn=simple_eval)
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
 
         # Should NOT raise TypeError
         result = engine.run(_make_workflow())

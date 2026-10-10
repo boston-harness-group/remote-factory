@@ -340,6 +340,7 @@ class TestLegacyLoadConversion:
 
         # The branch sub-workflow (what data_runtime creates)
         sub = wf.subgraph({'builder'}, name='test-wf__data_item', start_node='builder')
+        sub = sub.model_copy(update={'runtime_inputs': frozenset({'.factory/current_item.json'})})
 
         # Now manually insert a node that reads current_item.json (simulating node_insert)
         reviewer = AgentNode(

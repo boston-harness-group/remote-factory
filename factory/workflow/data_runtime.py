@@ -341,6 +341,10 @@ async def run_fork(
         name=f"{workflow.name}__data_item",
         start_node=entry,
     )
+    # Declare files provided by the data runtime at branch start
+    sub_workflow = sub_workflow.model_copy(update={
+        'runtime_inputs': frozenset({'.factory/current_item.json'}),
+    })
 
     # ── Resolve data items ─────────────────────────────────────
     task_instances, resolved_task = _resolve_items(
@@ -463,6 +467,7 @@ async def run_fork(
                             agent_fn=agent_fn,
                             initial_context=item.prompt or None,
                             auto_write_outputs=auto_write_outputs,
+                            validate=False,
                         )
                         # Include current_item.json so subgraph nodes don't block
                         base_files = (completed_files or set()) | {".factory/current_item.json"}

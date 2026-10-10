@@ -370,6 +370,7 @@ class Workflow(BaseModel):
     # and what kind of mutation is legal, not just the value and bounds.
     knob_specs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     declared_capabilities: frozenset[str] = frozenset()
+    runtime_inputs: frozenset[str] = frozenset()
 
     def validate_graph(self) -> list[str]:
         """Validate workflow graph structure using NetworkX. Returns list of issues."""
@@ -439,6 +440,8 @@ class Workflow(BaseModel):
             result["knob_specs"] = {k: dict(v) for k, v in self.knob_specs.items()}
         if self.declared_capabilities:
             result["declared_capabilities"] = sorted(self.declared_capabilities)
+        if self.runtime_inputs:
+            result["runtime_inputs"] = sorted(self.runtime_inputs)
         return result
 
     @classmethod
@@ -518,6 +521,7 @@ class Workflow(BaseModel):
             knob_expandable=data.get("knob_expandable", {}),
             knob_specs=data.get("knob_specs", {}),
             declared_capabilities=frozenset(data.get("declared_capabilities", [])),
+            runtime_inputs=frozenset(data.get("runtime_inputs", [])),
         )
 
 

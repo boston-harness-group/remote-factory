@@ -1180,7 +1180,7 @@ class TestTrainingInstancesLimitsTaskSplit:
     """Fix: evolve_generation must intersect training_instances with
     task.instances(split='train') so the config is not silently ignored."""
 
-    def test_training_instances_limits_task_split(self) -> None:
+    def test_training_instances_limits_task_split(self, tmp_path: Path) -> None:
         """When training_instances=['a', 'c'], only those two instance IDs
         should be passed to evaluator.evaluate(), not all four."""
         from factory.outer_loop.engine import SwarmEngine
@@ -1206,7 +1206,7 @@ class TestTrainingInstancesLimitsTaskSplit:
         )
         evaluator.get_cycle_record.return_value = None
 
-        engine = SwarmEngine(config=config, evaluator=evaluator)
+        engine = SwarmEngine(config=config, evaluator=evaluator, project_dir=tmp_path)
 
         # Create a minimal population with one unevaluated individual
         wf = Workflow(
@@ -1229,7 +1229,7 @@ class TestTrainingInstancesLimitsTaskSplit:
         assert len(captured_instances) >= 1
         assert sorted(captured_instances[0]) == ["a", "c"]
 
-    def test_training_instances_empty_uses_all(self) -> None:
+    def test_training_instances_empty_uses_all(self, tmp_path: Path) -> None:
         """When training_instances=[], all 4 instances from the task split
         should be used (no filtering)."""
         from factory.outer_loop.engine import SwarmEngine
@@ -1254,7 +1254,7 @@ class TestTrainingInstancesLimitsTaskSplit:
         )
         evaluator.get_cycle_record.return_value = None
 
-        engine = SwarmEngine(config=config, evaluator=evaluator)
+        engine = SwarmEngine(config=config, evaluator=evaluator, project_dir=tmp_path)
 
         wf = Workflow(
             name="test",

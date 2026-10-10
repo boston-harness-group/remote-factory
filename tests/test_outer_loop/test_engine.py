@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from factory.outer_loop.engine import BudgetTracker, SwarmEngine
@@ -19,6 +21,32 @@ from factory.workflow.primitives import (
     VerdictType,
     Workflow,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_cli_prompt_rewriter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace the default prompt rewriter so tests never call the Claude CLI.
+
+    ``mutate_prompt`` captures ``default_prompt_rewriter`` as a default
+    argument at import time, so we must patch ``mutate_prompt`` itself to
+    inject the fake rewriter at call time.
+    """
+    from functools import wraps
+
+    from factory.outer_loop.mutations import mutate_prompt as _original_mutate_prompt
+
+    def _fake_rewriter(node_id: str, current_prompt: str, hint: str | None) -> str:
+        suffix = f" [improved:{node_id}]"
+        return current_prompt + suffix if current_prompt else suffix
+
+    @wraps(_original_mutate_prompt)
+    def _patched_mutate_prompt(workflow, node_id, **kwargs):  # type: ignore[override]
+        kwargs["rewriter"] = _fake_rewriter
+        return _original_mutate_prompt(workflow, node_id, **kwargs)
+
+    monkeypatch.setattr(
+        "factory.outer_loop.mutations.mutate_prompt", _patched_mutate_prompt,
+    )
 
 
 def _make_config(**overrides: object) -> SwarmConfig:
@@ -228,10 +256,10 @@ class TestSwarmEngineSeed:
 
 
 class TestSwarmEngineEvolve:
-    def test_evolve_generation_returns_summary(self) -> None:
+    def test_evolve_generation_returns_summary(self, tmp_path: Path) -> None:
         config = _make_config(budget=50, population_size=3)
         evaluator = _make_deterministic_evaluator()
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         wf = _make_workflow()
         pop = engine.seed(wf)
 
@@ -243,21 +271,21 @@ class TestSwarmEngineEvolve:
         assert summary.hyperparameters is not None
         assert summary.hyperparameters.generation == 1
 
-    def test_evolve_updates_archive(self) -> None:
+    def test_evolve_updates_archive(self, tmp_path: Path) -> None:
         config = _make_config(budget=50, population_size=3)
         evaluator = _make_deterministic_evaluator()
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         wf = _make_workflow()
         pop = engine.seed(wf)
 
         engine.evolve_generation(pop, generation=1)
         assert engine.archive.size > 0
 
-    def test_hyperparameter_record_logged(self) -> None:
+    def test_hyperparameter_record_logged(self, tmp_path: Path) -> None:
         config = _make_config(budget=50, population_size=3)
         evaluator = _make_deterministic_evaluator()
         strategy = WeightedRandomStrategy(mutation_rate=0.4, designer_ratio=0.2)
-        engine = SwarmEngine(config, evaluator, strategy=strategy)
+        engine = SwarmEngine(config, evaluator, strategy=strategy, project_dir=tmp_path)
         wf = _make_workflow()
         pop = engine.seed(wf)
 
@@ -271,7 +299,7 @@ class TestSwarmEngineEvolve:
 
 
 class TestEvolveGenerationKnobValues:
-    def test_evolve_generation_builds_knob_values_by_id(self) -> None:
+    def test_evolve_generation_builds_knob_values_by_id(self, tmp_path: Path) -> None:
         """evolve_generation builds knob_values_by_id from population and passes to reflect."""
         from unittest.mock import patch
 
@@ -291,7 +319,7 @@ class TestEvolveGenerationKnobValues:
 
         config = _make_config(budget=50, population_size=2)
         evaluator = _make_deterministic_evaluator()
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         pop = engine.seed(wf_with_knobs)
 
         captured_kwargs: list[dict] = []
@@ -315,10 +343,10 @@ class TestEvolveGenerationKnobValues:
 
 
 class TestSwarmEngineRun:
-    def test_run_terminates_on_budget(self) -> None:
+    def test_run_terminates_on_budget(self, tmp_path: Path) -> None:
         config = _make_config(budget=30, population_size=2)
         evaluator = _make_deterministic_evaluator()
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         wf = _make_workflow()
 
         result = engine.run(wf)
@@ -335,7 +363,7 @@ class TestSwarmEngineRun:
         assert result.generations_completed >= 1
         assert len(result.trajectory) > 0
 
-    def test_run_terminates_on_target_score(self) -> None:
+    def test_run_terminates_on_target_score(self, tmp_path: Path) -> None:
         config = _make_config(budget=100, population_size=2, target_score=0.6)
 
         def high_score_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
@@ -345,14 +373,14 @@ class TestSwarmEngineRun:
             )
 
         evaluator = SwarmEvaluator(config, evaluator_fn=high_score_eval)
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         wf = _make_workflow()
 
         result = engine.run(wf)
         assert result.convergence_reason == "target_score_reached"
         assert result.best_score >= 0.6
 
-    def test_run_holdout_audit(self) -> None:
+    def test_run_holdout_audit(self, tmp_path: Path) -> None:
         """When Task has no val split, holdout eval is skipped and val_score stays None."""
         config = _make_config(budget=15, population_size=2)
 
@@ -360,7 +388,7 @@ class TestSwarmEngineRun:
             return EvalResult(score=0.0, benchmark_score=0.7, hygiene_score=0.7)
 
         evaluator = SwarmEvaluator(config, evaluator_fn=mock_eval)
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         wf = _make_workflow()
 
         result = engine.run(wf)
@@ -369,29 +397,29 @@ class TestSwarmEngineRun:
         # overfit_flag defaults to False when no audit ran
         assert result.overfit_flag is False
 
-    def test_run_hyperparameter_history(self) -> None:
+    def test_run_hyperparameter_history(self, tmp_path: Path) -> None:
         config = _make_config(budget=15, population_size=2)
         evaluator = _make_deterministic_evaluator()
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         wf = _make_workflow()
 
         result = engine.run(wf)
         assert len(result.hyperparameter_history) == result.generations_completed
 
-    def test_run_pareto_front(self) -> None:
+    def test_run_pareto_front(self, tmp_path: Path) -> None:
         config = _make_config(budget=15, population_size=2)
         evaluator = _make_deterministic_evaluator()
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         wf = _make_workflow()
 
         result = engine.run(wf)
         assert result.archive_size > 0
         assert len(result.pareto_front) > 0
 
-    def test_run_result_fields(self) -> None:
+    def test_run_result_fields(self, tmp_path: Path) -> None:
         config = _make_config(budget=10, population_size=2)
         evaluator = _make_deterministic_evaluator()
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         wf = _make_workflow()
 
         result = engine.run(wf)
@@ -401,7 +429,7 @@ class TestSwarmEngineRun:
 
 
 class TestSwarmEnginePlateau:
-    def test_plateau_detection(self) -> None:
+    def test_plateau_detection(self, tmp_path: Path) -> None:
         config = _make_config(budget=100, population_size=2)
 
         def flat_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
@@ -412,7 +440,7 @@ class TestSwarmEnginePlateau:
 
         evaluator = SwarmEvaluator(config, evaluator_fn=flat_eval)
         strategy = WeightedRandomStrategy(mutation_rate=0.3)
-        engine = SwarmEngine(config, evaluator, strategy=strategy)
+        engine = SwarmEngine(config, evaluator, strategy=strategy, project_dir=tmp_path)
         wf = _make_workflow()
 
         result = engine.run(wf)
@@ -441,7 +469,7 @@ class TestSwarmEnginePlateau:
 
 
 class TestSwarmEngineIntegration:
-    def test_3_generations_with_mock(self) -> None:
+    def test_3_generations_with_mock(self, tmp_path: Path) -> None:
         """Integration test: 3 generations, pop=4, mock fitness, verify trajectory."""
         config = _make_config(budget=50, population_size=4, target_score=None)
 
@@ -456,7 +484,7 @@ class TestSwarmEngineIntegration:
             )
 
         evaluator = SwarmEvaluator(config, evaluator_fn=mock_eval)
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         wf = _make_workflow()
 
         result = engine.run(wf)
@@ -475,7 +503,7 @@ class TestSwarmEngineIntegration:
 class TestSkipReEvaluation:
     """Regression tests for issue #1536: already-scored individuals must not be re-evaluated."""
 
-    def test_population_not_reevaluated_across_generations(self) -> None:
+    def test_population_not_reevaluated_across_generations(self, tmp_path: Path) -> None:
         """Pre-scored individuals must NOT be re-evaluated or consume budget."""
         eval_calls: list[str] = []
 
@@ -488,7 +516,7 @@ class TestSkipReEvaluation:
 
         config = _make_config(budget=50, population_size=2, designer_count=0)
         evaluator = SwarmEvaluator(config, evaluator_fn=tracking_eval)
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
 
         # Build a population with pre-scored individuals
         pop = Population()
@@ -514,7 +542,7 @@ class TestSkipReEvaluation:
         # At most pop_size offspring + holdout
         assert budget_consumed <= config.population_size + 1  # +1 for potential holdout
 
-    def test_zero_score_not_reevaluated(self) -> None:
+    def test_zero_score_not_reevaluated(self, tmp_path: Path) -> None:
         """Individual with score=0.0 (legitimate zero) must NOT be re-evaluated."""
         eval_calls: list[str] = []
 
@@ -527,7 +555,7 @@ class TestSkipReEvaluation:
 
         config = _make_config(budget=50, population_size=2, designer_count=0)
         evaluator = SwarmEvaluator(config, evaluator_fn=tracking_eval)
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
 
         # Build population with a zero-scored individual
         pop = Population()
@@ -549,7 +577,7 @@ class TestSkipReEvaluation:
         offspring_count = pop.size - 1  # subtract the original zero-scored
         assert budget_consumed <= offspring_count + 1  # +1 for potential holdout
 
-    def test_none_score_gets_evaluated(self) -> None:
+    def test_none_score_gets_evaluated(self, tmp_path: Path) -> None:
         """Individual with score=None (unevaluated) MUST be evaluated."""
         eval_calls: list[str] = []
 
@@ -562,7 +590,7 @@ class TestSkipReEvaluation:
 
         config = _make_config(budget=50, population_size=2, designer_count=0, training_instances=[])
         evaluator = SwarmEvaluator(config, evaluator_fn=tracking_eval)
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
 
         # Build population with an unevaluated individual (score=None)
         pop = Population()
@@ -582,7 +610,7 @@ class TestSkipReEvaluation:
 class TestZeroMutationRateSkipsOffspring:
     """When mutation_rate=0.0, evolve_generation must NOT create offspring."""
 
-    def test_zero_mutation_rate_no_offspring(self) -> None:
+    def test_zero_mutation_rate_no_offspring(self, tmp_path: Path) -> None:
         """evolve_generation with mutation_rate=0.0 evaluates existing pop only."""
         eval_calls: list[str] = []
 
@@ -603,7 +631,7 @@ class TestZeroMutationRateSkipsOffspring:
         )
         evaluator = SwarmEvaluator(config, evaluator_fn=tracking_eval)
         strategy = WeightedRandomStrategy(mutation_rate=0.0)
-        engine = SwarmEngine(config, evaluator, strategy=strategy)
+        engine = SwarmEngine(config, evaluator, strategy=strategy, project_dir=tmp_path)
 
         # Manually seed population with one unevaluated individual
         pop = Population()
@@ -627,7 +655,7 @@ class TestZeroMutationRateSkipsOffspring:
 class TestBudgetExhaustedDuringEvaluation:
     """Verifies partial results are saved when budget runs out mid-generation."""
 
-    def test_partial_results_saved_on_budget_exhaustion(self) -> None:
+    def test_partial_results_saved_on_budget_exhaustion(self, tmp_path: Path) -> None:
         config = _make_config(budget=5, population_size=3)
         eval_count = 0
 
@@ -640,7 +668,7 @@ class TestBudgetExhaustedDuringEvaluation:
             )
 
         evaluator = SwarmEvaluator(config, evaluator_fn=counting_eval)
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         wf = _make_workflow()
         result = engine.run(wf)
 
@@ -650,7 +678,7 @@ class TestBudgetExhaustedDuringEvaluation:
         assert result.best_score > 0
         assert len(result.trajectory) >= 1
 
-    def test_engine_stops_evaluating_when_budget_exhausted(self) -> None:
+    def test_engine_stops_evaluating_when_budget_exhausted(self, tmp_path: Path) -> None:
         config = _make_config(budget=3, population_size=2)
         eval_count = 0
 
@@ -662,7 +690,7 @@ class TestBudgetExhaustedDuringEvaluation:
             )
 
         evaluator = SwarmEvaluator(config, evaluator_fn=counting_eval)
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         wf = _make_workflow()
         result = engine.run(wf)
 
@@ -673,7 +701,7 @@ class TestBudgetExhaustedDuringEvaluation:
 class TestConvergenceAllCandidatesIdentical:
     """Verifies engine detects population diversity = 0 and exits gracefully."""
 
-    def test_identical_scores_trigger_early_stop_or_plateau(self) -> None:
+    def test_identical_scores_trigger_early_stop_or_plateau(self, tmp_path: Path) -> None:
         config = _make_config(budget=100, population_size=3)
 
         def flat_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
@@ -684,7 +712,7 @@ class TestConvergenceAllCandidatesIdentical:
 
         evaluator = SwarmEvaluator(config, evaluator_fn=flat_eval)
         strategy = WeightedRandomStrategy(mutation_rate=0.3)
-        engine = SwarmEngine(config, evaluator, strategy=strategy)
+        engine = SwarmEngine(config, evaluator, strategy=strategy, project_dir=tmp_path)
         wf = _make_workflow()
         result = engine.run(wf)
 
