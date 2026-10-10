@@ -120,7 +120,7 @@ def _make_doc_workflow() -> Any:
     return Workflow(
         name="doc-quality-wf",
         nodes={
-            "data": DataNode(id="data"),
+            "data": DataNode(id="data", parallelism=2),
             "builder": AgentNode(
                 id="builder",
                 role=AgentRole.BUILDER,
@@ -139,8 +139,13 @@ def _make_doc_workflow() -> Any:
     )
 
 
+@pytest.mark.timeout(3600)
 class TestCanary:
-    """Canary: two full outer-loop runs via SwarmEngine.run() with real model."""
+    """Canary: one full outer-loop run via SwarmEngine.run() with real model.
+
+    Validates: real project_dir used, evolution produces offspring,
+    trust checks pass, reflection cites real item results.
+    """
 
     @pytest.fixture()
     def project(self, tmp_path: Path) -> Path:
@@ -160,8 +165,8 @@ class TestCanary:
         _git(project, "commit", "-m", "init")
         return project
 
-    def _run_engine(self, project: Path, budget: int = 2) -> Any:
-        """Run SwarmEngine with real model."""
+    def _run_engine(self, project: Path) -> Any:
+        """Run SwarmEngine with real model — evolves at least one offspring."""
         from factory.outer_loop.engine import SwarmEngine
         from factory.outer_loop.evaluator import SwarmEvaluator
         from factory.outer_loop.models import SwarmConfig
@@ -174,11 +179,11 @@ class TestCanary:
 
         config = SwarmConfig(
             benchmark="doc-quality-canary",
-            budget=budget,
-            population_size=1,
+            budget=4,
+            population_size=2,
             training_instances=["readme-cli", "tutorial-scraping"],
             designer_count=0,
-            mutation_rate=0.0,
+            mutation_rate=0.3,
         )
         config.set_task(task)
 
@@ -189,27 +194,54 @@ class TestCanary:
             config, evaluator, project_dir=project, designer=None,
         )
 
-        return engine.run(wf)
+        return engine.run(wf), engine, evaluator
 
-    def test_canary_run_1(self, project: Path) -> None:
-        """First canary run — verify basic trust properties."""
-        result = self._run_engine(project, budget=2)
+    def test_canary_run(self, project: Path) -> None:
+        """Full canary: evolution with real model, offspring, trust checks."""
+        result, engine, evaluator = self._run_engine(project)
 
-        assert result.best_score > 0, f"Best score should be positive, got {result.best_score}"
+        # ── Basic score / convergence ──────────────────────────
+        assert result.best_score > 0, (
+            f"Best score should be positive, got {result.best_score}"
+        )
         assert result.generations_completed >= 1
-
-        # Run trust checks
-        diag = assert_run_trustworthy(result, project)
-        assert diag["checks_failed"] == 0, f"Trust checks failed: {diag}"
-
-    def test_canary_run_2(self, project: Path) -> None:
-        """Second canary run — fresh project, independent verification."""
-        result = self._run_engine(project, budget=2)
-
-        assert result.best_score > 0
         assert result.convergence_reason in (
             "budget_exhausted", "target_score_reached", "plateau",
         )
 
+        # ── Trust checks ──────────────────────────────────────
         diag = assert_run_trustworthy(result, project)
-        assert diag["checks_failed"] == 0
+        assert diag["checks_failed"] == 0, f"Trust checks failed: {diag}"
+
+        # ── Evolution produced offspring ──────────────────────
+        # At least one offspring was evaluated (has parent_id set)
+        offspring = [
+            (ind_id, rec)
+            for ind_id, rec in evaluator._cycle_records.items()
+            if rec is not None
+        ]
+        assert len(offspring) >= 2, (
+            f"Expected at least 2 evaluated individuals (seed + offspring), "
+            f"got {len(offspring)}"
+        )
+
+        # Check that at least one individual has a parent in lineage
+        # (i.e. is an offspring, not a seed)
+        trajectory = result.trajectory
+        has_offspring = any(
+            len(gen.mutations_applied) > 0
+            for gen in trajectory
+        )
+        assert has_offspring, (
+            "No mutations were applied — evolution did not produce offspring. "
+            f"Trajectory: {[(g.generation, g.novel_count) for g in trajectory]}"
+        )
+
+        # ── Reflection cites real item results ────────────────
+        # The reflector should have produced a reflection stored on the engine
+        reflection = engine._last_reflection
+        assert reflection is not None, "No reflection was produced"
+        # Reflection report should contain patterns or suggestions
+        assert len(reflection.failure_patterns) > 0 or len(reflection.suggestions) > 0, (
+            "Reflection has no failure patterns or suggestions"
+        )

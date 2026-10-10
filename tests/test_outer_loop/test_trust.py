@@ -896,3 +896,137 @@ class TestAllErroredRaises:
         with patch.object(evaluator, "evaluate", side_effect=_always_error):
             with pytest.raises(RuntimeError, match="All.*candidates.*errored"):
                 engine.run(wf, project_dir=str(project))
+
+
+# ── Test h: project_dir resolution ──────────────────────────────────
+
+
+class TestProjectDirResolution:
+    """h. SwarmEngine._resolve_project_dir falls back to self._project_dir
+    and raises ValueError when neither source provides a path.
+
+    Also: engine.run() without explicit project_dir routes worktrees
+    through the constructor-provided project, not cwd.
+    """
+
+    def test_run_uses_constructor_project_dir(self, tmp_path: Path) -> None:
+        """engine.run(wf) without project_dir uses self._project_dir."""
+        from unittest.mock import patch as _patch
+
+        project = tmp_path / "project"
+        project.mkdir()
+        _bootstrap_git_project(project)
+
+        task = ScoredTask()
+        wf = _make_scored_workflow()
+
+        config = SwarmConfig(
+            benchmark="project-dir-test",
+            budget=2,
+            population_size=1,
+            training_instances=["a", "b"],
+            designer_count=0,
+            mutation_rate=0.0,
+        )
+        config.set_task(task)
+
+        evaluator = SwarmEvaluator(
+            config, inner_loop_factory=True, project_dir=project,
+        )
+
+        # Track what project_dir is passed to evaluator.evaluate
+        captured_dirs: list[str] = []
+        original_evaluate = evaluator.evaluate
+
+        def _spy_evaluate(
+            workflow: Any, project_dir: str, instances: list[str],
+            individual_id: str | None = None,
+        ) -> Any:
+            captured_dirs.append(project_dir)
+            return original_evaluate(workflow, project_dir, instances, individual_id=individual_id)
+
+        engine = SwarmEngine(
+            config, evaluator, project_dir=project, designer=None,
+        )
+
+        with _patch.object(evaluator, "evaluate", side_effect=_spy_evaluate):
+            engine.run(wf)  # No project_dir argument!
+
+        # Every evaluate call must have used the constructor project path
+        assert len(captured_dirs) >= 1, "No evaluations happened"
+        for d in captured_dirs:
+            assert d == str(project), (
+                f"evaluate() received project_dir='{d}' instead of '{project}' — "
+                f"worktrees would be created from the wrong directory"
+            )
+
+    def test_resolve_raises_when_both_empty(self) -> None:
+        """ValueError raised when no project_dir from either source."""
+        task = ScoredTask()
+        config = SwarmConfig(
+            benchmark="no-dir-test",
+            budget=1,
+            population_size=1,
+        )
+        config.set_task(task)
+
+        evaluator = SwarmEvaluator(config)
+        engine = SwarmEngine(
+            config, evaluator, project_dir=None, designer=None,
+        )
+
+        wf = _make_scored_workflow()
+        with pytest.raises(ValueError, match="project_dir must be set"):
+            engine.run(wf)
+
+    def test_explicit_project_dir_takes_precedence(self, tmp_path: Path) -> None:
+        """Explicit project_dir argument overrides constructor value."""
+        from unittest.mock import patch as _patch
+
+        project = tmp_path / "project"
+        project.mkdir()
+        _bootstrap_git_project(project)
+
+        override = tmp_path / "override-project"
+        override.mkdir()
+        _bootstrap_git_project(override)
+
+        task = ScoredTask()
+        wf = _make_scored_workflow()
+
+        config = SwarmConfig(
+            benchmark="override-test",
+            budget=2,
+            population_size=1,
+            training_instances=["a", "b"],
+            designer_count=0,
+            mutation_rate=0.0,
+        )
+        config.set_task(task)
+
+        evaluator = SwarmEvaluator(
+            config, inner_loop_factory=True, project_dir=project,
+        )
+
+        captured_dirs: list[str] = []
+        original_evaluate = evaluator.evaluate
+
+        def _spy_evaluate(
+            workflow: Any, project_dir: str, instances: list[str],
+            individual_id: str | None = None,
+        ) -> Any:
+            captured_dirs.append(project_dir)
+            return original_evaluate(workflow, project_dir, instances, individual_id=individual_id)
+
+        engine = SwarmEngine(
+            config, evaluator, project_dir=project, designer=None,
+        )
+
+        with _patch.object(evaluator, "evaluate", side_effect=_spy_evaluate):
+            engine.run(wf, project_dir=str(override))
+
+        assert len(captured_dirs) >= 1
+        for d in captured_dirs:
+            assert d == str(override), (
+                f"evaluate() received '{d}' — explicit override '{override}' should win"
+            )

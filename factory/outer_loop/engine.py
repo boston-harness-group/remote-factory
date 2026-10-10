@@ -277,6 +277,20 @@ class SwarmEngine:
                 if self._mode_registry:
                     self._mode_registry.register(ind.id, 0, wf)
 
+    def _resolve_project_dir(self, project_dir: str = "") -> str:
+        """Return a non-empty project_dir, falling back to constructor value.
+
+        Raises ``ValueError`` when both *project_dir* and ``self._project_dir``
+        are empty/None.
+        """
+        if project_dir:
+            return project_dir
+        if self._project_dir:
+            return str(self._project_dir)
+        raise ValueError(
+            "project_dir must be set either in constructor or run() argument"
+        )
+
     def evolve_generation(
         self,
         population: Population,
@@ -284,6 +298,7 @@ class SwarmEngine:
         project_dir: str = "",
     ) -> GenerationSummary:
         """Run one generation of evolution."""
+        project_dir = self._resolve_project_dir(project_dir)
         # Use Task.instances(split="train") when Task is available (firewall)
         task = self._config.get_task()
         if task is not None:
@@ -535,6 +550,7 @@ class SwarmEngine:
         project_dir: str = "",
     ) -> OuterLoopResult:
         """Run the full evolutionary search loop."""
+        project_dir = self._resolve_project_dir(project_dir)
         population = self.seed(base_workflow)
         generation = 0
         summaries: list[GenerationSummary] = []
