@@ -50,6 +50,32 @@ RUN set -eux; \
     /out/usr/local/bin/tmux -V
 
 # ---------------------------------------------------------------------------------------------
+# Stage 1b — sqlite >= 3.35.
+#
+# UBI9 ships sqlite 3.34.1; chromadb (via mempalace, read by `factory study`) hard-exits on
+# anything older than 3.35, so the contained runtime image cannot run a study. Built from
+# source for the same reason tmux is: no UBI or EPEL package ships a newer one (EPEL never
+# duplicates a package RHEL itself carries). The runtime stage wires it in venv-contained via
+# pysqlite3 — see the placement rules there; the system sqlite is deliberately left alone.
+FROM ${BASE}:${BASE_TAG} AS sqlite-builder
+# sqlite release-year directory and autoconf archive number (3.46.1 -> 3460100)
+ARG SQLITE_YEAR=2024
+ARG SQLITE_NUMBER=3460100
+USER root
+RUN set -eux; \
+    dnf install -y --setopt=install_weak_deps=False gcc make; \
+    curl -fsSLo /tmp/sqlite.tar.gz \
+        "https://sqlite.org/${SQLITE_YEAR}/sqlite-autoconf-${SQLITE_NUMBER}.tar.gz"; \
+    tar -C /tmp -xzf /tmp/sqlite.tar.gz; \
+    cd "/tmp/sqlite-autoconf-${SQLITE_NUMBER}"; \
+    ./configure --prefix=/usr/local \
+        --enable-shared --disable-static \
+        CFLAGS="-DSQLITE_ENABLE_COLUMN_METADATA=1 -DSQLITE_ENABLE_DBSTAT_VTAB=1 -DSQLITE_ENABLE_LOAD_EXTENSION=1"; \
+    make -j"$(nproc)"; \
+    make install DESTDIR=/out; \
+    "/out/usr/local/bin/sqlite3" --version
+
+# ---------------------------------------------------------------------------------------------
 # Stage 2 — the runtime image.
 FROM ${BASE}:${BASE_TAG}
 
@@ -117,6 +143,34 @@ RUN set -eux; \
     uv sync --frozen --no-dev; \
     "${FACTORY_HOME}/.venv/bin/factory" --help >/dev/null; \
     ln -sf "${FACTORY_HOME}/.venv/bin/factory" /usr/local/bin/factory
+
+# sqlite >= 3.35 for chromadb (#1562), venv-contained. Two placement rules, both learned the
+# hard way during e2e validation of the openshell target (#1553):
+#   - NOT registered with ldconfig and NOT in /usr/lib64: replacing the system sqlite
+#     globally segfaults rpm/dnf inside the image build (rpmdb is sqlite-backed), which kills
+#     every later `dnf` in the layer. The lib goes to /usr/local/lib64, which is outside the
+#     dynamic linker's default search set, and only pysqlite3's rpath names it.
+#   - Under /usr rather than a private /opt dir: a sandbox runtime whose Landlock policy
+#     grants read only to an allowlist (/usr among the baseline paths) cannot see a lib
+#     outside every allowlisted tree — observed live as pysqlite3 silently falling back to
+#     the system 3.34 inside the sandbox while working in plain containers.
+# pysqlite3 (a fork of the stdlib module) is compiled against this build, and a .pth swaps it
+# in as `sqlite3` for venv processes only, so chromadb's import-time version floor passes
+# without touching the system interpreter.
+COPY --from=sqlite-builder /out/usr/local /usr/local-sqlite
+RUN set -eux; \
+    mkdir -p /usr/local/lib64 /usr/local/include; \
+    cp -a /usr/local-sqlite/lib/libsqlite3.so* /usr/local/lib64/; \
+    cp -a /usr/local-sqlite/include/sqlite3.h /usr/local/include/; \
+    rm -rf /usr/local-sqlite; \
+    dnf install -y --setopt=install_weak_deps=False gcc; \
+    export CFLAGS="-I/usr/local/include"; \
+    export LDFLAGS="-L/usr/local/lib64 -Wl,-rpath,/usr/local/lib64"; \
+    uv pip install --no-deps pysqlite3; \
+    printf 'import pysqlite3, sys; sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")\n' \
+        > "${FACTORY_HOME}/.venv/lib/python3.12/site-packages/zz_pysqlite3_swap.pth"; \
+    dnf remove -y gcc; dnf clean all; rm -rf /var/cache/dnf; \
+    "${FACTORY_HOME}/.venv/bin/python" -c "import sqlite3; assert sqlite3.sqlite_version_info >= (3, 35), sqlite3.sqlite_version; print('sqlite', sqlite3.sqlite_version)"
 
 # Claude Code shows a first-run onboarding wizard — theme picker and all — when it finds no
 # completed-onboarding marker, and a contained run then sits at that prompt forever with real tokens
