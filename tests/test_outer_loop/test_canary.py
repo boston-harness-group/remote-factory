@@ -246,13 +246,13 @@ class TestCanary:
             if ol_dir.exists():
                 shutil.copytree(ol_dir, dst / 'outer_loop', dirs_exist_ok=True)
 
-    def _run_engine(self, project: Path) -> Any:
+    def _run_engine(self, project: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         """Run SwarmEngine with real model — evolves at least one offspring."""
         from factory.outer_loop.engine import SwarmEngine
         from factory.outer_loop.evaluator import SwarmEvaluator
         from factory.outer_loop.models import SwarmConfig
 
-        model = os.environ.get("FACTORY_MODEL", "claude-haiku-4-5-20251001")
+        monkeypatch.setenv("FACTORY_MODEL", os.environ.get("FACTORY_MODEL", "claude-haiku-4-5-20251001"))
 
         task = DocQualityTask()
         wf = _make_doc_workflow()
@@ -276,9 +276,9 @@ class TestCanary:
 
         return engine.run(wf), engine, evaluator
 
-    def test_canary_run(self, project: Path) -> None:
+    def test_canary_run(self, project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Full canary: evolution with real model, offspring, trust checks."""
-        result, engine, evaluator = self._run_engine(project)
+        result, engine, evaluator = self._run_engine(project, monkeypatch)
 
         # ── Basic score / convergence ──────────────────────────
         assert result.best_score > 0, (
