@@ -1038,7 +1038,8 @@ def apply_random_mutation(
 def _extract_prompt_hint(report: ReflectionReport) -> str | None:
     """Extract a prompt improvement hint from a ReflectionReport."""
     if report.prompt_improvements:
-        return random.choice(report.prompt_improvements)
+        numbered = [f"{i+1}. {imp}" for i, imp in enumerate(report.prompt_improvements)]
+        return "\n".join(numbered)
     if report.success_patterns:
         return random.choice(report.success_patterns)
     return None
