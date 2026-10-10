@@ -143,7 +143,7 @@ def _study_subgraph(
         id="graph_explorer",
         role=AgentRole.RESEARCHER,
         prompt_template=_graph_explorer_prompt(focus),
-        reads={".factory/strategy/observations.md"},
+        reads={".factory/strategy/observations.md", "graph.json"},
         writes={".factory/strategy/graph-context.md"},
     )
 
