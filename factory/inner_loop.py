@@ -1050,7 +1050,7 @@ class InnerLoop:
                 "test_returncode": result.returncode,
             }
 
-        from factory.outer_loop.featurebench_evaluator import parse_pytest_stdout
+        from factory.outer_loop.benchmark_evaluator import parse_pytest_stdout
         metrics = parse_pytest_stdout(result.stdout)
         pass_rate = metrics.get("pass_rate", 0.0)
         return pass_rate, {

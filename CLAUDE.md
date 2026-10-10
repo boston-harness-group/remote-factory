@@ -75,7 +75,7 @@ The outer loop evolves workflow *topologies* via MAP-Elites quality-diversity se
 
 **Key modules:**
 - `engine.py` — `SwarmEngine` orchestrates the evolutionary loop: seeding, tournament selection, mutation, evaluation, convergence detection (plateau, diversity collapse, early stop)
-- `evaluator.py` — `SwarmEvaluator` with `FitnessCache` (structural-hash dedup) and `CycleRecordCache` (content-hash dedup). Supports both `EvaluatorFn` protocol and `FeatureBenchInnerLoop` evaluation with git worktree isolation
+- `evaluator.py` — `SwarmEvaluator` with `FitnessCache` (structural-hash dedup) and `CycleRecordCache` (content-hash dedup). Supports both `EvaluatorFn` protocol and `InnerLoop`-based evaluation with git worktree isolation
 - `mutations.py` — 8 structured mutation operators (`NODE_INSERT`, `NODE_REMOVE`, `EDGE_REDIRECT`, `PARALLELIZE`, `SERIALIZE`, `PARAM_MUTATE`, `PROMPT_MUTATE`, `KNOB_MUTATE`) with `WeightedRandomStrategy`, reflection-guided selection, and `default_knob_expander` (Opus via CLI) for runtime expansion of `OptKnob` bounds
 - `population.py` — `Population` (collection management) and `MAPElitesArchive` (4D grid: depth × fork_degree × agent_count × gate_count)
 - `similarity.py` — `structural_hash`, `graph_edit_distance`, `compute_features` (includes knob values as feature dimensions for MAP-Elites diversity), `NoveltyFilter`
@@ -86,7 +86,7 @@ The outer loop evolves workflow *topologies* via MAP-Elites quality-diversity se
 - `overfit.py` — `OverfitDetector` compares training vs holdout scores to flag overfitting
 - `subset.py` — `SubsetSelector` protocol and `FixedSubsetSelector` for training instance selection
 - `filesystem.py` — Outer loop directory initialization, config/checkpoint persistence
-- `featurebench_inner_loop.py` — Bridges outer loop evaluation to a full CEO cycle on a FeatureBench instance
+- `benchmark_evaluator.py` — `BenchmarkEvaluator` parses pytest output for partial credit scoring (shim at `featurebench_evaluator.py`)
 
 **E2E finding:** On simple FeatureBench tasks, a single-builder topology (1 AgentNode, no fork/join) wins on parsimony + cost. The outer loop's value emerges on harder multi-agent problems where topology diversity matters.
 

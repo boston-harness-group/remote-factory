@@ -1,17 +1,17 @@
-"""Tests for FeatureBenchEvaluator and partial credit scoring."""
+"""Tests for BenchmarkEvaluator and partial credit scoring."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from factory.outer_loop.featurebench_evaluator import (
-    FeatureBenchEvaluator,
+from factory.outer_loop.benchmark_evaluator import (
+    BenchmarkEvaluator,
     parse_pytest_stdout,
 )
 
 
-class TestFeatureBenchEvaluator:
+class TestBenchmarkEvaluator:
     def test_parse_pytest_json_report(self, tmp_path: Path) -> None:
         report = {
             "tests": [
@@ -24,7 +24,7 @@ class TestFeatureBenchEvaluator:
         path = tmp_path / "report.json"
         path.write_text(json.dumps(report))
 
-        evaluator = FeatureBenchEvaluator()
+        evaluator = BenchmarkEvaluator()
         result = evaluator.parse(path)
 
         assert result.valid
@@ -38,7 +38,7 @@ class TestFeatureBenchEvaluator:
         path = tmp_path / "report.json"
         path.write_text(json.dumps(report))
 
-        evaluator = FeatureBenchEvaluator()
+        evaluator = BenchmarkEvaluator()
         result = evaluator.parse(path)
 
         assert result.score == 1.0
@@ -48,7 +48,7 @@ class TestFeatureBenchEvaluator:
         path = tmp_path / "report.json"
         path.write_text(json.dumps(report))
 
-        evaluator = FeatureBenchEvaluator()
+        evaluator = BenchmarkEvaluator()
         result = evaluator.parse(path)
 
         assert result.score == 0.0
@@ -58,7 +58,7 @@ class TestFeatureBenchEvaluator:
         path = tmp_path / "report.json"
         path.write_text(json.dumps(report))
 
-        evaluator = FeatureBenchEvaluator()
+        evaluator = BenchmarkEvaluator()
         result = evaluator.parse(path)
 
         assert result.score == 0.0
@@ -68,7 +68,7 @@ class TestFeatureBenchEvaluator:
         path = tmp_path / "report.json"
         path.write_text(json.dumps(report))
 
-        evaluator = FeatureBenchEvaluator()
+        evaluator = BenchmarkEvaluator()
         result = evaluator.parse(path)
 
         assert result.score == 5 / 8
@@ -78,7 +78,7 @@ class TestFeatureBenchEvaluator:
         path = tmp_path / "report.json"
         path.write_text(json.dumps(report))
 
-        evaluator = FeatureBenchEvaluator()
+        evaluator = BenchmarkEvaluator()
         result = evaluator.parse(path)
 
         assert result.score == 0.7
@@ -87,14 +87,14 @@ class TestFeatureBenchEvaluator:
         path = tmp_path / "bad.json"
         path.write_text("not json")
 
-        evaluator = FeatureBenchEvaluator()
+        evaluator = BenchmarkEvaluator()
         result = evaluator.parse(path)
 
         assert not result.valid
         assert result.score == 0.0
 
     def test_parse_missing_file(self) -> None:
-        evaluator = FeatureBenchEvaluator()
+        evaluator = BenchmarkEvaluator()
         result = evaluator.parse(Path("/nonexistent/report.json"))
 
         assert not result.valid
@@ -106,14 +106,14 @@ class TestFeatureBenchEvaluator:
             report = {"summary": {"passed": passed, "total": total}}
             (tmp_path / f"report_{i}.json").write_text(json.dumps(report))
 
-        evaluator = FeatureBenchEvaluator()
+        evaluator = BenchmarkEvaluator()
         paths = [tmp_path / f"report_{i}.json" for i in range(3)]
         result = evaluator.parse_many(paths)
 
         assert result.score == 0.75
 
     def test_get_info(self) -> None:
-        evaluator = FeatureBenchEvaluator()
+        evaluator = BenchmarkEvaluator()
         info = evaluator.get_info()
         assert info["benchmark"] == "featurebench"
         assert info["scoring"] == "partial_credit"
