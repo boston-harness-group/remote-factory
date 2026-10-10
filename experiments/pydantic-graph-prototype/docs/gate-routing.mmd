@@ -1,0 +1,13 @@
+stateDiagram-v2
+  MockBuilderNode
+  QAGateNode
+  state decision <<choice>>
+  MockNextNode
+
+  [*] --> MockBuilderNode
+  MockBuilderNode --> QAGateNode
+  QAGateNode --> decision
+  decision --> MockBuilderNode
+  decision --> MockNextNode
+  decision --> [*]
+  MockNextNode --> [*]

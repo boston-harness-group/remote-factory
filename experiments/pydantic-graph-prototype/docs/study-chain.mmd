@@ -1,0 +1,11 @@
+stateDiagram-v2
+  GraphUpdateNode
+  StudyNode
+  GraphExplorerNode
+  ConcatStudyNode
+
+  [*] --> GraphUpdateNode
+  GraphUpdateNode --> StudyNode
+  StudyNode --> GraphExplorerNode
+  GraphExplorerNode --> ConcatStudyNode
+  ConcatStudyNode --> [*]
