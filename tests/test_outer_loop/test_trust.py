@@ -1112,3 +1112,22 @@ class TestSplitLabel:
         assert rec.split == "val", (
             f"Expected split='val', got split='{rec.split}'"
         )
+
+
+def test_extract_prompt_hint_returns_all_improvements():
+    """_extract_prompt_hint with 3 prompt_improvements returns text containing all 3."""
+    from factory.outer_loop.mutations import _extract_prompt_hint
+    from factory.outer_loop.reflector import ReflectionReport
+
+    report = ReflectionReport(
+        prompt_improvements=[
+            'Add section headers',
+            'Include code examples',
+            'Mention error handling',
+        ],
+    )
+    hint = _extract_prompt_hint(report)
+    assert hint is not None
+    assert 'Add section headers' in hint
+    assert 'Include code examples' in hint
+    assert 'Mention error handling' in hint

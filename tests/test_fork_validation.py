@@ -316,6 +316,42 @@ class TestMutationProperty:
 class TestLegacyLoadConversion:
     """Workflow.from_dict strips subgraph_entry/exit and adds edges + JoinNode."""
 
+    def test_node_insert_on_datanode_workflow_validates(self) -> None:
+        """node_insert on a DataNode workflow produces a graph that passes validate_workflow()."""
+        from factory.workflow.validation import validate_workflow
+
+        # Create a simple DataNode workflow
+        wf = Workflow(
+            name='test-wf',
+            nodes={
+                'data': DataNode(id='data'),
+                'builder': AgentNode(
+                    id='builder', role=AgentRole.BUILDER,
+                    prompt_template='do work', writes={'output.txt'}, reads=set(),
+                ),
+                '_join_data': JoinNode(id='_join_data', sources=['builder']),
+            },
+            edges=[
+                Edge(source='data', target='builder'),
+                Edge(source='builder', target='_join_data'),
+            ],
+            start_node='data',
+        )
+
+        # The branch sub-workflow (what data_runtime creates)
+        sub = wf.subgraph({'builder'}, name='test-wf__data_item', start_node='builder')
+
+        # Now manually insert a node that reads current_item.json (simulating node_insert)
+        reviewer = AgentNode(
+            id='reviewer_99', role=AgentRole.CODE_REVIEWER,
+            prompt_template='review', reads={'.factory/current_item.json'}, writes=set(),
+        )
+        sub.nodes['reviewer_99'] = reviewer
+        sub.edges.append(Edge(source='builder', target='reviewer_99'))
+
+        issues = validate_workflow(sub)
+        assert not issues, f'Validation should pass for data_item subgraph: {issues}'
+
     def test_from_dict_converts_legacy(self) -> None:
         """Legacy DataNode with subgraph_entry/exit is auto-converted."""
         data = {

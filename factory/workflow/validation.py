@@ -79,12 +79,15 @@ def _validate_cycles(
 def _validate_data_dependencies(
     g: nx.DiGraph, workflow: Workflow, issues: list[str],  # type: ignore[type-arg]
 ) -> None:
+    # Files provided by the runtime (e.g. Task.setup writes current_item.json)
+    runtime_provided: set[str] = set()
+    if workflow.name.endswith('__data_item'):
+        runtime_provided.add('.factory/current_item.json')
+
     for nid, node in workflow.nodes.items():
         if node.reads:
             predecessors = nx.ancestors(g, nid)
-            if not predecessors:
-                continue
-            available_writes: set[str] = set()
+            available_writes: set[str] = set(runtime_provided)
             for pred_id in predecessors:
                 pred_node = workflow.nodes.get(pred_id)
                 if pred_node:
@@ -93,6 +96,9 @@ def _validate_data_dependencies(
                     # before running its subgraph (executor.py L1012).
                     if type(pred_node).__name__ == 'DataNode':
                         available_writes.add('.factory/current_item.json')
+            # Also check if node has NO predecessors but runtime provides files
+            if not predecessors:
+                available_writes = set(runtime_provided)
             missing = node.reads - available_writes
             if missing:
                 issues.append(
