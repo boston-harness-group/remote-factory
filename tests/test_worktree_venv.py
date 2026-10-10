@@ -5,9 +5,12 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from factory.eval.languages.python import _resolve_python
+from factory.eval.runner import _run_project_eval, _run_single_project_dimension
+from factory.models import AgentRunRequest, ProjectEvalDimension
+from factory.runners.claude import ClaudeRunner
 from factory.worktree import WORKTREE_VENV_MARKER, _setup_worktree_venv
 
 
@@ -142,4 +145,144 @@ class TestRunCmdVenvEnv:
 
         call_kwargs = mock_run.call_args
         env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
+        assert "VIRTUAL_ENV" not in env
+
+
+class TestBuildCommandVenvEnv:
+    def test_injects_venv_when_marker_exists(self, tmp_path: Path, monkeypatch: object) -> None:
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)  # type: ignore[union-attr]
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (tmp_path / ".venv" / WORKTREE_VENV_MARKER).touch()
+
+        request = AgentRunRequest(
+            prompt="test", task="test", cwd=tmp_path, role="builder", skip_permissions=False
+        )
+        cmd, env, temp_files = ClaudeRunner().build_command(request)
+        try:
+            assert env["VIRTUAL_ENV"] == str(tmp_path / ".venv")
+            assert env["PATH"].startswith(str(venv_bin))
+        finally:
+            for f in temp_files:
+                f.unlink(missing_ok=True)
+
+    def test_no_venv_without_marker(self, tmp_path: Path, monkeypatch: object) -> None:
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)  # type: ignore[union-attr]
+
+        request = AgentRunRequest(
+            prompt="test", task="test", cwd=tmp_path, role="builder", skip_permissions=False
+        )
+        cmd, env, temp_files = ClaudeRunner().build_command(request)
+        try:
+            assert "VIRTUAL_ENV" not in env
+        finally:
+            for f in temp_files:
+                f.unlink(missing_ok=True)
+
+
+class TestBuildInteractiveCommandVenvEnv:
+    def test_injects_venv_when_marker_exists(self, tmp_path: Path, monkeypatch: object) -> None:
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)  # type: ignore[union-attr]
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (tmp_path / ".venv" / WORKTREE_VENV_MARKER).touch()
+
+        request = AgentRunRequest(
+            prompt="test", task="test", cwd=tmp_path, role="ceo", skip_permissions=False
+        )
+        cmd, env, temp_files = ClaudeRunner().build_interactive_command(request)
+        try:
+            assert env["VIRTUAL_ENV"] == str(tmp_path / ".venv")
+            assert env["PATH"].startswith(str(venv_bin))
+        finally:
+            for f in temp_files:
+                f.unlink(missing_ok=True)
+
+    def test_no_venv_without_marker(self, tmp_path: Path, monkeypatch: object) -> None:
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)  # type: ignore[union-attr]
+
+        request = AgentRunRequest(
+            prompt="test", task="test", cwd=tmp_path, role="ceo", skip_permissions=False
+        )
+        cmd, env, temp_files = ClaudeRunner().build_interactive_command(request)
+        try:
+            assert "VIRTUAL_ENV" not in env
+        finally:
+            for f in temp_files:
+                f.unlink(missing_ok=True)
+
+
+class TestRunProjectEvalVenvEnv:
+    async def test_injects_venv_when_marker_exists(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)  # type: ignore[union-attr]
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (tmp_path / ".venv" / WORKTREE_VENV_MARKER).touch()
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"{}", b"")
+        mock_proc.returncode = 0
+
+        mock_exec = AsyncMock(return_value=mock_proc)
+        with patch("factory.eval.runner.asyncio.create_subprocess_exec", mock_exec):
+            await _run_project_eval("echo ok", tmp_path)
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["VIRTUAL_ENV"] == str(tmp_path / ".venv")
+        assert env["PATH"].startswith(str(venv_bin))
+
+    async def test_no_venv_without_marker(self, tmp_path: Path, monkeypatch: object) -> None:
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)  # type: ignore[union-attr]
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"{}", b"")
+        mock_proc.returncode = 0
+
+        mock_exec = AsyncMock(return_value=mock_proc)
+        with patch("factory.eval.runner.asyncio.create_subprocess_exec", mock_exec):
+            await _run_project_eval("echo ok", tmp_path)
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert "VIRTUAL_ENV" not in env
+
+
+class TestRunSingleDimensionVenvEnv:
+    async def test_injects_venv_when_marker_exists(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)  # type: ignore[union-attr]
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (tmp_path / ".venv" / WORKTREE_VENV_MARKER).touch()
+
+        dim = ProjectEvalDimension(name="test_dim", command="echo ok", timeout=30.0)
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b'{"score": 1.0}', b"")
+        mock_proc.returncode = 0
+
+        mock_exec = AsyncMock(return_value=mock_proc)
+        with patch("factory.eval.runner.asyncio.create_subprocess_exec", mock_exec):
+            await _run_single_project_dimension(dim, tmp_path)
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["VIRTUAL_ENV"] == str(tmp_path / ".venv")
+        assert env["PATH"].startswith(str(venv_bin))
+
+    async def test_no_venv_without_marker(self, tmp_path: Path, monkeypatch: object) -> None:
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)  # type: ignore[union-attr]
+
+        dim = ProjectEvalDimension(name="test_dim", command="echo ok", timeout=30.0)
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b'{"score": 1.0}', b"")
+        mock_proc.returncode = 0
+
+        mock_exec = AsyncMock(return_value=mock_proc)
+        with patch("factory.eval.runner.asyncio.create_subprocess_exec", mock_exec):
+            await _run_single_project_dimension(dim, tmp_path)
+
+        env = mock_exec.call_args.kwargs["env"]
         assert "VIRTUAL_ENV" not in env
