@@ -7,6 +7,7 @@ failure patterns, success patterns, and informed mutation suggestions.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import time
@@ -104,6 +105,7 @@ class OuterLoopReflector:
         records: list[tuple[str, float, CycleRecord | None]],
         generation: int = 0,
         knob_values_by_id: dict[str, dict[str, object]] | None = None,
+        workflow_data_by_id: dict[str, dict] | None = None,
     ) -> ReflectionReport:
         """Analyze a generation's results via contrastive reflection.
 
@@ -113,6 +115,9 @@ class OuterLoopReflector:
             knob_values_by_id: optional mapping of individual_id to knob_values
                 dict. When provided, enables knob-contrastive analysis that
                 identifies which knob settings correlate with high/low scores.
+            workflow_data_by_id: optional mapping of individual_id to workflow
+                data dict. When provided, includes workflow summaries with full
+                prompts in the reflection context and detects identical prompts.
 
         Returns:
             ReflectionReport with patterns and suggestions
@@ -154,7 +159,8 @@ class OuterLoopReflector:
             self._extract_knob_patterns(valid, top_k, bottom_k, knob_values_by_id, report)
 
         if self._llm_reflect_enabled:
-            self._llm_reflect(top_k, bottom_k, records, report)
+            self._llm_reflect(top_k, bottom_k, records, report,
+                              workflow_data_by_id=workflow_data_by_id)
 
         # Collect real node IDs from CycleRecords and filter suggestions
         # to prevent the reflector from targeting invented node names.
@@ -527,9 +533,47 @@ class OuterLoopReflector:
                 )
 
     @staticmethod
+    def _format_workflow_summary(workflow_data: dict) -> str:
+        """Format workflow_data dict into a WORKFLOW section for LLM context.
+
+        For AgentNode: show id, type, role, model, timeout, max_iterations,
+        and full prompt_template (indented, never truncated).
+        For other nodes: just id and type.
+        """
+        lines: list[str] = ["  WORKFLOW:"]
+        nodes = workflow_data.get("nodes", {})
+        for nid, node in nodes.items():
+            ntype = node.get("_type", "Unknown")
+            if ntype == "AgentNode":
+                role = node.get("role", "")
+                model = node.get("model", "")
+                timeout = node.get("timeout")
+                max_iter = node.get("max_iterations", 1)
+                parts = [f"role={role}"]
+                if model:
+                    parts.append(f"model={model}")
+                if timeout is not None:
+                    parts.append(f"timeout={timeout}")
+                if max_iter != 1:
+                    parts.append(f"max_turns={max_iter}")
+                lines.append(f"    node: {nid} ({ntype}, {', '.join(parts)})")
+                prompt = node.get("prompt_template", "")
+                if prompt:
+                    lines.append("      prompt_template: |")
+                    for pline in prompt.splitlines():
+                        lines.append(f"        {pline}")
+            else:
+                lines.append(f"    node: {nid} ({ntype})")
+        knob_values = workflow_data.get("knob_values", {})
+        if knob_values:
+            lines.append(f"    knob_values: {knob_values}")
+        return "\n".join(lines)
+
+    @staticmethod
     def _collect_individual_details(
         id_: str, score: float, rec: CycleRecord | None,
         *, char_budget: int | None = None,
+        workflow_data: dict | None = None,
     ) -> str:
         """Collect eval/verify details from one individual for LLM context.
 
@@ -544,6 +588,11 @@ class OuterLoopReflector:
             return header
 
         lines: list[str] = [header]
+
+        # --- Workflow summary (before item results) ---
+        if workflow_data:
+            wf_summary = OuterLoopReflector._format_workflow_summary(workflow_data)
+            lines.append(wf_summary)
 
         # --- Instance blocks (single source: rec.instance_results) ---
         if rec.instance_results and isinstance(rec.instance_results, list):
@@ -638,11 +687,71 @@ class OuterLoopReflector:
                     seen[step.role] = step.role
         return [{"node_id": nid, "role": role} for nid, role in seen.items()]
 
+    @staticmethod
+    def _compare_prompts_across_candidates(
+        workflow_data_by_id: dict[str, dict],
+        all_ids: list[str],
+    ) -> list[str]:
+        """Compare prompt_templates across candidates.
+
+        Returns lines describing candidates with identical prompts and
+        what differs between them (params, knobs, timeout, etc.).
+        """
+        # Build a fingerprint → list of (id, node_params) mapping
+        # Fingerprint = hash of all agent prompt_templates sorted by node id
+        fingerprints: dict[str, list[tuple[str, dict]]] = {}
+        for cid in all_ids:
+            wf = workflow_data_by_id.get(cid, {})
+            nodes = wf.get("nodes", {})
+            agent_prompts: list[tuple[str, str]] = []
+            for nid in sorted(nodes):
+                node = nodes[nid]
+                if node.get("_type") == "AgentNode":
+                    agent_prompts.append((nid, node.get("prompt_template", "")))
+            if not agent_prompts:
+                continue
+            fp = hashlib.sha256(
+                json.dumps(agent_prompts, sort_keys=True).encode()
+            ).hexdigest()[:16]
+            fingerprints.setdefault(fp, []).append((cid, wf))
+
+        result_lines: list[str] = []
+        for _fp, group in fingerprints.items():
+            if len(group) < 2:
+                continue
+            ids = [cid[:8] for cid, _ in group]
+            # Find differences in non-prompt params
+            diffs: set[str] = set()
+            first_wf = group[0][1]
+            first_nodes = first_wf.get("nodes", {})
+            for _, other_wf in group[1:]:
+                other_nodes = other_wf.get("nodes", {})
+                for nid in set(first_nodes) | set(other_nodes):
+                    fn = first_nodes.get(nid, {})
+                    on = other_nodes.get(nid, {})
+                    if fn.get("_type") == "AgentNode" or on.get("_type") == "AgentNode":
+                        for key in ("model", "timeout", "max_iterations"):
+                            if fn.get(key) != on.get(key):
+                                diffs.add(key)
+                first_knobs = first_wf.get("knob_values", {})
+                other_knobs = other_wf.get("knob_values", {})
+                if first_knobs != other_knobs:
+                    for k in set(first_knobs) | set(other_knobs):
+                        if first_knobs.get(k) != other_knobs.get(k):
+                            diffs.add(f"knob:{k}")
+            diff_desc = ", ".join(sorted(diffs)) if diffs else "run-to-run variance only"
+            result_lines.append(
+                f"IDENTICAL PROMPTS: Candidates {' and '.join(ids)} have identical "
+                f"prompts; their score difference comes from {diff_desc}."
+            )
+        return result_lines
+
     def build_reflection_prompt(
         self,
         top_k: Sequence[tuple[str, float, CycleRecord | None]],
         bottom_k: Sequence[tuple[str, float, CycleRecord | None]],
         records: Sequence[tuple[str, float, CycleRecord | None]],
+        workflow_data_by_id: dict[str, dict] | None = None,
     ) -> str:
         """Build the LLM reflection prompt without calling the LLM.
 
@@ -651,15 +760,23 @@ class OuterLoopReflector:
         n_individuals = len(top_k) + len(bottom_k)
         per_individual = int(_LLM_PAYLOAD_BUDGET * 0.85) // max(n_individuals, 1)
 
+        wf_by_id = workflow_data_by_id or {}
+
         top_details = []
         for id_, score, rec in top_k:
             top_details.append(
-                self._collect_individual_details(id_, score, rec, char_budget=per_individual)
+                self._collect_individual_details(
+                    id_, score, rec, char_budget=per_individual,
+                    workflow_data=wf_by_id.get(id_),
+                )
             )
         bottom_details = []
         for id_, score, rec in bottom_k:
             bottom_details.append(
-                self._collect_individual_details(id_, score, rec, char_budget=per_individual)
+                self._collect_individual_details(
+                    id_, score, rec, char_budget=per_individual,
+                    workflow_data=wf_by_id.get(id_),
+                )
             )
 
         node_info = self._collect_node_ids(list(top_k) + list(bottom_k))
@@ -678,6 +795,14 @@ class OuterLoopReflector:
             + "\n".join(f"  {d}" for d in bottom_details)
             + node_section
         )
+
+        # Compare prompts across candidates and append identical-prompt lines
+        if wf_by_id:
+            all_ids = [id_ for id_, _, _ in top_k] + [id_ for id_, _, _ in bottom_k]
+            identical_lines = self._compare_prompts_across_candidates(wf_by_id, all_ids)
+            if identical_lines:
+                payload += "\n\n" + "\n".join(identical_lines)
+
         if len(payload) > _LLM_PAYLOAD_BUDGET:
             payload = payload[:_LLM_PAYLOAD_BUDGET] + "\n... (truncated)"
 
@@ -686,6 +811,10 @@ class OuterLoopReflector:
             "Analyze these verification results from an evolutionary search. "
             "Here are the details from the top-performing candidates and the "
             "bottom-performing candidates.\n\n"
+            "Before attributing a score difference to a prompt change, check "
+            "whether the prompts actually differ. Candidates with identical "
+            "prompts have their score difference explained by parameter changes "
+            "or run-to-run variance, not prompt quality.\n\n"
             f"{payload}\n\n"
             "Identify what distinguishes successful from unsuccessful candidates. "
             "Produce concrete improvement advice — specific changes to agent "
@@ -717,9 +846,13 @@ class OuterLoopReflector:
         bottom_k: Sequence[tuple[str, float, CycleRecord | None]],
         records: list[tuple[str, float, CycleRecord | None]],
         report: ReflectionReport,
+        workflow_data_by_id: dict[str, dict] | None = None,
     ) -> None:
         """LLM-based contrastive reflection: one call per generation."""
-        prompt = self.build_reflection_prompt(top_k, bottom_k, records)
+        prompt = self.build_reflection_prompt(
+            top_k, bottom_k, records,
+            workflow_data_by_id=workflow_data_by_id,
+        )
 
         from factory.runners.claude import _claude_bin, _claude_model, _cli_error_text
 

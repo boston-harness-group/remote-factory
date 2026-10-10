@@ -1250,7 +1250,11 @@ class TestExperimentContextInDetails:
         captured_budgets: list[int | None] = []
         original_fn = OuterLoopReflector._collect_individual_details
 
-        def spy(id_: str, score: float, rec: CycleRecord | None, *, char_budget: int | None = None) -> str:
+        def spy(
+            id_: str, score: float, rec: CycleRecord | None,
+            *, char_budget: int | None = None,
+            workflow_data: dict | None = None,
+        ) -> str:
             captured_budgets.append(char_budget)
             return original_fn(id_, score, rec, char_budget=char_budget)
 
@@ -1429,3 +1433,217 @@ def test_prompt_via_stdin_not_argv():
     assert "-p" not in cmd_list, f"-p found in command args: {cmd_list}"
     # Prompt must be in input= kwarg
     assert call_args.kwargs.get("input") is not None, "prompt not passed via input="
+
+
+# ── Workflow visibility tests ────────────────────────────────────────
+
+
+def _make_workflow_data(
+    prompt_template: str = "Do the thing",
+    model: str = "haiku",
+    timeout: int = 300,
+    max_iterations: int = 1,
+    extra_nodes: dict | None = None,
+    knob_values: dict | None = None,
+) -> dict:
+    """Build a minimal workflow_data dict with one AgentNode (builder)."""
+    nodes: dict = {
+        "builder": {
+            "_type": "AgentNode",
+            "id": "builder",
+            "role": "BUILDER",
+            "model": model,
+            "prompt_template": prompt_template,
+            "timeout": timeout,
+            "max_iterations": max_iterations,
+            "reads": [],
+            "writes": [],
+            "blocking": True,
+        },
+    }
+    if extra_nodes:
+        nodes.update(extra_nodes)
+    result: dict = {
+        "name": "test-workflow",
+        "nodes": nodes,
+        "edges": [],
+        "start_node": "builder",
+    }
+    if knob_values:
+        result["knob_values"] = knob_values
+    return result
+
+
+class TestWorkflowVisibility:
+    """Tests for workflow summary and identical-prompt detection (A1–A3)."""
+
+    def test_builder_prompt_appears_in_full(self) -> None:
+        """A 500-char prompt_template must appear in full in the reflection prompt."""
+        long_prompt = "X" * 500
+        rec = _make_record(0.9, [_make_step("builder")], kept=2)
+        wf = _make_workflow_data(prompt_template=long_prompt)
+
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("cand1", 0.9, rec)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [
+            ("cand2", 0.1, _make_record(0.1)),
+        ]
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, top_k + bottom_k,
+            workflow_data_by_id={"cand1": wf},
+        )
+        # Full 500-char prompt must appear untruncated
+        assert long_prompt in prompt
+
+    def test_identical_prompts_detected(self) -> None:
+        """Two candidates with identical prompts but different timeouts."""
+        rec1 = _make_record(0.9, [_make_step("builder")], kept=2)
+        rec2 = _make_record(0.1, [_make_step("builder", succeeded=False)], errored=1)
+        wf1 = _make_workflow_data(prompt_template="Same prompt", timeout=300)
+        wf2 = _make_workflow_data(prompt_template="Same prompt", timeout=600)
+
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("cand1", 0.9, rec1)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [("cand2", 0.1, rec2)]
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, top_k + bottom_k,
+            workflow_data_by_id={"cand1": wf1, "cand2": wf2},
+        )
+        assert "identical prompts" in prompt.lower()
+        assert "timeout" in prompt.lower()
+
+    def test_different_prompts_no_identical_line(self) -> None:
+        """Two candidates with different prompts → no IDENTICAL PROMPTS line."""
+        rec1 = _make_record(0.9, [_make_step("builder")], kept=2)
+        rec2 = _make_record(0.1, [_make_step("builder", succeeded=False)], errored=1)
+        wf1 = _make_workflow_data(prompt_template="Prompt A — be precise")
+        wf2 = _make_workflow_data(prompt_template="Prompt B — be creative")
+
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("cand1", 0.9, rec1)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [("cand2", 0.1, rec2)]
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, top_k + bottom_k,
+            workflow_data_by_id={"cand1": wf1, "cand2": wf2},
+        )
+        # The instruction text mentions "identical prompts" generically, but
+        # the comparison label "IDENTICAL PROMPTS:" must NOT appear.
+        assert "IDENTICAL PROMPTS:" not in prompt
+
+    def test_workflow_summary_format(self) -> None:
+        """Verify the WORKFLOW section format for AgentNode and non-agent nodes."""
+        wf = _make_workflow_data(
+            prompt_template="Build the feature",
+            model="sonnet",
+            timeout=600,
+            max_iterations=3,
+            extra_nodes={
+                "data": {
+                    "_type": "DataNode",
+                    "id": "data",
+                    "reads": [],
+                    "writes": [],
+                    "blocking": True,
+                },
+                "_join_data": {
+                    "_type": "JoinNode",
+                    "id": "_join_data",
+                    "reads": [],
+                    "writes": [],
+                    "blocking": True,
+                    "sources": ["data"],
+                },
+            },
+            knob_values={"style": "focused"},
+        )
+
+        summary = OuterLoopReflector._format_workflow_summary(wf)
+        assert "WORKFLOW:" in summary
+        assert "AgentNode" in summary
+        assert "role=BUILDER" in summary
+        assert "model=sonnet" in summary
+        assert "timeout=600" in summary
+        assert "max_turns=3" in summary
+        assert "Build the feature" in summary
+        assert "DataNode" in summary
+        assert "JoinNode" in summary
+        assert "knob_values:" in summary
+        assert "focused" in summary
+
+    def test_identical_prompts_knob_diff(self) -> None:
+        """Identical prompts with different knob_values reports knob differences."""
+        rec1 = _make_record(0.9, [_make_step("builder")], kept=2)
+        rec2 = _make_record(0.1, [_make_step("builder", succeeded=False)])
+        wf1 = _make_workflow_data(
+            prompt_template="same",
+            knob_values={"style": "focused"},
+        )
+        wf2 = _make_workflow_data(
+            prompt_template="same",
+            knob_values={"style": "broad"},
+        )
+
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("c1", 0.9, rec1)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [("c2", 0.1, rec2)]
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, top_k + bottom_k,
+            workflow_data_by_id={"c1": wf1, "c2": wf2},
+        )
+        assert "identical prompts" in prompt.lower()
+        assert "knob:style" in prompt
+
+    def test_no_workflow_data_backward_compatible(self) -> None:
+        """When workflow_data_by_id is None, prompt is still produced normally."""
+        reflector = OuterLoopReflector(k=1)
+        rec = _make_record(0.9, [_make_step("builder")], kept=2)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("w1", 0.9, rec)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [
+            ("l1", 0.1, _make_record(0.1)),
+        ]
+        prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
+        assert "TOP-PERFORMING CANDIDATES" in prompt
+        assert "WORKFLOW:" not in prompt
+
+    def test_instruction_text_present(self) -> None:
+        """A3: The 'before attributing' instruction text appears in the prompt."""
+        reflector = OuterLoopReflector(k=1)
+        rec = _make_record(0.9, [_make_step("builder")], kept=2)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("w1", 0.9, rec)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [
+            ("l1", 0.1, _make_record(0.1)),
+        ]
+        prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
+        assert "before attributing a score difference to a prompt change" in prompt.lower()
+
+    def test_reflect_passes_workflow_data_through(self) -> None:
+        """reflect() passes workflow_data_by_id all the way to build_reflection_prompt."""
+        reflector = OuterLoopReflector(k=1, llm_reflect=False)
+        rec1 = _make_record(0.9, [_make_step("builder")], kept=2)
+        rec2 = _make_record(0.1, [_make_step("builder", succeeded=False)], errored=1)
+        wf1 = _make_workflow_data(prompt_template="Same prompt", timeout=300)
+        wf2 = _make_workflow_data(prompt_template="Same prompt", timeout=600)
+
+        # The reflect() method should not crash when passed workflow_data_by_id
+        report = reflector.reflect(
+            [("c1", 0.9, rec1), ("c2", 0.1, rec2)],
+            generation=0,
+            workflow_data_by_id={"c1": wf1, "c2": wf2},
+        )
+        assert isinstance(report, ReflectionReport)
+
+    def test_identical_prompts_run_to_run_variance(self) -> None:
+        """Two candidates identical in every way → 'run-to-run variance only'."""
+        rec1 = _make_record(0.9, [_make_step("builder")], kept=2)
+        rec2 = _make_record(0.1, [_make_step("builder", succeeded=False)])
+        wf = _make_workflow_data(prompt_template="same", timeout=300)
+
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("c1", 0.9, rec1)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [("c2", 0.1, rec2)]
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, top_k + bottom_k,
+            workflow_data_by_id={"c1": wf, "c2": wf},
+        )
+        assert "identical prompts" in prompt.lower()
+        assert "run-to-run variance" in prompt.lower()

@@ -358,14 +358,19 @@ class SwarmEngine:
         if generation > 0 or len(population.individuals) >= 2:
             records = []
             kvbi: dict[str, dict[str, object]] = {}
+            wf_data_by_id: dict[str, dict] = {}
             for ind in population.individuals:
                 cycle_rec = self._evaluator.get_cycle_record(ind.id)
                 records.append((ind.id, ind.score if ind.score is not None else 0.0, cycle_rec))
                 ind_wf = Workflow.from_dict(ind.workflow_data)  # type: ignore[arg-type]
                 if ind_wf.knob_values:
                     kvbi[ind.id] = dict(ind_wf.knob_values)
+                wf_data_by_id[ind.id] = (
+                    ind.workflow_data if isinstance(ind.workflow_data, dict) else {}
+                )
             self._last_reflection = self._reflector.reflect(
                 records, generation, knob_values_by_id=kvbi,
+                workflow_data_by_id=wf_data_by_id,
             )
 
         # Select parents and create offspring
