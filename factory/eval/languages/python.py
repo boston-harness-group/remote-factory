@@ -35,15 +35,21 @@ class PythonEvaluator:
         )
 
     def run_tests_with_coverage(
-        self, project_path: Path, timeout: int = 300,
+        self,
+        project_path: Path,
+        timeout: int = 300,
+        test_paths: list[str] | None = None,
     ) -> tuple[EvalFragment | None, EvalFragment | None]:
         cov_target = self._detect_cov_target(project_path)
+        cmd = [
+            _resolve_python(project_path), "-m", "pytest",
+            f"--cov={cov_target}", "--cov-report=term",
+            "-v", "--tb=no", "-q",
+        ]
+        if test_paths:
+            cmd.extend(test_paths)
         rc, stdout, stderr = _run_cmd(
-            [
-                _resolve_python(project_path), "-m", "pytest",
-                f"--cov={cov_target}", "--cov-report=term",
-                "-v", "--tb=no", "-q",
-            ],
+            cmd,
             project_path,
             timeout=timeout,
         )
@@ -79,9 +85,14 @@ class PythonEvaluator:
 
         return test_frag, cov_frag
 
-    def run_tests(self, project_path: Path, timeout: int = 300) -> EvalFragment | None:
+    def run_tests(
+        self,
+        project_path: Path,
+        timeout: int = 300,
+        test_paths: list[str] | None = None,
+    ) -> EvalFragment | None:
         """Prefer run_tests_with_coverage() to avoid a redundant pytest invocation."""
-        return self.run_tests_with_coverage(project_path, timeout=timeout)[0]
+        return self.run_tests_with_coverage(project_path, timeout=timeout, test_paths=test_paths)[0]
 
     def run_lint(self, project_path: Path) -> EvalFragment | None:
         rc, stdout, stderr = _run_cmd(

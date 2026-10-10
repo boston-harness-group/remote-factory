@@ -271,6 +271,7 @@ async def run_eval(
     growth_weights: TierWeights | None = None,
     eval_spec: list[str] | None = None,
     test_timeout: int = 600,
+    test_paths: list[str] | None = None,
 ) -> CompositeScore:
     """Compute mandatory dimensions + project-specific additions + custom project eval.
 
@@ -283,7 +284,9 @@ async def run_eval(
     6. Return composite score
     """
     # Step 1: Mandatory hygiene (always runs)
-    hygiene_dicts = compute_hygiene_results(project_path, test_timeout=test_timeout)
+    hygiene_dicts = compute_hygiene_results(
+        project_path, test_timeout=test_timeout, test_paths=test_paths,
+    )
     hygiene_results = [EvalResult(**r) for r in hygiene_dicts]
 
     # Step 2: Project-specific additions (optional, additive only)

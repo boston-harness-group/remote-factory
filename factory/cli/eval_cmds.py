@@ -12,6 +12,53 @@ from factory.cli._helpers import _emit_cli_event, _read_target_branch, _run
 
 log = structlog.get_logger()
 
+
+def _compute_targeted_test_paths(project_path: Path) -> list[str] | None:
+    """Compute changed files and resolve to targeted test paths via the import graph."""
+    target_branch = _read_target_branch(project_path)
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "HEAD", target_branch],
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            log.info("targeted.skip", reason="no_merge_base")
+            return None
+        baseline = result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+    try:
+        diff_result = subprocess.run(
+            ["git", "diff", "--name-only", f"{baseline}..HEAD"],
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if diff_result.returncode != 0:
+            return None
+        changed_files = [f for f in diff_result.stdout.strip().splitlines() if f]
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+    if not changed_files:
+        return None
+
+    from factory.graph import find_dependent_tests
+
+    dependent = find_dependent_tests(project_path, changed_files)
+    if dependent is None:
+        log.info("targeted.fallback", reason="find_dependent_tests_returned_none")
+        return None
+
+    log.info("targeted.active", test_count=len(dependent), changed_files=len(changed_files))
+    return sorted(dependent)
+
+
 def cmd_eval(args: argparse.Namespace) -> int:
     from factory.eval.runner import run_eval
     from factory.store import ExperimentStore
@@ -20,6 +67,16 @@ def cmd_eval(args: argparse.Namespace) -> int:
     store = ExperimentStore(project_path)
     config = _run(store.read_config())
     skip_project_eval = getattr(args, "skip_project_eval", False)
+
+    test_paths: list[str] | None = None
+    targeted = getattr(args, "targeted", False)
+    if targeted:
+        test_paths = _compute_targeted_test_paths(project_path)
+        if test_paths is not None:
+            log.info("eval.mode", mode="targeted", test_paths=len(test_paths))
+        else:
+            log.info("eval.mode", mode="full", reason="targeted_fallback")
+
     _emit_cli_event(project_path, "eval.started", {"command": config.eval_command})
     score = _run(run_eval(
         config.eval_command, project_path, config.eval_threshold,
@@ -27,6 +84,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         eval_weights=config.eval_weights,
         skip_project_eval=skip_project_eval,
         test_timeout=config.test_timeout,
+        test_paths=test_paths,
     ))
     _emit_cli_event(project_path, "eval.completed", {
         "composite": score.total,

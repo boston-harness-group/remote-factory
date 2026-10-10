@@ -10,7 +10,7 @@ Your current working directory IS the project root. Use relative paths or `$(pwd
 
 ## What to do
 
-1. Run `factory eval` on the project.
+1. Run `factory eval --targeted` on the project (uses graph-based test selection when available, falls back to full suite automatically).
 2. Record the composite score and whether unit tests pass or fail.
 3. Compare the composite score to the baseline score.
 

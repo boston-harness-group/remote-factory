@@ -29,6 +29,8 @@ def add_experiment_lifecycle_parsers(sub: argparse._SubParsersAction) -> None:  
     p.add_argument("path", help="Path to the project")
     p.add_argument("--skip-project-eval", action="store_true", default=False,
                     help="Skip user-defined project eval dimensions (run only hygiene + growth)")
+    p.add_argument("--targeted", action="store_true", default=False,
+                    help="Use graph-based targeted test selection (falls back to full suite)")
 
     p = sub.add_parser("guard", help="Check guard rules, print violations or 'clean'")
     p.add_argument("path", help="Path to the project")

@@ -12,6 +12,7 @@ All functions take a project_path and return an EvalResult-compatible dict.
 If a tool is not detected for a dimension, score is 0.5 (neutral), not 0.
 """
 
+import inspect
 import json
 import shutil
 import subprocess
@@ -334,14 +335,23 @@ def _run_sentrux_scan(project_path: Path) -> dict | None:
 # ── Public API ─────────────────────────────────────────────────────
 
 
-def _collect_test_and_coverage(project_path: Path, timeout: int = 300) -> tuple[dict, dict]:
+def _collect_test_and_coverage(
+    project_path: Path,
+    timeout: int = 300,
+    test_paths: list[str] | None = None,
+) -> tuple[dict, dict]:
     """Run tests and coverage together via run_tests_with_coverage(), return both result dicts."""
     sub_projects = _find_sub_projects(project_path)
     test_fragments: list[EvalFragment] = []
     cov_fragments: list[EvalFragment] = []
     for sp in sub_projects:
         for evaluator in detect_languages(sp):
-            test_frag, cov_frag = evaluator.run_tests_with_coverage(sp, timeout=timeout)
+            kwargs: dict = {"timeout": timeout}
+            if test_paths:
+                sig = inspect.signature(evaluator.run_tests_with_coverage)
+                if "test_paths" in sig.parameters:
+                    kwargs["test_paths"] = test_paths
+            test_frag, cov_frag = evaluator.run_tests_with_coverage(sp, **kwargs)
             if test_frag is not None:
                 test_fragments.append(test_frag)
             if cov_frag is not None:
@@ -360,9 +370,15 @@ def _collect_test_and_coverage(project_path: Path, timeout: int = 300) -> tuple[
     return test_result, cov_result
 
 
-def compute_hygiene_results(project_path: Path, test_timeout: int = 600) -> list[dict]:
+def compute_hygiene_results(
+    project_path: Path,
+    test_timeout: int = 600,
+    test_paths: list[str] | None = None,
+) -> list[dict]:
     """Compute all 6 mandatory hygiene dimensions for a project."""
-    test_result, cov_result = _collect_test_and_coverage(project_path, timeout=test_timeout)
+    test_result, cov_result = _collect_test_and_coverage(
+        project_path, timeout=test_timeout, test_paths=test_paths,
+    )
     return [
         test_result,
         eval_lint(project_path),
