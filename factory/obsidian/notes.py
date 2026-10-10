@@ -144,7 +144,7 @@ def _obsidian_create(name: str, content: str, vault: str = "factory") -> bool:
     try:
         result = subprocess.run(
             [
-                "obsidian",
+                "obsidian-cli",
                 "create",
                 f"vault={vault}",
                 f"name={name}",
@@ -165,7 +165,7 @@ def _obsidian_search(query: str, vault: str = "factory", limit: int = 10) -> str
     try:
         result = subprocess.run(
             [
-                "obsidian",
+                "obsidian-cli",
                 "search",
                 f"vault={vault}",
                 f"query={query}",

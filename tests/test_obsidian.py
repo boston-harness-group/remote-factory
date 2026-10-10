@@ -288,7 +288,7 @@ class TestObsidianCli:
         original_run = subprocess.run
 
         def mock_run(*args, **kwargs):
-            if args and args[0] and args[0][0] == "obsidian":
+            if args and args[0] and args[0][0] == "obsidian-cli":
                 calls.append(args[0])
                 return Mock(returncode=1)  # CLI fails
             return original_run(*args, **kwargs)
@@ -298,7 +298,7 @@ class TestObsidianCli:
         monkeypatch.setattr("factory.obsidian.notes._obsidian_create", _real_obsidian_create)
         path = write_experiment_note("test-project", sample_record)
         # Should have tried CLI
-        assert any("obsidian" in str(c) for c in calls)
+        assert any("obsidian-cli" in str(c) for c in calls)
         # Should have fallen back to file write
         assert path.exists()
 
