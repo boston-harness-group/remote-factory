@@ -6,6 +6,7 @@ from pathlib import Path
 
 from factory.runners._stream import should_stream, stream_subprocess
 from factory.runners.claude import ClaudeRunner
+from factory.runners.codex import CodexRunner
 from factory.runners.protocol import Runner, RunnerMeta
 
 import structlog
@@ -16,6 +17,7 @@ __all__ = [
     "Runner",
     "RunnerMeta",
     "ClaudeRunner",
+    "CodexRunner",
     "get_runner",
     "get_available_runners",
     "get_runner_choices",
@@ -25,6 +27,7 @@ __all__ = [
 
 _RUNNERS: dict[str, type[Runner]] = {
     "claude": ClaudeRunner,  # type: ignore[dict-item]
+    "codex": CodexRunner,  # type: ignore[dict-item]
 }
 
 
