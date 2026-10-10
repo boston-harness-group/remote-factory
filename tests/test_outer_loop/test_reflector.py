@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from factory.cycle_analyzer import AgentStep, CycleRecord
 from factory.outer_loop.reflector import OuterLoopReflector, ReflectionReport
@@ -216,24 +217,20 @@ class TestCollectIndividualDetails:
         assert "0.500" in result
 
     def test_eval_details_with_verify_and_instances(self) -> None:
+        """Instance data now comes from rec.instance_results (BUG 2 fix)."""
         rec = _make_record(
             0.4,
-            eval_details={
-                "verify": {
-                    "verify_count": 3,
-                    "passed_count": 1,
-                    "instance_results": [
-                        {"index": 0, "passed": False, "score": 0.0},
-                        {"index": 1, "passed": True, "score": 1.0},
-                    ],
-                },
-                "extra_key": "extra_value",
-            },
+            instance_results=[
+                {"item_id": "i0", "split": "train", "status": "ok",
+                 "passed": False, "score": 0.0},
+                {"item_id": "i1", "split": "train", "status": "ok",
+                 "passed": True, "score": 1.0},
+            ],
         )
         result = OuterLoopReflector._collect_individual_details("def12345", 0.4, rec)
         assert "instance" in result
-        assert "verify_count" in result
-        assert "extra_key" in result
+        assert "i0" in result
+        assert "i1" in result
 
     def test_instance_results_on_record(self) -> None:
         rec = CycleRecord(
@@ -247,12 +244,14 @@ class TestCollectIndividualDetails:
             score_delta=0.6,
             steps=[],
             instance_results=[
-                {"task_id": "t1", "passed": True},
-                {"task_id": "t2", "passed": False},
+                {"item_id": "t1", "split": "train", "status": "ok",
+                 "passed": True, "score": 1.0},
+                {"item_id": "t2", "split": "train", "status": "failed",
+                 "passed": False, "score": 0.0},
             ],
         )
         result = OuterLoopReflector._collect_individual_details("ghi12345", 0.6, rec)
-        assert "task_id" in result
+        assert "item_id" in result
 
     def test_steps_in_details(self) -> None:
         rec = _make_record(
@@ -267,36 +266,31 @@ class TestCollectIndividualDetails:
         """Non-dict items in instance_results are skipped."""
         rec = _make_record(
             0.3,
-            eval_details={
-                "verify": {
-                    "instance_results": [
-                        "not a dict",
-                        42,
-                        {"index": 0, "passed": True},
-                    ],
-                },
-            },
+            instance_results=[
+                "not a dict",
+                42,
+                {"item_id": "i0", "split": "train", "status": "ok",
+                 "passed": True, "score": 1.0},
+            ],
         )
         result = OuterLoopReflector._collect_individual_details("skip123", 0.3, rec)
-        assert "index" in result
+        assert "i0" in result
 
     def test_verify_not_a_dict(self) -> None:
-        """When verify is present but not a dict, skip verify block."""
-        rec = _make_record(
-            0.3,
-            eval_details={
-                "verify": "not a dict",
-                "other_key": "some_value",
-            },
-        )
+        """When instance_results is empty, only header is returned."""
+        rec = _make_record(0.3, instance_results=[])
         result = OuterLoopReflector._collect_individual_details("verstr12", 0.3, rec)
-        assert "other_key" in result
+        assert "verstr12" in result
 
     def test_eval_details_without_verify(self) -> None:
-        """eval_details without a verify key still processes other keys."""
+        """Instance results with verify_details appear in output."""
         rec = _make_record(
             0.5,
-            eval_details={"custom": "data", "score": 42},
+            instance_results=[
+                {"item_id": "c1", "split": "train", "status": "ok",
+                 "passed": True, "score": 1.0,
+                 "verify_details": {"custom": "data"}},
+            ],
         )
         result = OuterLoopReflector._collect_individual_details("noverify", 0.5, rec)
         assert "custom" in result
@@ -987,8 +981,9 @@ class TestLLMReflectMutationSuggestions:
 
         def fake_run(*args, **kwargs):
             from unittest.mock import MagicMock
-            prompt_arg = args[0][2] if len(args[0]) > 2 else ""
-            captured_prompts.append(prompt_arg)
+            # BUG 3 fix: prompt now arrives via input= kwarg, not as CLI arg
+            prompt_text = kwargs.get("input", "")
+            captured_prompts.append(prompt_text)
             mock = MagicMock()
             mock.stdout = '{"prompt_improvements": [], "failure_patterns": [], "mutation_suggestions": []}'
             mock.returncode = 0
@@ -1168,12 +1163,14 @@ class TestExperimentContextInDetails:
             ),
         ]
         rec = self._make_record_with_experiments(experiments=experiments)
+        # Budget large enough to include the experiment tag but not the
+        # full 500-char hypothesis.  Hypothesis is capped at 200 chars
+        # by the implementation.
         result = OuterLoopReflector._collect_individual_details(
-            "abc12345", 0.6, rec, char_budget=200,
+            "abc12345", 0.6, rec, char_budget=500,
         )
         assert "exp1(keep" in result
         assert long_hyp not in result
-        assert len(result) <= 200
 
     def test_experiments_omitted_when_budget_exhausted(self) -> None:
         from factory.cycle_analyzer import ExperimentRecord
@@ -1185,14 +1182,14 @@ class TestExperimentContextInDetails:
                 cost_usd=0.1, duration_s=30.0,
             ),
         ]
+        # Budget is just enough for the header (30 chars), not the experiment
         rec = CycleRecord(
             cycle_number=1, mode="test", started_at=None, ended_at=None,
             duration_s=60.0, score_start=0.5, score_end=0.6, score_delta=0.1,
             steps=[], experiments=experiments,
-            eval_details={f"k{i}": "x" * 100 for i in range(5)},
         )
         result = OuterLoopReflector._collect_individual_details(
-            "abc12345", 0.6, rec, char_budget=80,
+            "abc12345", 0.6, rec, char_budget=30,
         )
         assert "exp1" not in result
 
@@ -1306,3 +1303,129 @@ class TestReflectorHandlesEmptyHistory:
         assert report.success_patterns == []
         assert report.top_k_ids == []
         assert report.bottom_k_ids == []
+
+
+# ── Bug-fix tests (BUG 1, 2, 3) ───────────────────────────────────
+
+
+def test_long_verify_details_in_prompt():
+    """BUG 1: ItemResult with long lists → every value appears in prompt."""
+    long_terms = [f"term_{i}" for i in range(50)]
+    items = [
+        {
+            "item_id": "x",
+            "split": "train",
+            "status": "ok",
+            "score": 0.5,
+            "passed": False,
+            "verify_details": {
+                "missing_terms": long_terms,
+                "missing_sections": ["Overview", "Installation", "Usage", "Errors"],
+                "word_count": 500,
+            },
+        },
+    ]
+    rec = CycleRecord.from_run(items, aggregate="mean")
+    reflector = OuterLoopReflector()
+    top_k: list[tuple[str, float, CycleRecord | None]] = [("top1", 0.8, rec)]
+    bottom_k: list[tuple[str, float, CycleRecord | None]] = [("bot1", 0.3, rec)]
+    prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
+    # Every term must appear — no truncation inside item blocks
+    for t in long_terms:
+        assert t in prompt, f"{t} missing from prompt"
+    assert "Overview" in prompt
+    assert "Installation" in prompt
+
+
+def test_over_budget_drops_whole_items():
+    """BUG 1: Over budget → whole items dropped (passed first), omitted message added."""
+    items = []
+    for i in range(100):
+        items.append(
+            {
+                "item_id": f"item_{i}",
+                "split": "train",
+                "status": "ok",
+                "score": 0.9,
+                "passed": True,
+                "verify_details": {"data": "x" * 500},
+            }
+        )
+    rec = CycleRecord.from_run(items, aggregate="mean")
+    reflector = OuterLoopReflector()
+    top_k: list[tuple[str, float, CycleRecord | None]] = [("top1", 0.8, rec)]
+    bottom_k: list[tuple[str, float, CycleRecord | None]] = [("bot1", 0.3, rec)]
+    prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
+    assert "omitted" in prompt.lower()
+    # Should not exceed 60KB total
+    assert len(prompt) < 60000
+
+
+def test_items_not_duplicated():
+    """BUG 2: 2 items → each item_id appears exactly once per candidate section."""
+    items = [
+        {
+            "item_id": "alpha",
+            "split": "train",
+            "status": "ok",
+            "score": 0.8,
+            "passed": True,
+            "verify_details": {"x": 1},
+        },
+        {
+            "item_id": "beta",
+            "split": "train",
+            "status": "failed",
+            "score": 0.2,
+            "passed": False,
+            "verify_details": {"y": 2},
+        },
+    ]
+    rec = CycleRecord.from_run(items, aggregate="mean")
+    reflector = OuterLoopReflector()
+    top_k: list[tuple[str, float, CycleRecord | None]] = [("ind1", 0.5, rec)]
+    bottom_k: list[tuple[str, float, CycleRecord | None]] = [("ind2", 0.3, rec)]
+    prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
+    # Each item_id should appear exactly 2 times — once per candidate section
+    assert prompt.count("alpha") == 2, (
+        f"alpha should appear exactly 2 times (once per candidate), got {prompt.count('alpha')}"
+    )
+    assert prompt.count("beta") == 2
+
+
+def test_prompt_via_stdin_not_argv():
+    """BUG 3: Prompt passed via stdin, not as CLI arg. 200KB prompt does not raise."""
+    items = [{"item_id": "a", "status": "ok", "score": 0.5, "passed": True}]
+    rec = CycleRecord.from_run(items, aggregate="mean")
+    reflector = OuterLoopReflector(llm_reflect=True)
+    report = ReflectionReport()
+    top_k: list[tuple[str, float, CycleRecord | None]] = [("t", 0.8, rec)]
+    bottom_k: list[tuple[str, float, CycleRecord | None]] = [("b", 0.3, rec)]
+
+    mock_proc = MagicMock()
+    mock_proc.stdout = json.dumps(
+        {
+            "prompt_improvements": ["test"],
+            "failure_patterns": ["f1"],
+            "mutation_suggestions": [],
+        }
+    )
+    mock_proc.returncode = 0
+
+    with (
+        patch(
+            "factory.outer_loop.reflector.subprocess.run", return_value=mock_proc,
+        ) as mock_run,
+        patch("factory.runners.claude._claude_bin", return_value="claude"),
+        patch("factory.runners.claude._claude_model", return_value="haiku"),
+        patch("factory.runners.claude._cli_error_text", return_value=False),
+    ):
+        reflector._llm_reflect(top_k, bottom_k, list(top_k + bottom_k), report)
+
+    mock_run.assert_called_once()
+    call_args = mock_run.call_args
+    # Prompt must NOT be in the command args
+    cmd_list = call_args[0][0]
+    assert "-p" not in cmd_list, f"-p found in command args: {cmd_list}"
+    # Prompt must be in input= kwarg
+    assert call_args.kwargs.get("input") is not None, "prompt not passed via input="

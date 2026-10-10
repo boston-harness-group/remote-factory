@@ -21,8 +21,7 @@ from factory.outer_loop.models import MutationType
 
 log = structlog.get_logger()
 
-_INSTANCE_CHAR_BUDGET = 800
-_MAX_INSTANCES_PER_INDIVIDUAL = 5
+_PER_CANDIDATE_CHAR_BUDGET = 30000
 _LLM_PAYLOAD_BUDGET = 8000
 _VALID_LLM_OPERATORS = {t.value for t in MutationType}
 
@@ -532,69 +531,95 @@ class OuterLoopReflector:
         id_: str, score: float, rec: CycleRecord | None,
         *, char_budget: int | None = None,
     ) -> str:
-        """Collect eval/verify details from one individual for LLM context."""
-        parts = [f"ID: {id_[:8]}, score: {score:.3f}"]
-        if rec is None:
-            return "; ".join(parts)
-        if rec.eval_details and isinstance(rec.eval_details, dict):
-            verify = rec.eval_details.get("verify")
-            if isinstance(verify, dict):
-                instances = verify.get("instance_results")
-                if isinstance(instances, list):
-                    for inst in instances[:_MAX_INSTANCES_PER_INDIVIDUAL]:
-                        if not isinstance(inst, dict):
-                            continue
-                        inst_parts: list[str] = []
-                        for k, v in inst.items():
-                            s = str(v)[:_INSTANCE_CHAR_BUDGET // max(len(inst), 1)]
-                            inst_parts.append(f"{k}={s}")
-                        parts.append("instance: " + ", ".join(inst_parts))
-                for k, v in verify.items():
-                    if k == "instance_results":
-                        continue
-                    parts.append(f"{k}={str(v)[:120]}")
-            for k, v in rec.eval_details.items():
-                if k == "verify":
-                    continue
-                parts.append(f"{k}={str(v)[:200]}")
-        if rec.instance_results and isinstance(rec.instance_results, list):
-            for inst in rec.instance_results[:_MAX_INSTANCES_PER_INDIVIDUAL]:
-                if isinstance(inst, dict):
-                    for k, v in inst.items():
-                        parts.append(f"{k}={str(v)[:120]}")
-        if rec.steps:
-            roles = [f"{s.role}({'ok' if s.succeeded else 'FAIL'})" for s in rec.steps[:5]]
-            parts.append("agents: " + ", ".join(roles))
+        """Collect eval/verify details from one individual for LLM context.
 
+        Uses a multi-line block format per item.  Never truncates inside a
+        block.  When total output exceeds *char_budget* (default
+        ``_PER_CANDIDATE_CHAR_BUDGET``), whole items are dropped — passed
+        items first — and a summary line is appended.
+        """
+        budget = char_budget if char_budget is not None else _PER_CANDIDATE_CHAR_BUDGET
+        header = f"ID: {id_[:8]}, score: {score:.3f}"
+        if rec is None:
+            return header
+
+        lines: list[str] = [header]
+
+        # --- Instance blocks (single source: rec.instance_results) ---
+        if rec.instance_results and isinstance(rec.instance_results, list):
+            blocks: list[tuple[bool, str]] = []  # (passed, block_text)
+            for inst in rec.instance_results:
+                if not isinstance(inst, dict):
+                    continue
+                item_id = inst.get("item_id", "?")
+                split = inst.get("split", "?")
+                status = inst.get("status", "?")
+                inst_score = inst.get("score", "?")
+                passed = inst.get("passed", False)
+                block_lines = [
+                    f"  instance: item_id={item_id}, split={split}, "
+                    f"status={status}, score={inst_score}, passed={passed}",
+                ]
+                error = inst.get("error")
+                if error:
+                    block_lines.append(f"    error: {error}")
+                vd = inst.get("verify_details")
+                if isinstance(vd, dict) and vd:
+                    block_lines.append("    verify_details:")
+                    for k, v in vd.items():
+                        block_lines.append(f"      {k}: {v}")
+                blocks.append((bool(passed), "\n".join(block_lines)))
+
+            # Budget check: drop whole items (passed first) if over budget
+            total_len = sum(len(header) + 1 + len(b) for _, b in blocks)
+            if total_len > budget:
+                # Sort: passed items first so they get dropped first
+                indexed = list(enumerate(blocks))
+                indexed.sort(key=lambda x: (not x[1][0], x[0]))
+                kept_indices: set[int] = set()
+                running = len(header) + 1
+                # Reserve space for omission message
+                omit_reserve = 60
+                for orig_idx, (passed, text) in indexed:
+                    if running + len(text) + 1 + omit_reserve <= budget:
+                        kept_indices.add(orig_idx)
+                        running += len(text) + 1
+                omitted = len(blocks) - len(kept_indices)
+                for orig_idx, (_, text) in enumerate(blocks):
+                    if orig_idx in kept_indices:
+                        lines.append(text)
+                if omitted > 0:
+                    lines.append(
+                        f"  ({omitted} items omitted"
+                        " — see runs/<run>/items/)"
+                    )
+            else:
+                for _, text in blocks:
+                    lines.append(text)
+
+        # --- Steps ---
+        if rec.steps:
+            roles = [
+                f"{s.role}({'ok' if s.succeeded else 'FAIL'})"
+                for s in rec.steps[:5]
+            ]
+            lines.append("agents: " + ", ".join(roles))
+
+        # --- Experiments ---
         if rec.experiments:
-            _EXP_OVERHEAD = 25
-            remaining: float = (
-                (char_budget - len("; ".join(parts)))
-                if char_budget is not None
-                else 2000.0
-            )
-            exp_lines: list[str] = []
             for exp in rec.experiments[:5]:
                 line = f"exp{exp.exp_id}({exp.verdict}"
                 if exp.score_delta is not None:
                     line += f" Δ={exp.score_delta:+.3f}"
                 line += ")"
                 if exp.hypothesis:
-                    hyp_budget = max(0, int(remaining) - _EXP_OVERHEAD - len(line))
-                    if hyp_budget > 0:
-                        line += f" {exp.hypothesis[:hyp_budget]}"
-                candidate_len = len("; ".join(parts + exp_lines + [line]))
-                if char_budget is not None and candidate_len > char_budget:
+                    line += f" {exp.hypothesis[:200]}"
+                candidate = "\n".join(lines + [line])
+                if len(candidate) > budget:
                     break
-                exp_lines.append(line)
-                remaining = (
-                    (char_budget - len("; ".join(parts + exp_lines)))
-                    if char_budget is not None
-                    else remaining - len(line) - 2
-                )
-            parts.extend(exp_lines)
+                lines.append(line)
 
-        return "; ".join(parts)
+        return "\n".join(lines)
 
     @staticmethod
     def _collect_node_ids(
@@ -613,14 +638,16 @@ class OuterLoopReflector:
                     seen[step.role] = step.role
         return [{"node_id": nid, "role": role} for nid, role in seen.items()]
 
-    def _llm_reflect(
+    def build_reflection_prompt(
         self,
         top_k: Sequence[tuple[str, float, CycleRecord | None]],
         bottom_k: Sequence[tuple[str, float, CycleRecord | None]],
-        records: list[tuple[str, float, CycleRecord | None]],
-        report: ReflectionReport,
-    ) -> None:
-        """LLM-based contrastive reflection: one call per generation."""
+        records: Sequence[tuple[str, float, CycleRecord | None]],
+    ) -> str:
+        """Build the LLM reflection prompt without calling the LLM.
+
+        Public so tests can inspect the prompt text directly.
+        """
         n_individuals = len(top_k) + len(bottom_k)
         per_individual = int(_LLM_PAYLOAD_BUDGET * 0.85) // max(n_individuals, 1)
 
@@ -655,7 +682,7 @@ class OuterLoopReflector:
             payload = payload[:_LLM_PAYLOAD_BUDGET] + "\n... (truncated)"
 
         operators_list = ", ".join(sorted(_VALID_LLM_OPERATORS))
-        prompt = (
+        return (
             "Analyze these verification results from an evolutionary search. "
             "Here are the details from the top-performing candidates and the "
             "bottom-performing candidates.\n\n"
@@ -684,16 +711,27 @@ class OuterLoopReflector:
             "Output ONLY the JSON object."
         )
 
+    def _llm_reflect(
+        self,
+        top_k: Sequence[tuple[str, float, CycleRecord | None]],
+        bottom_k: Sequence[tuple[str, float, CycleRecord | None]],
+        records: list[tuple[str, float, CycleRecord | None]],
+        report: ReflectionReport,
+    ) -> None:
+        """LLM-based contrastive reflection: one call per generation."""
+        prompt = self.build_reflection_prompt(top_k, bottom_k, records)
+
         from factory.runners.claude import _claude_bin, _claude_model, _cli_error_text
 
         try:
-            cmd = [_claude_bin(), "-p", prompt, "--model", _claude_model(),
+            cmd = [_claude_bin(), "--model", _claude_model(),
                    "--append-system-prompt", "Output only valid JSON.",
                    "--output-format", "text"]
             data: dict[str, object] | None = None
             for attempt in range(3):
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=120,
+                    cmd, input=prompt,
+                    capture_output=True, text=True, timeout=120,
                 )
                 raw = proc.stdout.strip()
                 if _cli_error_text(raw):
