@@ -903,7 +903,7 @@ class TestAllErroredRaises:
 
 class TestProjectDirResolution:
     """h. SwarmEngine._resolve_project_dir falls back to self._project_dir
-    and returns empty string when neither source provides a path.
+    and raises ValueError when neither source provides a path.
 
     Also: engine.run() without explicit project_dir routes worktrees
     through the constructor-provided project, not cwd.
@@ -963,8 +963,8 @@ class TestProjectDirResolution:
                 f"worktrees would be created from the wrong directory"
             )
 
-    def test_resolve_returns_empty_when_both_unset(self) -> None:
-        """Empty string returned when no project_dir from either source."""
+    def test_resolve_raises_when_both_empty(self) -> None:
+        """ValueError raised when no project_dir from either source."""
         task = ScoredTask()
         config = SwarmConfig(
             benchmark="no-dir-test",
@@ -978,7 +978,9 @@ class TestProjectDirResolution:
             config, evaluator, project_dir=None, designer=None,
         )
 
-        assert engine._resolve_project_dir("") == ""
+        wf = _make_scored_workflow()
+        with pytest.raises(ValueError, match="project_dir must be set"):
+            engine.run(wf)
 
     def test_explicit_project_dir_takes_precedence(self, tmp_path: Path) -> None:
         """Explicit project_dir argument overrides constructor value."""

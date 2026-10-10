@@ -220,22 +220,31 @@ class TestCanary:
     """
 
     @pytest.fixture()
-    def project(self, tmp_path: Path) -> Path:
-        project = tmp_path / "canary-project"
+    def project(self, tmp_path: Path) -> Iterator[Path]:
+        project = tmp_path / 'canary-project'
         project.mkdir()
-        _git(project, "init")
-        _git(project, "config", "user.email", "canary@test")
-        _git(project, "config", "user.name", "canary")
-        (project / ".gitignore").write_text(".factory/\n")
-        factory_dir = project / ".factory"
+        _git(project, 'init')
+        _git(project, 'config', 'user.email', 'canary@test')
+        _git(project, 'config', 'user.name', 'canary')
+        (project / '.gitignore').write_text('.factory/\n')
+        factory_dir = project / '.factory'
         factory_dir.mkdir()
-        (factory_dir / "config.json").write_text(
-            json.dumps({"inner_loop": {"aggregate": "mean"}})
+        (factory_dir / 'config.json').write_text(
+            json.dumps({'inner_loop': {'aggregate': 'mean'}})
         )
-        (project / "README.md").write_text("# Canary\n")
-        _git(project, "add", ".")
-        _git(project, "commit", "-m", "init")
-        return project
+        (project / 'README.md').write_text('# Canary\n')
+        _git(project, 'add', '.')
+        _git(project, 'commit', '-m', 'init')
+        yield project
+        # Copy run artifacts if FACTORY_CANARY_KEEP is set
+        keep_dir = os.environ.get('FACTORY_CANARY_KEEP')
+        if keep_dir:
+            import shutil
+            dst = Path(keep_dir)
+            dst.mkdir(parents=True, exist_ok=True)
+            ol_dir = project / '.factory' / 'outer_loop'
+            if ol_dir.exists():
+                shutil.copytree(ol_dir, dst / 'outer_loop', dirs_exist_ok=True)
 
     def _run_engine(self, project: Path) -> Any:
         """Run SwarmEngine with real model — evolves at least one offspring."""
@@ -285,54 +294,36 @@ class TestCanary:
         diag = assert_run_trustworthy(result, project)
         assert diag["checks_failed"] == 0, f"Trust checks failed: {diag}"
 
-        # ── Evolution produced offspring ──────────────────────
-        # At least one offspring was evaluated (has parent_id set)
-        offspring = [
-            (ind_id, rec)
-            for ind_id, rec in evaluator._cycle_records.items()
-            if rec is not None
-        ]
-        assert len(offspring) >= 2, (
-            f"Expected at least 2 evaluated individuals (seed + offspring), "
-            f"got {len(offspring)}"
+        # ── Individuals from population ──────────────────────
+        pop = engine._final_population
+        seeds = [ind for ind in pop.individuals if ind.parent_id is None and ind.score is not None]
+        offspring = [ind for ind in pop.individuals if ind.parent_id is not None and ind.score is not None]
+
+        assert len(seeds) >= 1, 'No seeds evaluated'
+        assert len(offspring) >= 2, f'Expected >=2 offspring, got {len(offspring)}'
+
+        # Raw benchmark scores (not composite) from CycleRecord
+        def _raw_score(ind_id: str) -> float | None:
+            rec = evaluator.get_cycle_record(ind_id)
+            return rec.score_end if rec and rec.score_end is not None else None
+
+        seed_raw_scores = [_raw_score(s.id) for s in seeds if _raw_score(s.id) is not None]
+        offspring_raw_scores = [_raw_score(o.id) for o in offspring if _raw_score(o.id) is not None]
+
+        # Seed must score < 0.8 (rubric has headroom)
+        for s in seeds:
+            raw = _raw_score(s.id)
+            assert raw is not None and raw < 0.8, f'Seed {s.id[:8]} raw score {raw} >= 0.8 — rubric too easy'
+
+        best_seed_raw = max(seed_raw_scores)
+        best_offspring_raw = max(offspring_raw_scores) if offspring_raw_scores else 0.0
+
+        # Evolution MUST improve on seed — that's what the canary tests
+        assert best_offspring_raw > best_seed_raw, (
+            f'Offspring best raw ({best_offspring_raw:.4f}) did not beat seed best raw ({best_seed_raw:.4f}). '
+            f'Seeds: {[(s.id[:8], _raw_score(s.id)) for s in seeds]}. '
+            f'Offspring: {[(o.id[:8], _raw_score(o.id)) for o in offspring]}'
         )
-
-        # Check that at least one individual has a parent in lineage
-        # (i.e. is an offspring, not a seed)
-        trajectory = result.trajectory
-        has_offspring = any(
-            len(gen.mutations_applied) > 0
-            for gen in trajectory
-        )
-        assert has_offspring, (
-            "No mutations were applied — evolution did not produce offspring. "
-            f"Trajectory: {[(g.generation, g.novel_count) for g in trajectory]}"
-        )
-
-        # ── Seed score sanity ─────────────────────────────────
-        # (a)+(b) Seed individuals (generation=0, no parent) must score < 0.8
-        all_inds = engine._archive.all_individuals()
-        for ind in all_inds:
-            if ind.parent_id is None and ind.score is not None:
-                assert ind.score < 0.8, (
-                    f"Seed score {ind.score} >= 0.8 — rubric is too easy"
-                )
-
-        # (c)+(d) Offspring (have parent_id) should beat seed score
-        seed_best = 0.0
-        for ind in all_inds:
-            if ind.parent_id is None and ind.score is not None:
-                seed_best = max(seed_best, ind.score)
-
-        offspring_scores: list[float] = [
-            ind.score for ind in all_inds
-            if ind.parent_id is not None and ind.score is not None
-        ]
-        if offspring_scores:
-            best_offspring = max(offspring_scores)
-            assert best_offspring > seed_best, (
-                f"Best offspring ({best_offspring}) did not beat seed ({seed_best})"
-            )
 
         # ── Reflection cites real item results ────────────────
         # The reflector should have produced a reflection stored on the engine
@@ -356,12 +347,51 @@ class TestCanary:
         for sg_text in reflection.mutation_suggestions:
             reflection_text += f" {sg_text}"
         found_rubric_ref = any(kw in reflection_text for kw in rubric_keywords)
-        # This is a soft check: if the reflector doesn't mention rubric,
-        # we note it but don't fail (model output varies)
-        if not found_rubric_ref:
-            import warnings
-            warnings.warn(
-                f"Reflector did not reference rubric elements. "
-                f"Text: {reflection_text[:300]}",
-                stacklevel=1,
+        assert found_rubric_ref, (
+            f'Reflector did not reference any rubric element in patterns/suggestions. '
+            f'Text: {reflection_text[:500]}'
+        )
+
+        # ── Diagnostic summary ────────────────────────────────
+        summary_lines = ['=== CANARY DIAGNOSTIC SUMMARY ===']
+        for ind in pop.individuals:
+            rec = evaluator.get_cycle_record(ind.id)
+            raw = rec.score_end if rec else None
+            mutation_op = ind.mutation_record.operator.value if ind.mutation_record else 'seed'
+            parent = ind.parent_id[:8] if ind.parent_id else 'none'
+            summary_lines.append(
+                f'\nIndividual {ind.id[:8]} (score={ind.score}, raw={raw}, '
+                f'parent={parent}, mutation={mutation_op})'
             )
+
+            # Get prompt from workflow
+            wf_data = ind.workflow_data
+            if isinstance(wf_data, dict):
+                for nid, node in wf_data.get('nodes', {}).items():
+                    pt = node.get('prompt_template', '')
+                    if pt:
+                        summary_lines.append(f'  Prompt ({nid}): {pt[:200]}...')
+
+            # Per-item verify_details
+            if rec and rec.instance_results:
+                for item in rec.instance_results:
+                    if isinstance(item, dict):
+                        summary_lines.append(
+                            f'  Item {item.get("item_id")}: score={item.get("score")}, '
+                            f'words={item.get("verify_details", {}).get("word_count")}, '
+                            f'missing_sections={item.get("verify_details", {}).get("missing_sections")}, '
+                            f'missing_terms={item.get("verify_details", {}).get("missing_terms")}'
+                        )
+
+        # Reflection info
+        if reflection:
+            summary_lines.append(f'\nReflection failure_patterns: {reflection.failure_patterns}')
+            summary_lines.append(f'Reflection prompt_improvements: {reflection.prompt_improvements}')
+
+        summary_text = '\n'.join(summary_lines)
+        print(summary_text)
+
+        # Write to file
+        diag_path = project / '.factory' / 'outer_loop' / 'canary-summary.txt'
+        diag_path.parent.mkdir(parents=True, exist_ok=True)
+        diag_path.write_text(summary_text)

@@ -278,12 +278,18 @@ class SwarmEngine:
                     self._mode_registry.register(ind.id, 0, wf)
 
     def _resolve_project_dir(self, project_dir: str = "") -> str:
-        """Return project_dir, falling back to constructor value then empty string."""
+        """Return a non-empty project_dir, falling back to constructor value.
+
+        Raises ``ValueError`` when both *project_dir* and ``self._project_dir``
+        are empty/None.
+        """
         if project_dir:
             return project_dir
         if self._project_dir:
             return str(self._project_dir)
-        return ""
+        raise ValueError(
+            "project_dir must be set either in constructor or run() argument"
+        )
 
     def evolve_generation(
         self,
@@ -661,6 +667,9 @@ class SwarmEngine:
             from factory.outer_loop.filesystem import save_best, save_map_elites
             save_best(self._project_dir, result)
             save_map_elites(self._project_dir, self._archive)
+
+        # Store for post-run inspection (e.g. canary diagnostics)
+        self._final_population = population
 
         return result
 

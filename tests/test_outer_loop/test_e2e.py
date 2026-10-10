@@ -149,7 +149,7 @@ def _make_holdout_evaluator(training_score: float = 0.8) -> SwarmEvaluator:
 
 
 class TestE2EEvolution:
-    def test_evolution_improves_over_seed(self) -> None:
+    def test_evolution_improves_over_seed(self, tmp_path) -> None:
         """The best evolved workflow should score higher than the seed."""
         seed_wf = _seed_workflow()
         evaluator = _make_feature_evaluator()
@@ -160,7 +160,7 @@ class TestE2EEvolution:
             tournament_size=2,
             mutation_rate=0.5,
             training_instances=["t1", "t2", "t3"],
-            
+
         )
         config.set_task(_StubTask(["t1", "t2", "t3", "h1"]))
 
@@ -172,6 +172,7 @@ class TestE2EEvolution:
             config, evaluator,
             strategy=strategy,
             novelty_filter=novelty,
+            project_dir=tmp_path,
         )
 
         result = engine.run(seed_wf)
@@ -181,7 +182,7 @@ class TestE2EEvolution:
             f"seed score {seed_score}"
         )
 
-    def test_archive_populated(self) -> None:
+    def test_archive_populated(self, tmp_path) -> None:
         """MAP-Elites archive should have entries after evolution."""
         seed_wf = _seed_workflow()
         evaluator = _make_feature_evaluator()
@@ -190,15 +191,15 @@ class TestE2EEvolution:
             budget=30,
             population_size=4,
             training_instances=["t1", "t2"],
-            
+
         )
         config.set_task(_StubTask(["t1", "t2", "h1"]))
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         result = engine.run(seed_wf)
 
         assert result.archive_size > 0
 
-    def test_trajectory_recorded(self) -> None:
+    def test_trajectory_recorded(self, tmp_path) -> None:
         """Generation trajectory should be recorded."""
         seed_wf = _seed_workflow()
         evaluator = _make_feature_evaluator()
@@ -207,16 +208,16 @@ class TestE2EEvolution:
             budget=30,
             population_size=4,
             training_instances=["t1", "t2"],
-            
+
         )
         config.set_task(_StubTask(["t1", "t2", "h1"]))
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         result = engine.run(seed_wf)
 
         assert len(result.trajectory) >= 1
         assert result.generations_completed >= 1
 
-    def test_hyperparameter_history_complete(self) -> None:
+    def test_hyperparameter_history_complete(self, tmp_path) -> None:
         """Every generation should have a HyperparameterRecord."""
         seed_wf = _seed_workflow()
         evaluator = _make_feature_evaluator()
@@ -225,10 +226,10 @@ class TestE2EEvolution:
             budget=30,
             population_size=4,
             training_instances=["t1", "t2"],
-            
+
         )
         config.set_task(_StubTask(["t1", "t2", "h1"]))
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         result = engine.run(seed_wf)
 
         assert len(result.hyperparameter_history) == result.generations_completed
@@ -236,7 +237,7 @@ class TestE2EEvolution:
             assert hp.mutation_rate > 0
             assert hp.population_size > 0
 
-    def test_best_workflow_is_valid(self) -> None:
+    def test_best_workflow_is_valid(self, tmp_path) -> None:
         """The best workflow should be a valid Workflow."""
         seed_wf = _seed_workflow()
         evaluator = _make_feature_evaluator()
@@ -245,10 +246,10 @@ class TestE2EEvolution:
             budget=30,
             population_size=4,
             training_instances=["t1", "t2"],
-            
+
         )
         config.set_task(_StubTask(["t1", "t2", "h1"]))
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         result = engine.run(seed_wf)
 
         assert result.best_workflow_data != {}
@@ -256,7 +257,7 @@ class TestE2EEvolution:
         assert len(reconstructed.nodes) > 0
         assert len(reconstructed.edges) > 0
 
-    def test_pareto_front_non_empty(self) -> None:
+    def test_pareto_front_non_empty(self, tmp_path) -> None:
         """Pareto front should contain at least one individual."""
         seed_wf = _seed_workflow()
         evaluator = _make_feature_evaluator()
@@ -265,17 +266,17 @@ class TestE2EEvolution:
             budget=30,
             population_size=4,
             training_instances=["t1", "t2"],
-            
+
         )
         config.set_task(_StubTask(["t1", "t2", "h1"]))
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         result = engine.run(seed_wf)
 
         assert len(result.pareto_front) > 0
 
 
 class TestE2EOverfitDetection:
-    def test_overfit_flagged(self) -> None:
+    def test_overfit_flagged(self, tmp_path) -> None:
         """When holdout score drops >15%, overfit should be flagged."""
         seed_wf = _seed_workflow()
         evaluator = _make_holdout_evaluator(training_score=0.8)
@@ -284,10 +285,10 @@ class TestE2EOverfitDetection:
             budget=30,
             population_size=4,
             training_instances=["t1", "t2"],
-            
+
         )
         config.set_task(_StubTask(["t1", "t2", "h1"]))
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
         result = engine.run(seed_wf)
 
         assert result.overfit_flag is True
@@ -429,6 +430,7 @@ class TestE2EFullPipeline:
         engine = SwarmEngine(
             config, evaluator,
             novelty_filter=NoveltyFilter(min_edit_distance=1),
+            project_dir=tmp_path,
         )
         result = engine.run(seed_wf)
 

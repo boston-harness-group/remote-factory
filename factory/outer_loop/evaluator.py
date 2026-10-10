@@ -287,6 +287,8 @@ class SwarmEvaluator:
     @staticmethod
     def _create_worktree(project_dir: str, label: str) -> Path:
         """Create an isolated git worktree from the target project."""
+        if not project_dir or not project_dir.strip():
+            raise ValueError("project_dir must not be empty when creating a worktree")
         src = Path(project_dir)
         wt_base = src.parent / ".eval-worktrees"
         wt_base.mkdir(parents=True, exist_ok=True)

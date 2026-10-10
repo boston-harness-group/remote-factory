@@ -140,7 +140,7 @@ class TestEmptyTrainingIntersectionWarns:
     """When training_instances has no overlap with task train split,
     evolve_generation must warn and fall back to the full train split."""
 
-    def test_empty_training_intersection_warns(self) -> None:
+    def test_empty_training_intersection_warns(self, tmp_path) -> None:
         from factory.outer_loop.engine import SwarmEngine
         from factory.outer_loop.evaluator import SwarmEvaluator
         from factory.outer_loop.models import SwarmConfig
@@ -165,7 +165,7 @@ class TestEmptyTrainingIntersectionWarns:
         from factory.outer_loop.models import EvalResult
         evaluator.evaluate.return_value = EvalResult(score=0.5, cost_usd=0.01, benchmark_score=0.5)
         evaluator.get_cycle_record.return_value = None
-        engine = SwarmEngine(config=config, evaluator=evaluator)
+        engine = SwarmEngine(config=config, evaluator=evaluator, project_dir=tmp_path)
 
         wf = Workflow(
             name="test",
