@@ -339,7 +339,7 @@ class TestCanary:
         reflection = engine._last_reflection
         assert reflection is not None, "No reflection was produced"
         # Reflection report should contain patterns or suggestions
-        assert len(reflection.failure_patterns) > 0 or len(reflection.suggestions) > 0, (
+        assert len(reflection.failure_patterns) > 0 or len(reflection.mutation_suggestions) + len(reflection.typed_suggestions) > 0, (
             "Reflection has no failure patterns or suggestions"
         )
 
@@ -351,8 +351,10 @@ class TestCanary:
         reflection_text = ""
         for fp in reflection.failure_patterns:
             reflection_text += f" {fp}"
-        for sg in reflection.suggestions:
+        for sg in reflection.typed_suggestions:
             reflection_text += f" {sg.rationale}" if hasattr(sg, 'rationale') else f" {sg}"
+        for sg_text in reflection.mutation_suggestions:
+            reflection_text += f" {sg_text}"
         found_rubric_ref = any(kw in reflection_text for kw in rubric_keywords)
         # This is a soft check: if the reflector doesn't mention rubric,
         # we note it but don't fail (model output varies)
