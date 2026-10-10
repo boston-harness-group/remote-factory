@@ -852,7 +852,9 @@ def _bootstrap_unborn_repo(project_path: Path) -> None:
 def detect_default_branch(project_path: Path) -> str:
     """Detect the default branch for a git repository.
 
-    Cascade: remote HEAD → probe main/master → current HEAD → fallback 'main'.
+    Cascade: remote HEAD, then probe main/master, then current HEAD, then the
+    symbolic HEAD of an unborn repo. Raises RuntimeError if none of these
+    resolve, rather than guessing a branch that does not exist.
     """
     project_path = project_path.resolve()
 
@@ -907,8 +909,20 @@ def detect_default_branch(project_path: Path) -> str:
         log.debug("detect_default_branch", source="symbolic_ref", branch=branch)
         return branch
 
-    log.debug("detect_default_branch", source="fallback", branch="main")
-    return "main"
+    # Every detection method failed: no origin/HEAD, no local main or master,
+    # HEAD is detached, and the symbolic HEAD did not resolve either. Probing
+    # for main or master already happened above, so returning a hardcoded
+    # "main" here would only hand create_worktree a branch that does not
+    # exist, which then surfaces as an opaque "git rev-parse main returned
+    # non-zero exit status 128" error. Fail with something the caller can act
+    # on instead.
+    log.debug("detect_default_branch", source="fallback", branch=None)
+    raise RuntimeError(
+        f"Could not determine a default branch for {project_path}. "
+        "There is no origin/HEAD, no local 'main' or 'master' branch, and "
+        "HEAD is detached. Set `target_branch` in .factory/config.json or "
+        "check out a branch before running."
+    )
 
 
 def _list_worktrees_with_branches(project_path: Path) -> dict[str, str]:

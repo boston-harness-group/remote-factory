@@ -357,6 +357,49 @@ class TestDetectDefaultBranch:
 
         assert detect_default_branch(project) == "develop"
 
+    def test_raises_when_no_branch_detectable(self, tmp_path: Path) -> None:
+        """A detached HEAD with no main/master and no origin raises instead of
+        returning a nonexistent 'main' branch."""
+        project = tmp_path / "project"
+        project.mkdir()
+
+        env = {
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "test@test.com",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "test@test.com",
+            "HOME": str(tmp_path),
+            "PATH": "/usr/bin:/bin:/usr/local/bin",
+        }
+
+        subprocess.run(
+            ["git", "init", "-b", "develop"],
+            cwd=project,
+            capture_output=True,
+            check=True,
+        )
+        (project / "README.md").write_text("hello")
+        subprocess.run(["git", "add", "."], cwd=project, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "initial"],
+            cwd=project,
+            capture_output=True,
+            check=True,
+            env=env,
+        )
+        # Detach HEAD so abbrev-ref returns "HEAD" and symbolic-ref fails,
+        # leaving no detectable default branch.
+        subprocess.run(
+            ["git", "checkout", "--detach", "HEAD"],
+            cwd=project,
+            capture_output=True,
+            check=True,
+            env=env,
+        )
+
+        with pytest.raises(RuntimeError, match="Could not determine a default branch"):
+            detect_default_branch(project)
+
 
 class TestCreateWorktreeWithMaster:
     def test_create_worktree_on_master_repo(self, git_project_master: Path) -> None:
