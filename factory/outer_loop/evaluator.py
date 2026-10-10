@@ -235,6 +235,7 @@ class SwarmEvaluator:
         project_dir: str,
         instances: list[str],
         individual_id: str | None = None,
+        split: str = 'train',
     ) -> EvalResult:
         """Evaluate a workflow on the given instances, using cache if available."""
         cached = self._cache.get(workflow, instances)
@@ -269,7 +270,7 @@ class SwarmEvaluator:
 
         if self._inner_loop_factory is not None:
             return self._evaluate_via_inner_loop(
-                workflow, project_dir, instances, individual_id
+                workflow, project_dir, instances, individual_id, split=split,
             )
 
         if self._evaluator_fn is not None:
@@ -340,6 +341,7 @@ class SwarmEvaluator:
         project_dir: str,
         instances: list[str],
         individual_id: str | None = None,
+        split: str = 'train',
     ) -> EvalResult:
         """Evaluate using InnerLoop.step() in an isolated worktree.
 
@@ -419,7 +421,7 @@ class SwarmEvaluator:
             score = record.score_end or 0.0
             cost = record.total_cost_usd
 
-            record.split = "train"
+            record.split = split
             self._cycle_cache.put(workflow, record, instances)
             if individual_id:
                 self._cycle_records[individual_id] = record

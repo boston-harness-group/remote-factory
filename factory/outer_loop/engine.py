@@ -621,7 +621,7 @@ class SwarmEngine:
                 best_wf = Workflow.from_dict(best.workflow_data)  # type: ignore[arg-type]
                 # Evaluate WITHOUT individual_id → no CycleRecord stored
                 holdout_result = self._evaluator.evaluate(
-                    best_wf, project_dir, holdout_instances,
+                    best_wf, project_dir, holdout_instances, split='val',
                 )
                 holdout_score_val = holdout_result.score
                 best = best.model_copy(update={"val_score": holdout_score_val})

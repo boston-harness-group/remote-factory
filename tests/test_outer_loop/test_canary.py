@@ -35,8 +35,23 @@ class DocQualityTask:
     """Simple doc quality task for canary testing.
 
     3 items: 2 train + 1 holdout. Agent writes documentation,
-    verify scores on completeness/readability heuristics.
+    verify scores on rubric-based heuristics (sections, terms, code, length).
     """
+
+    RUBRICS: dict[str, dict[str, list[str]]] = {
+        'readme-cli': {
+            'required_sections': ['Overview', 'Installation', 'Usage', 'Errors'],
+            'required_terms': ['command', 'flag', 'argument', 'usage', 'install'],
+        },
+        'tutorial-scraping': {
+            'required_sections': ['Overview', 'Installation', 'Usage', 'Errors'],
+            'required_terms': ['request', 'parse', 'selector', 'HTTP', 'scraping'],
+        },
+        'api-reference': {
+            'required_sections': ['Overview', 'Installation', 'Usage', 'Errors'],
+            'required_terms': ['endpoint', 'parameter', 'response', 'authentication', 'rate limit'],
+        },
+    }
 
     def __init__(self) -> None:
         from factory.task import TaskDefinition, InstancesConfig
@@ -79,25 +94,82 @@ class DocQualityTask:
         )
 
     def verify(self, instance: Any, workspace: Path) -> Any:
+        import re as _re
         from factory.task import VerifyResult
+
         doc = workspace / "document.md"
         if not doc.exists():
             return VerifyResult(passed=False, score=0.0, details={"error": "no document.md"})
+
         content = doc.read_text()
-        # Simple heuristics
+        rubric = self.RUBRICS.get(instance.id, self.RUBRICS['readme-cli'])
+        required_sections: list[str] = rubric['required_sections']
+        required_terms: list[str] = rubric['required_terms']
+
+        # 1. Section matching (case-insensitive heading search)
+        matched_sections: list[str] = []
+        missing_sections: list[str] = []
+        content_lower = content.lower()
+        for section in required_sections:
+            # Match '# Section', '## Section', '### Section' etc.
+            pattern = _re.compile(r'^#{1,6}\s+' + _re.escape(section.lower()), _re.MULTILINE)
+            if pattern.search(content_lower):
+                matched_sections.append(section)
+            else:
+                missing_sections.append(section)
+
+        # 2. Term matching (case-insensitive)
+        matched_terms: list[str] = []
+        missing_terms: list[str] = []
+        for term in required_terms:
+            if term.lower() in content_lower:
+                matched_terms.append(term)
+            else:
+                missing_terms.append(term)
+
+        # 3. Code block detection (fenced triple backtick)
+        has_code_block = '```' in content
+
+        # 4. Length band
         word_count = len(content.split())
-        has_headings = content.count("#") >= 1
-        completeness = min(1.0, word_count / 200)
-        readability = 0.5 + (0.5 if has_headings else 0.0)
-        score = (completeness * 0.6 + readability * 0.4)
+        if word_count < 150:
+            length_score = 0.3
+        elif word_count <= 200:
+            length_score = 0.6
+        elif word_count <= 800:
+            length_score = 1.0
+        elif word_count <= 2000:
+            length_score = 0.8
+        else:
+            length_score = 0.5
+
+        # 5. Composite score
+        total_sections = len(required_sections)
+        total_terms = len(required_terms)
+        section_score = len(matched_sections) / total_sections if total_sections else 0.0
+        term_score = len(matched_terms) / total_terms if total_terms else 0.0
+
+        score = (
+            0.35 * section_score
+            + 0.30 * term_score
+            + 0.15 * (1.0 if has_code_block else 0.0)
+            + 0.20 * length_score
+        )
+        passed = score >= 0.7
+
         return VerifyResult(
-            passed=score >= 0.5,
-            score=score,
+            passed=passed,
+            score=round(score, 4),
             details={
                 "word_count": word_count,
-                "has_headings": has_headings,
-                "completeness": round(completeness, 3),
-                "readability": round(readability, 3),
+                "matched_sections": matched_sections,
+                "missing_sections": missing_sections,
+                "matched_terms": matched_terms,
+                "missing_terms": missing_terms,
+                "has_code_block": has_code_block,
+                "length_score": length_score,
+                "section_score": round(section_score, 4),
+                "term_score": round(term_score, 4),
             },
         )
 
@@ -125,7 +197,7 @@ def _make_doc_workflow() -> Any:
                 id="builder",
                 role=AgentRole.BUILDER,
                 model="claude-haiku-4-5-20251001",
-                prompt_template="Write comprehensive documentation. Create document.md.",
+                prompt_template="Write a document about the given topic. Save it as document.md.",
                 writes={"document.md"},
                 reads=set(),
             ),
@@ -237,6 +309,31 @@ class TestCanary:
             f"Trajectory: {[(g.generation, g.novel_count) for g in trajectory]}"
         )
 
+        # ── Seed score sanity ─────────────────────────────────
+        # (a)+(b) Seed individuals (generation=0, no parent) must score < 0.8
+        all_inds = engine._archive.all_individuals()
+        for ind in all_inds:
+            if ind.parent_id is None and ind.score is not None:
+                assert ind.score < 0.8, (
+                    f"Seed score {ind.score} >= 0.8 — rubric is too easy"
+                )
+
+        # (c)+(d) Offspring (have parent_id) should beat seed score
+        seed_best = 0.0
+        for ind in all_inds:
+            if ind.parent_id is None and ind.score is not None:
+                seed_best = max(seed_best, ind.score)
+
+        offspring_scores: list[float] = [
+            ind.score for ind in all_inds
+            if ind.parent_id is not None and ind.score is not None
+        ]
+        if offspring_scores:
+            best_offspring = max(offspring_scores)
+            assert best_offspring > seed_best, (
+                f"Best offspring ({best_offspring}) did not beat seed ({seed_best})"
+            )
+
         # ── Reflection cites real item results ────────────────
         # The reflector should have produced a reflection stored on the engine
         reflection = engine._last_reflection
@@ -245,3 +342,24 @@ class TestCanary:
         assert len(reflection.failure_patterns) > 0 or len(reflection.suggestions) > 0, (
             "Reflection has no failure patterns or suggestions"
         )
+
+        # (e) Reflector's last reflection should reference rubric elements
+        rubric_keywords = {
+            'section', 'Overview', 'Installation', 'Usage', 'Errors',
+            'term', 'code block', 'code_block', 'missing',
+        }
+        reflection_text = ""
+        for fp in reflection.failure_patterns:
+            reflection_text += f" {fp}"
+        for sg in reflection.suggestions:
+            reflection_text += f" {sg.rationale}" if hasattr(sg, 'rationale') else f" {sg}"
+        found_rubric_ref = any(kw in reflection_text for kw in rubric_keywords)
+        # This is a soft check: if the reflector doesn't mention rubric,
+        # we note it but don't fail (model output varies)
+        if not found_rubric_ref:
+            import warnings
+            warnings.warn(
+                f"Reflector did not reference rubric elements. "
+                f"Text: {reflection_text[:300]}",
+                stacklevel=1,
+            )

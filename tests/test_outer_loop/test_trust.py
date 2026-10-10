@@ -878,7 +878,7 @@ class TestAllErroredRaises:
         # Patch the evaluator to always return errored results
         def _always_error(
             workflow: Any, project_dir: str, instances: list[str],
-            individual_id: str | None = None,
+            individual_id: str | None = None, split: str = 'train',
         ) -> _ER:
             return _ER(
                 score=0.0,
@@ -940,10 +940,13 @@ class TestProjectDirResolution:
 
         def _spy_evaluate(
             workflow: Any, project_dir: str, instances: list[str],
-            individual_id: str | None = None,
+            individual_id: str | None = None, split: str = 'train',
         ) -> Any:
             captured_dirs.append(project_dir)
-            return original_evaluate(workflow, project_dir, instances, individual_id=individual_id)
+            return original_evaluate(
+                workflow, project_dir, instances,
+                individual_id=individual_id, split=split,
+            )
 
         engine = SwarmEngine(
             config, evaluator, project_dir=project, designer=None,
@@ -1011,10 +1014,13 @@ class TestProjectDirResolution:
 
         def _spy_evaluate(
             workflow: Any, project_dir: str, instances: list[str],
-            individual_id: str | None = None,
+            individual_id: str | None = None, split: str = 'train',
         ) -> Any:
             captured_dirs.append(project_dir)
-            return original_evaluate(workflow, project_dir, instances, individual_id=individual_id)
+            return original_evaluate(
+                workflow, project_dir, instances,
+                individual_id=individual_id, split=split,
+            )
 
         engine = SwarmEngine(
             config, evaluator, project_dir=project, designer=None,
@@ -1028,3 +1034,79 @@ class TestProjectDirResolution:
             assert d == str(override), (
                 f"evaluate() received '{d}' — explicit override '{override}' should win"
             )
+
+
+# ── Test i: Split label ──────────────────────────────────────────────
+
+
+class TestSplitLabel:
+    """i. CycleRecord.split is set to the split passed to evaluate().
+
+    Evaluating on train instances → record.split == 'train'.
+    Evaluating on holdout instances with split='val' → record.split == 'val'.
+    Uses FnNode workflow (no real agents).
+    """
+
+    def test_train_split_label(self, tmp_path: Path) -> None:
+        """Train evaluation labels the CycleRecord with split='train'."""
+        project = tmp_path / "project"
+        project.mkdir()
+        _bootstrap_git_project(project)
+
+        task = ScoredTask()
+        wf = _make_scored_workflow()
+
+        config = SwarmConfig(
+            benchmark="split-label-test",
+            budget=10,
+            population_size=2,
+            training_instances=["a", "b"],
+        )
+        config.set_task(task)
+
+        evaluator = SwarmEvaluator(
+            config, inner_loop_factory=True, project_dir=project,
+        )
+
+        evaluator.evaluate(
+            wf, str(project), ["a", "b"],
+            individual_id="train-ind", split='train',
+        )
+
+        rec = evaluator.get_cycle_record("train-ind")
+        assert rec is not None, "No CycleRecord for train-ind"
+        assert rec.split == "train", (
+            f"Expected split='train', got split='{rec.split}'"
+        )
+
+    def test_val_split_label(self, tmp_path: Path) -> None:
+        """Holdout evaluation with split='val' labels the record accordingly."""
+        project = tmp_path / "project"
+        project.mkdir()
+        _bootstrap_git_project(project)
+
+        task = ScoredTask()
+        wf = _make_scored_workflow()
+
+        config = SwarmConfig(
+            benchmark="split-label-test",
+            budget=10,
+            population_size=2,
+            training_instances=["a", "b"],
+        )
+        config.set_task(task)
+
+        evaluator = SwarmEvaluator(
+            config, inner_loop_factory=True, project_dir=project,
+        )
+
+        evaluator.evaluate(
+            wf, str(project), ["c", "d"],
+            individual_id="val-ind", split='val',
+        )
+
+        rec = evaluator.get_cycle_record("val-ind")
+        assert rec is not None, "No CycleRecord for val-ind"
+        assert rec.split == "val", (
+            f"Expected split='val', got split='{rec.split}'"
+        )
