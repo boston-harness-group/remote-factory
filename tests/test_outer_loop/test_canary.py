@@ -124,6 +124,7 @@ def _make_doc_workflow() -> Any:
             "builder": AgentNode(
                 id="builder",
                 role=AgentRole.BUILDER,
+                model="claude-haiku-4-5-20251001",
                 prompt_template="Write comprehensive documentation. Create document.md.",
                 writes={"document.md"},
                 reads=set(),
