@@ -530,7 +530,7 @@ class TestRunFocusIncompatibleMode:
         """cmd_run rejects --focus with a mode other than design or research."""
         result = main(["run", "/some/path", "--mode", "founder", "--focus", "auth"])
         assert result == 1
-        assert "only works in design or research mode" in capsys.readouterr().err
+        assert "only works in design, research, or task-setup mode" in capsys.readouterr().err
 
 
 class TestAutoApproveEvent:
@@ -1970,6 +1970,43 @@ class TestCreateModeFocus:
         with _mock_foreground() as mock_run:
             main(["ceo", str(tmp_path), "--mode", "create-v2", "--focus", "add a linting mode"])
         mock_run.assert_called_once()
+
+
+class TestTaskSetupModeFocus:
+    """Tests for --focus working with --mode task-setup."""
+
+    def test_focus_accepted_with_task_setup_mode(self, tmp_path):
+        """--focus is not rejected by _validate_late_flags when --mode task-setup is set."""
+        from factory.cli._ceo_helpers import _validate_late_flags
+
+        result = _validate_late_flags(
+            mode="task-setup",
+            focus="chess engine evaluation",
+            prompt_file=None,
+            research_ideation=None,
+            design_existing=False,
+            project_path=tmp_path,
+            no_github=False,
+            issue_number=None,
+        )
+        assert result is None
+
+    def test_focus_rejected_with_unknown_mode(self, tmp_path, capsys):
+        """--focus is rejected by _validate_late_flags for an unrecognized mode."""
+        from factory.cli._ceo_helpers import _validate_late_flags
+
+        result = _validate_late_flags(
+            mode="bogus",
+            focus="something",
+            prompt_file=None,
+            research_ideation=None,
+            design_existing=False,
+            project_path=tmp_path,
+            no_github=False,
+            issue_number=None,
+        )
+        assert result == 1
+        assert "task-setup" in capsys.readouterr().err
 
 
 class TestProfileParser:
