@@ -444,13 +444,13 @@ class InnerLoop:
 
         from factory.models import InnerLoopConfig
 
-        # Get allowed instance IDs from subset selector (train/val firewall)
-        subset_selector = getattr(self, '_subset_selector', None)
-        allowed_instance_ids: set[str] | None = None
-        # Determine the split for this run — default to 'train' unless
-        # the subset selector provides IDs that belong to a different split.
+        # Split is determined by the caller (evaluator passes it).
         _run_split: str = getattr(self, '_split', 'train')
+        allowed_instance_ids: set[str] | None = None
+        subset_selector = getattr(self, '_subset_selector', None)
 
+        # When holdout_ids are configured and no subset_selector is set,
+        # automatically restrict to train IDs to prevent holdout leakage.
         _defn = getattr(self.task, '_definition', None) if self.task is not None else None
         _holdout_ids = (
             getattr(getattr(_defn, 'instances_config', None), 'holdout_ids', None)

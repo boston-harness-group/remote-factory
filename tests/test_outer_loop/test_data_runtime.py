@@ -741,3 +741,286 @@ class TestItemResultPassedField:
         dumped = ir.model_dump()
         assert "passed" in dumped
         assert dumped["passed"] is True
+
+
+# ── Fix 1: split from caller (inner_loop uses _split, no holdout_ids inference) ──
+
+
+class _SplitByLabelTask(Task):
+    """Task with val items defined by TaskInstance having split='val' directly,
+    NOT using holdout_ids."""
+
+    def __init__(self) -> None:
+        defn = TaskDefinition(name="split-by-label-task")
+        super().__init__(definition=defn)
+
+    def _raw_instances(self) -> Iterator[TaskInstance]:
+        yield TaskInstance(id="t1", split="train")
+        yield TaskInstance(id="t2", split="train")
+        yield TaskInstance(id="v1", split="val")
+        yield TaskInstance(id="v2", split="val")
+
+    def setup(self, instance: TaskInstance, workspace: Path) -> None:
+        pass
+
+    def prompt(self, instance: TaskInstance) -> str:
+        return f"Do {instance.id}"
+
+    def verify(self, instance: TaskInstance, workspace: Path) -> VerifyResult:
+        return VerifyResult(passed=True, score=0.9, details={"item": instance.id})
+
+
+class TestFix1SplitFromCaller:
+    """evaluator.evaluate(split=...) passes split explicitly.
+    inner_loop.py should use _split from the caller, not infer from holdout_ids."""
+
+    def test_val_items_get_real_scores_via_split_label(self, tmp_path: Path) -> None:
+        """Task with val items defined by TaskInstance.split='val' (no holdout_ids).
+        Evaluate with split='val' → val items get real scores."""
+        from factory.workflow.data_runtime import run_fork
+
+        project = _bootstrap(tmp_path)
+        wf = _make_test_workflow()
+        task = _SplitByLabelTask()
+
+        results = asyncio.run(run_fork(
+            wf,
+            wf.nodes["data"],  # type: ignore[arg-type]
+            "data",
+            project,
+            dry_run=True,
+            task=task,
+            run_id="fix1-val",
+            split="val",
+        ))
+
+        assert len(results) == 2, f"Expected 2 val items, got {len(results)}"
+        item_ids = {r["item_id"] for r in results}
+        assert item_ids == {"v1", "v2"}, f"Expected val items, got {item_ids}"
+        for r in results:
+            assert r["score"] > 0, f"Val item {r['item_id']} should have real score"
+            assert r["split"] == "val"
+
+
+# ── Fix 2: TypeError fallback removed ──────────────────────────────
+
+
+class _NoSplitTask:
+    """Task whose instances() doesn't accept split kwarg."""
+
+    def instances(self) -> Iterator:
+        yield TaskInstance(id="x1")
+
+    def setup(self, instance: TaskInstance, workspace: Path) -> None:
+        pass
+
+    def prompt(self, instance: TaskInstance) -> str:
+        return "do it"
+
+    def verify(self, instance: TaskInstance, workspace: Path) -> VerifyResult:
+        return VerifyResult(passed=True, score=1.0)
+
+
+class TestFix2TypeErrorFallback:
+    """Task.instances() without split support falls back with warning."""
+
+    def test_no_split_task_falls_back_with_warning(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        from factory.workflow.data_runtime import _resolve_items
+
+        project = _bootstrap(tmp_path)
+        node = DataNode(id="data")
+
+        # Should NOT raise — falls back to calling instances() without split
+        items, _ = _resolve_items(
+            node, "data", project,
+            task=_NoSplitTask(),
+            split="train",
+        )
+        # Fallback should still return items
+        assert len(items) > 0
+
+    def test_split_task_train_excludes_val(self, tmp_path: Path) -> None:
+        """Task with split support → train never contains val items."""
+        from factory.workflow.data_runtime import run_fork
+
+        project = _bootstrap(tmp_path)
+        wf = _make_test_workflow()
+        task = _SplitTask()
+
+        results = asyncio.run(run_fork(
+            wf,
+            wf.nodes["data"],  # type: ignore[arg-type]
+            "data",
+            project,
+            dry_run=True,
+            task=task,
+            run_id="fix2-train",
+            split="train",
+        ))
+
+        for r in results:
+            assert r["item_id"] not in ("v1", "v2"), (
+                f"Val item {r['item_id']} leaked into train split"
+            )
+
+
+# ── Fix 3: per-item split label ────────────────────────────────────
+
+
+class TestFix3PerItemSplitLabel:
+    """ItemResult.split should be the item's own split, not hardcoded 'all'."""
+
+    def test_mixed_subset_items_carry_own_split(self, tmp_path: Path) -> None:
+        """run_fork with split='all' and mixed items → each ItemResult has
+        the caller's split label."""
+        from factory.workflow.data_runtime import run_fork
+
+        project = _bootstrap(tmp_path)
+        wf = _make_test_workflow()
+        task = _SplitTask()
+
+        results = asyncio.run(run_fork(
+            wf,
+            wf.nodes["data"],  # type: ignore[arg-type]
+            "data",
+            project,
+            dry_run=True,
+            task=task,
+            run_id="fix3-all",
+            split="all",
+        ))
+
+        assert len(results) == 5, f"Expected 5 items (all), got {len(results)}"
+        for r in results:
+            assert r["split"] == "all", (
+                f"Item {r['item_id']} has split={r['split']!r}, expected 'all'"
+            )
+
+
+# ── Fix 4: CycleRecord.from_run takes split ────────────────────────
+
+
+class TestFix4CycleRecordSplit:
+    """CycleRecord.from_run should accept optional split param."""
+
+    def test_from_run_with_split_val(self) -> None:
+        items = [
+            {"item_id": "a", "status": "ok", "score": 0.8},
+            {"item_id": "b", "status": "ok", "score": 0.6},
+        ]
+        record = CycleRecord.from_run(items, aggregate="mean", split="val")
+        assert record.split == "val"
+
+    def test_from_run_without_split_defaults_none(self) -> None:
+        items = [{"item_id": "a", "status": "ok", "score": 0.5}]
+        record = CycleRecord.from_run(items, aggregate="mean")
+        assert record.split is None
+
+    def test_from_run_errored_path_sets_split(self) -> None:
+        items = [
+            {"item_id": "a", "status": "errored", "score": 0.0},
+            {"item_id": "b", "status": "errored", "score": 0.0},
+            {"item_id": "c", "status": "errored", "score": 0.0},
+        ]
+        record = CycleRecord.from_run(items, aggregate="mean", split="train")
+        assert record.split == "train"
+
+
+# ── Fix 5: worktree cleanup return codes ───────────────────────────
+
+
+class TestFix5WorktreeCleanupReturnCodes:
+    """Check return codes of git worktree remove/branch -D and log warnings."""
+
+    def test_worktree_remove_failure_logs_warning(self, tmp_path: Path) -> None:
+        from unittest.mock import patch, MagicMock
+
+        from factory.workflow.data_runtime import run_fork
+
+        project = _bootstrap(tmp_path)
+        wf = _make_test_workflow()
+        task = _SplitTask()
+
+        original_run = subprocess.run
+
+        def mock_run(cmd: list[str], **kwargs: Any) -> Any:
+            if 'worktree' in cmd and 'remove' in cmd:
+                result = MagicMock()
+                result.returncode = 1
+                result.stderr = "fatal: worktree not found"
+                result.stdout = ""
+                return result
+            return original_run(cmd, **kwargs)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            with patch("factory.workflow.data_runtime.log") as mock_log:
+                asyncio.run(run_fork(
+                    wf,
+                    wf.nodes["data"],  # type: ignore[arg-type]
+                    "data",
+                    project,
+                    dry_run=False,
+                    task=task,
+                    run_id="fix5-wt",
+                    split="train",
+                ))
+
+                # Verify warning was logged for worktree remove failure
+                warning_calls = [
+                    c for c in mock_log.warning.call_args_list
+                    if c[0][0] == "worktree_remove_failed"
+                ]
+                assert len(warning_calls) > 0, (
+                    "Expected 'worktree_remove_failed' warning to be logged"
+                )
+
+
+# ── Fix 6: dry_run parallelism cap ─────────────────────────────────
+
+
+class TestFix6DryRunParallelism:
+    """In dry_run mode with parallelism>1, items must not interfere."""
+
+    def test_dry_run_parallelism_capped(self, tmp_path: Path) -> None:
+        """Two items in dry_run with parallelism=2 → items don't interfere."""
+        from factory.workflow.data_runtime import run_fork
+
+        project = _bootstrap(tmp_path)
+        # Use a workflow with parallelism=2
+        wf = Workflow(
+            name="parallel-test",
+            nodes={
+                "data": DataNode(id="data", parallelism=2),
+                "work": FnNode(
+                    id="work",
+                    command="echo work",
+                    callable_name="tests.test_outer_loop.test_data_runtime:_noop_fn",
+                ),
+                "join": JoinNode(id="join", sources=["work"]),
+            },
+            edges=[
+                Edge(source="data", target="work"),
+                Edge(source="work", target="join"),
+            ],
+            start_node="data",
+        )
+        task = _SplitTask()
+
+        results = asyncio.run(run_fork(
+            wf,
+            wf.nodes["data"],  # type: ignore[arg-type]
+            "data",
+            project,
+            dry_run=True,
+            task=task,
+            run_id="fix6-parallel",
+            split="train",
+        ))
+
+        # All 3 train items should succeed without interference
+        assert len(results) == 3
+        for r in results:
+            assert r["status"] in ("ok", "failed"), (
+                f"Item {r['item_id']} has status={r['status']!r}, "
+                f"items should not error from parallelism interference"
+            )

@@ -180,13 +180,15 @@ class _SplitTask:
     def __init__(self, instances_data: list[dict[str, Any]]) -> None:
         self._instances_data = instances_data
 
-    def instances(self):
+    def instances(self, split: str = "all"):
         for d in self._instances_data:
-            yield TaskInstance(
+            inst = TaskInstance(
                 id=d["id"],
                 path=d.get("path"),
                 metadata=d.get("metadata", {}),
                 split=d.get("split"))
+            if split == "all" or inst.split == split:
+                yield inst
 
     def setup(self, instance: Any, workspace: Path) -> None:
         pass
@@ -282,7 +284,7 @@ class _FailingSetupTask:
     def __init__(self, fail_ids: set[str]) -> None:
         self._fail_ids = fail_ids
 
-    def instances(self):
+    def instances(self, split: str = "all"):
         for iid in ["ok1", "fail_setup", "ok2"]:
             yield TaskInstance(id=iid)
 
@@ -544,8 +546,8 @@ class TestPromptInstanceSubstitution:
 
 class TestInnerLoopTrainDefault:
     def test_uses_train_split_when_holdout_ids_configured(self, tmp_path: Path) -> None:
-        """InnerLoop with holdout_ids defaults to train instances
-        when no subset_selector is set."""
+        """InnerLoop with holdout_ids defaults to split='train' passed
+        to WorkflowExecutor (split is determined by the caller)."""
         (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
 
         # Create a task with holdout_ids configured
@@ -559,7 +561,6 @@ class TestInnerLoopTrainDefault:
         task = MagicMock()
         task._definition = defn
 
-        # instances() should be called with split="train"
         task.instances.return_value = [
             TaskInstance(id="train1", split="train"),
         ]
@@ -596,10 +597,15 @@ class TestInnerLoopTrainDefault:
             from factory.inner_loop import InnerLoop
 
             loop = InnerLoop(project_dir=tmp_path, mode="test", task=task, workflow=wf)
-            loop.step()  # we only care about the .instances() call args
+            loop.step()
 
-        # Verify instances() was called with split="train"
-        task.instances.assert_called_once_with(split="train")
+        # Verify WorkflowExecutor was called with split="train" (default)
+        MockExecutor.assert_called_once()
+        call_kwargs = MockExecutor.call_args
+        assert call_kwargs.kwargs.get("split", call_kwargs[1].get("split")) == "train", (
+            f"Expected split='train' passed to WorkflowExecutor, "
+            f"got {call_kwargs}"
+        )
 
     def test_uses_all_instances_when_no_holdout_ids(self, tmp_path: Path) -> None:
         """InnerLoop without holdout_ids processes all instances."""

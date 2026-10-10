@@ -410,6 +410,8 @@ class TestTrainValFirewall:
 
         engine.run(wf)  # side-effect: populates evaluator._cycle_records
 
+        assert len(evaluator._cycle_records) > 0, 'No cycle records after engine.run()'
+
         # Check that training evaluations only used train items
         for ind_id, rec in evaluator._cycle_records.items():
             if rec is None or rec.instance_results is None:

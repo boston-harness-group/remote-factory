@@ -108,6 +108,7 @@ class CycleRecord:
         duration_s: float = 0.0,
         cycle_number: int = 1,
         workflow: Workflow | None = None,
+        split: str | None = None,
     ) -> CycleRecord:
         """Build a CycleRecord from item results with configured aggregation.
 
@@ -159,6 +160,7 @@ class CycleRecord:
                 instance_results=item_results,
                 node_trace=node_trace,
                 mutable_node_ids=mutable_node_ids,
+                split=split,
             )
             return record
 
@@ -192,6 +194,7 @@ class CycleRecord:
             instance_results=item_results,
             node_trace=node_trace,
             mutable_node_ids=mutable_node_ids,
+            split=split,
         )
 
 

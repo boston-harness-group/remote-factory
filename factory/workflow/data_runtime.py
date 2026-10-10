@@ -191,7 +191,11 @@ def _resolve_items(
         try:
             _instances_iter = resolved_task.instances(split=split)
         except TypeError:
-            # Task.instances() doesn't accept split kwarg — use all
+            log.warning(
+                'task_instances_no_split',
+                task=type(resolved_task).__name__,
+                msg='Task.instances() does not accept split param, falling back to unfiltered',
+            )
             _instances_iter = resolved_task.instances()
         for _ti in _instances_iter:
             task_instances.append((
@@ -237,26 +241,23 @@ def _resolve_items(
         if not task_instances:
             # No items from inline/source — get from task using split
             try:
-                for _ti in resolved_task.instances(split=split):
-                    task_instances.append((
-                        DataItem(
-                            id=_ti.id,
-                            path=str(_ti.path) if _ti.path else None,
-                            metadata=_ti.metadata,
-                        ),
-                        _ti,
-                    ))
+                _fallback_iter = resolved_task.instances(split=split)
             except TypeError:
-                # Task.instances() doesn't accept split kwarg
-                for _ti in resolved_task.instances():
-                    task_instances.append((
-                        DataItem(
-                            id=_ti.id,
-                            path=str(_ti.path) if _ti.path else None,
-                            metadata=_ti.metadata,
-                        ),
-                        _ti,
-                    ))
+                log.warning(
+                    'task_instances_no_split',
+                    task=type(resolved_task).__name__,
+                    msg='Task.instances() does not accept split param, falling back to unfiltered',
+                )
+                _fallback_iter = resolved_task.instances()
+            for _ti in _fallback_iter:
+                task_instances.append((
+                    DataItem(
+                        id=_ti.id,
+                        path=str(_ti.path) if _ti.path else None,
+                        metadata=_ti.metadata,
+                    ),
+                    _ti,
+                ))
 
     # Apply instance filter (train/val firewall)
     # For task-backed items (task_ref or fallback task): validate subset IDs
@@ -359,6 +360,9 @@ async def run_fork(
     from factory.workflow.executor import WorkflowExecutor
 
     sem = asyncio.Semaphore(node.parallelism)
+    if dry_run and node.parallelism > 1:
+        log.info('dry_run_parallelism_capped', original=node.parallelism, capped=1)
+        sem = asyncio.Semaphore(1)
     worktrees_to_clean: list[tuple[Path, str]] = []
     worktree_item_map: dict[str, Path] = {}  # item_id → worktree path
     item_results: list[dict[str, Any]] = []
@@ -606,22 +610,20 @@ async def run_fork(
         # Clean up worktrees
         for wt_path, wt_branch_name in worktrees_to_clean:
             try:
-                subprocess.run(
-                    ["git", "worktree", "remove", str(wt_path), "--force"],
-                    cwd=project_path,
-                    capture_output=True,
+                result = subprocess.run(
+                    ['git', 'worktree', 'remove', str(wt_path), '--force'],
+                    cwd=project_path, capture_output=True, text=True,
                 )
-                subprocess.run(
-                    ["git", "branch", "-D", wt_branch_name],
-                    cwd=project_path,
-                    capture_output=True,
+                if result.returncode != 0:
+                    log.warning('worktree_remove_failed', path=str(wt_path), stderr=result.stderr.strip())
+                result = subprocess.run(
+                    ['git', 'branch', '-D', wt_branch_name],
+                    cwd=project_path, capture_output=True, text=True,
                 )
+                if result.returncode != 0:
+                    log.warning('branch_delete_failed', branch=wt_branch_name, stderr=result.stderr.strip())
             except Exception as wt_exc:
-                log.warning(
-                    "data_worktree_cleanup_failed",
-                    path=str(wt_path),
-                    error=str(wt_exc),
-                )
+                log.warning('data_worktree_cleanup_failed', path=str(wt_path), error=str(wt_exc))
 
     return item_results
 

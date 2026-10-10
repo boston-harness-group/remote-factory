@@ -646,6 +646,17 @@ class OuterLoopReflector:
                 for _, text in blocks:
                     lines.append(text)
 
+        # --- eval_details (legacy / extra keys) ---
+        if rec.eval_details and isinstance(rec.eval_details, dict):
+            for k, v in rec.eval_details.items():
+                if k == 'verify':
+                    # Render verify sub-dict keys inline
+                    if isinstance(v, dict):
+                        for vk, vv in v.items():
+                            lines.append(f"{vk}: {str(vv)[:200]}")
+                    continue
+                lines.append(f"{k}: {str(v)[:200]}")
+
         # --- Steps ---
         if rec.steps:
             roles = [

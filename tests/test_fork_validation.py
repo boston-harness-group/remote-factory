@@ -318,40 +318,32 @@ class TestLegacyLoadConversion:
 
     def test_node_insert_on_datanode_workflow_validates(self) -> None:
         """node_insert on a DataNode workflow produces a graph that passes validate_workflow()."""
+        import random as _random
+        from factory.outer_loop.mutations import insert_node
         from factory.workflow.validation import validate_workflow
 
-        # Create a simple DataNode workflow
         wf = Workflow(
             name='test-wf',
             nodes={
                 'data': DataNode(id='data'),
-                'builder': AgentNode(
-                    id='builder', role=AgentRole.BUILDER,
-                    prompt_template='do work', writes={'output.txt'}, reads=set(),
-                ),
+                'builder': AgentNode(id='builder', role=AgentRole.BUILDER,
+                    prompt_template='do work', writes={'output.txt'}, reads=set()),
                 '_join_data': JoinNode(id='_join_data', sources=['builder']),
             },
-            edges=[
-                Edge(source='data', target='builder'),
-                Edge(source='builder', target='_join_data'),
-            ],
+            edges=[Edge(source='data', target='builder'), Edge(source='builder', target='_join_data')],
             start_node='data',
+            runtime_inputs=frozenset({'.factory/current_item.json'}),
         )
-
-        # The branch sub-workflow (what data_runtime creates)
-        sub = wf.subgraph({'builder'}, name='test-wf__data_item', start_node='builder')
-        sub = sub.model_copy(update={'runtime_inputs': frozenset({'.factory/current_item.json'})})
-
-        # Now manually insert a node that reads current_item.json (simulating node_insert)
+        _random.seed(42)
         reviewer = AgentNode(
-            id='reviewer_99', role=AgentRole.CODE_REVIEWER,
-            prompt_template='review', reads={'.factory/current_item.json'}, writes=set(),
+            id='reviewer_42', role=AgentRole.CODE_REVIEWER,
+            prompt_template='review the work', reads={'.factory/current_item.json'}, writes=set(),
         )
-        sub.nodes['reviewer_99'] = reviewer
-        sub.edges.append(Edge(source='builder', target='reviewer_99'))
-
-        issues = validate_workflow(sub)
-        assert not issues, f'Validation should pass for data_item subgraph: {issues}'
+        result = insert_node(wf, reviewer, 'builder', frozen_nodes={'data', '_join_data'})
+        assert result is not None, 'insert_node returned None'
+        new_wf, rec = result
+        issues = validate_workflow(new_wf)
+        assert not issues, f'validate_workflow failed after insert_node: {issues}'
 
     def test_from_dict_converts_legacy(self) -> None:
         """Legacy DataNode with subgraph_entry/exit is auto-converted."""
