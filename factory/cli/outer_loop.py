@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -765,6 +767,65 @@ def _cmd_evolve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _scan_eval_worktrees(project_path: Path) -> dict[str, Path]:
+    """Scan .eval-worktrees/ for active worktree directories.
+
+    Returns {label: worktree_path} where label is extracted from `wt-{label}-{uuid8hex}`.
+    """
+    wt_base = project_path.parent / ".eval-worktrees"
+    result: dict[str, Path] = {}
+    try:
+        entries = list(wt_base.iterdir())
+    except (FileNotFoundError, PermissionError):
+        return result
+    for entry in entries:
+        try:
+            if not entry.is_dir() or not entry.name.startswith("wt-"):
+                continue
+        except (PermissionError, OSError):
+            continue
+        name = entry.name
+        if re.fullmatch(r"wt-.+-[0-9a-f]{8}", name):
+            label = name[3:-(8 + 1)]  # strip "wt-" prefix and "-{8hex}" suffix
+            result[label] = entry
+    return result
+
+
+def _get_last_agent_phase(wt_path: Path) -> str | None:
+    """Read the last agent.started event from a worktree's events.jsonl."""
+    events_path = wt_path / ".factory" / "events.jsonl"
+    try:
+        text = events_path.read_text()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    last_role: str | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "agent.started":
+            last_role = event.get("agent")
+    return last_role
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds as a human-readable string."""
+    seconds = max(0.0, seconds)
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        m, s = divmod(total, 60)
+        return f"{m}m{s:02d}s"
+    h, remainder = divmod(total, 3600)
+    m = remainder // 60
+    return f"{h}h{m:02d}m"
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     """Show outer loop progress and metrics."""
     project_path = Path(getattr(args, "project_path", ".")).resolve()
@@ -787,7 +848,54 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
     if state:
         print(f"Generation: {state.generation}")
-        print(f"Total evaluations: {state.total_evaluations}")
+        gen = state.generation
+    else:
+        gen = 0
+
+    modes = registry.list_modes()
+    gen_prefix = f"evolve-gen{gen}-"
+    eval_prefix = f"evolve-gen{gen}-eval-"
+    gen_modes = [m for m in modes if m.startswith(gen_prefix) and not m.startswith(eval_prefix)]
+
+    runs_dir = project_path / ".factory" / "outer_loop" / "runs"
+    worktrees = _scan_eval_worktrees(project_path)
+
+    completed: list[str] = []
+    in_progress: list[tuple[str, str | None, float, str]] = []
+    pending: list[str] = []
+    now = time.time()
+
+    for mode_name in gen_modes:
+        summary_path = runs_dir / mode_name / "cycle_summary.json"
+        if summary_path.exists():
+            completed.append(mode_name)
+            continue
+        matched_wt: str | None = None
+        for label, wt_path in worktrees.items():
+            if mode_name.startswith(label) or label.startswith(mode_name[:12]):
+                matched_wt = label
+                break
+        if matched_wt is not None:
+            wt_path = worktrees[matched_wt]
+            del worktrees[matched_wt]
+            phase = _get_last_agent_phase(wt_path)
+            try:
+                elapsed = now - wt_path.stat().st_mtime
+            except OSError:
+                elapsed = 0.0
+            wt_dir_name = wt_path.name
+            in_progress.append((mode_name, phase, elapsed, wt_dir_name))
+        else:
+            pending.append(mode_name)
+
+    n_in_progress = len(in_progress)
+    total_evals = state.total_evaluations if state else 0
+    if n_in_progress:
+        print(f"Total evaluations: {total_evals} ({n_in_progress} in progress)")
+    else:
+        print(f"Total evaluations: {total_evals}")
+
+    if state:
         print(f"Best score: {state.best_score:.4f}")
         print(f"Budget remaining: {state.budget_remaining}")
         if state.convergence_reason:
@@ -797,8 +905,22 @@ def _cmd_status(args: argparse.Namespace) -> int:
     else:
         print("No checkpoint found — outer loop not started.")
 
-    modes = registry.list_modes()
     print(f"Ephemeral modes: {len(modes)}")
+
+    if in_progress:
+        print()
+        print("In progress:")
+        for mode_name, phase, elapsed, wt_dir in in_progress:
+            phase_str = f"[{phase}]" if phase else "[starting]"
+            print(f"  {mode_name}  {phase_str}  {_format_elapsed(elapsed)}  {wt_dir}")
+
+    if completed:
+        print()
+        print(f"Completed: {len(completed)}")
+
+    if pending:
+        print()
+        print(f"Pending: {len(pending)}")
 
     traj_path = project_path / ".factory" / "outer_loop" / "trajectory.jsonl"
     if traj_path.exists():
