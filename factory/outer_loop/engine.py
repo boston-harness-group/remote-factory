@@ -278,18 +278,12 @@ class SwarmEngine:
                     self._mode_registry.register(ind.id, 0, wf)
 
     def _resolve_project_dir(self, project_dir: str = "") -> str:
-        """Return a non-empty project_dir, falling back to constructor value.
-
-        Raises ``ValueError`` when both *project_dir* and ``self._project_dir``
-        are empty/None.
-        """
+        """Return project_dir, falling back to constructor value then empty string."""
         if project_dir:
             return project_dir
         if self._project_dir:
             return str(self._project_dir)
-        raise ValueError(
-            "project_dir must be set either in constructor or run() argument"
-        )
+        return ""
 
     def evolve_generation(
         self,
