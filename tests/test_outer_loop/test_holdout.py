@@ -867,3 +867,68 @@ class TestDataNodeRespectsSubsetSelector:
             "Empty subset selector should result in allowed_instance_ids=None, "
             f"but got {captured_kwargs.get('allowed_instance_ids')!r}"
         )
+
+
+# ── Fix 3: audit() skips evaluator when both scores provided ────
+
+
+class TestAuditSkipsEvaluatorWithBothScores:
+    """When both training_score and holdout_score are provided,
+    audit() must NOT call the evaluator at all."""
+
+    def test_audit_no_evaluator_call_when_both_scores_given(self) -> None:
+        detector = OverfitDetector()
+        wf = _make_workflow()
+
+        # Pass both scores — evaluator should NOT be needed
+        result = detector.audit(
+            wf, ["s1", "s2"], ["h1"],
+            training_score=0.8,
+            holdout_score=0.75,
+        )
+
+        assert result.training_score == 0.8
+        assert result.holdout_score == 0.75
+        # delta = (0.8 - 0.75) / 0.8 = 0.0625 < 0.15 → no overfit
+        assert not result.overfit_flag
+        assert abs(result.delta - 0.0625) < 1e-6
+
+    def test_audit_overfit_detected_with_both_scores(self) -> None:
+        detector = OverfitDetector(threshold=0.10)
+        wf = _make_workflow()
+
+        result = detector.audit(
+            wf, ["s1"], ["h1"],
+            training_score=1.0,
+            holdout_score=0.5,
+        )
+
+        assert result.overfit_flag is True
+        assert result.delta == 0.5
+
+    def test_audit_no_overfit_with_close_scores(self) -> None:
+        detector = OverfitDetector()
+        wf = _make_workflow()
+
+        result = detector.audit(
+            wf, ["s1"], ["h1"],
+            training_score=0.8,
+            holdout_score=0.75,
+        )
+
+        assert result.overfit_flag is False
+
+    def test_audit_evaluator_none_ok_when_both_scores_given(self) -> None:
+        """evaluator=None is valid when both scores are pre-computed."""
+        detector = OverfitDetector()
+        wf = _make_workflow()
+
+        # Should NOT raise — evaluator is not needed
+        result = detector.audit(
+            wf, ["s1"], ["h1"],
+            evaluator=None,
+            training_score=0.8,
+            holdout_score=0.7,
+        )
+        assert result.training_score == 0.8
+        assert result.holdout_score == 0.7

@@ -18,6 +18,7 @@ from factory.workflow.primitives import (
     DataItem,
     DataNode,
     Edge,
+    FnNode,
     JoinNode,
     Workflow)
 from factory.workflow.validation import validate_workflow
@@ -576,3 +577,103 @@ class TestDataNodeSwallowsSubgraphFailures:
         assert "data" in result.node_outputs
         parsed = json.loads(result.node_outputs["data"])
         assert len(parsed) == 2
+
+
+# ── Fix 4: ordinary workflow first-node reads don't fail validation ──
+
+
+class TestOrdinaryWorkflowFirstNodeReads:
+    """When runtime_inputs is empty (ordinary workflow), a first node
+    with reads should NOT produce a validation error. Before the fix,
+    removing the 'if not predecessors: continue' broke this."""
+
+    def test_first_node_reads_external_file_passes_validation(self) -> None:
+        from factory.workflow.validation import validate_workflow
+
+        wf = Workflow(
+            name="ordinary-first-read",
+            nodes={
+                "start": AgentNode(
+                    id="start",
+                    role=AgentRole.BUILDER,
+                    prompt_template="Read the strategy",
+                    reads={".factory/strategy/current.md"},
+                    writes={".factory/reviews/builder-latest.md"},
+                ),
+            },
+            edges=[],
+            start_node="start",
+        )
+        issues = validate_workflow(wf)
+        read_issues = [i for i in issues if "reads" in i and "no predecessor" in i]
+        assert len(read_issues) == 0, (
+            f"Ordinary workflow first-node reads should not fail: {read_issues}"
+        )
+
+    def test_data_workflow_first_node_reads_still_validated(self) -> None:
+        """When runtime_inputs IS set (data workflow), a first node reading
+        something not in runtime_inputs should still fail validation."""
+        from factory.workflow.validation import validate_workflow
+
+        wf = Workflow(
+            name="data-first-read",
+            nodes={
+                "start": AgentNode(
+                    id="start",
+                    role=AgentRole.BUILDER,
+                    prompt_template="Process item",
+                    reads={".factory/current_item.json", "nonexistent.txt"},
+                    writes={".factory/reviews/builder-latest.md"},
+                ),
+            },
+            edges=[],
+            start_node="start",
+            runtime_inputs=frozenset({".factory/current_item.json"}),
+        )
+        issues = validate_workflow(wf)
+        read_issues = [i for i in issues if "nonexistent.txt" in i]
+        assert len(read_issues) == 1, (
+            f"Data workflow should flag missing reads: {issues}"
+        )
+
+
+# ── Fix 5: _deep_copy_workflow preserves runtime_inputs ──────────
+
+
+class TestDeepCopyPreservesRuntimeInputs:
+    """_deep_copy_workflow must preserve runtime_inputs."""
+
+    def test_deep_copy_preserves_runtime_inputs(self) -> None:
+        from factory.outer_loop.mutations import _deep_copy_workflow
+
+        wf = Workflow(
+            name="ri-test",
+            nodes={
+                "a": FnNode(id="a", command="echo hello"),
+            },
+            edges=[],
+            start_node="a",
+            runtime_inputs=frozenset({".factory/current_item.json", "data.csv"}),
+        )
+
+        copied = _deep_copy_workflow(wf)
+        assert copied.runtime_inputs == wf.runtime_inputs, (
+            f"Expected {wf.runtime_inputs}, got {copied.runtime_inputs}"
+        )
+
+    def test_to_dict_from_dict_round_trip_preserves_runtime_inputs(self) -> None:
+        wf = Workflow(
+            name="ri-roundtrip",
+            nodes={
+                "a": FnNode(id="a", command="echo hi"),
+            },
+            edges=[],
+            start_node="a",
+            runtime_inputs=frozenset({".factory/current_item.json"}),
+        )
+
+        data = wf.to_dict()
+        assert "runtime_inputs" in data
+
+        restored = Workflow.from_dict(data)
+        assert restored.runtime_inputs == wf.runtime_inputs

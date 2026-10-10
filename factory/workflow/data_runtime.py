@@ -508,6 +508,13 @@ async def run_fork(
                     except Exception as branch_exc:
                         # Branch execution crashed → failed (score=0),
                         # NOT errored (which would exclude from scoring).
+                        # Read agent costs even on crash — agents may have
+                        # run (and spent money) before the failure.
+                        from factory.events import sum_agent_costs as _sum_costs
+
+                        branch_cost = _sum_costs(
+                            item_project_path, since=_cost_start,
+                        )
                         duration_s = time.monotonic() - t0
                         log.warning(
                             "branch_execution_failed",
@@ -520,6 +527,7 @@ async def run_fork(
                             status=ItemStatus.failed,
                             score=0.0,
                             error=f"branch_failed: {branch_exc}",
+                            cost=branch_cost,
                             duration_s=duration_s,
                         ).model_dump()
                     finally:
@@ -530,11 +538,21 @@ async def run_fork(
                     passed = False
                     verify_details: dict[str, Any] = {}
 
-                    if resolved_task is not None and inst is not None:
-                        vr = resolved_task.verify(inst, item_project_path)
-                        score = vr.score
-                        passed = vr.passed
-                        verify_details = vr.details or {}
+                    try:
+                        if resolved_task is not None and inst is not None:
+                            vr = resolved_task.verify(inst, item_project_path)
+                            score = vr.score
+                            passed = vr.passed
+                            verify_details = vr.details or {}
+                    except Exception as verify_exc:
+                        log.warning(
+                            "verify_exception",
+                            item_id=item.id,
+                            error=str(verify_exc),
+                        )
+                        score = 0.0
+                        passed = False
+                        verify_details = {"error": f"verify_failed: {verify_exc}"}
 
                     duration_s = time.monotonic() - t0
                     if passed:

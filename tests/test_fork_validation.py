@@ -383,3 +383,30 @@ class TestLegacyLoadConversion:
         # JoinNode should be auto-created
         join_ids = [nid for nid, n in wf.nodes.items() if isinstance(n, JoinNode)]
         assert len(join_ids) >= 1
+
+
+# ── Bug 5 (moved from test_five_bugs): FnNode validation ────────
+
+
+def test_empty_fn_node_validation_error():
+    """FnNode with no command AND no callable_name must fail validation."""
+    from factory.workflow.primitives import FnNode
+
+    with pytest.raises(ValueError, match="command.*callable_name|callable_name.*command"):
+        FnNode(id="empty-fn", command="", callable_name=None)
+
+
+def test_fn_node_with_command_is_valid():
+    """FnNode with a command should pass validation."""
+    from factory.workflow.primitives import FnNode
+
+    node = FnNode(id="good-fn", command="echo hello")
+    assert node.command == "echo hello"
+
+
+def test_fn_node_with_callable_is_valid():
+    """FnNode with a callable_name should pass validation."""
+    from factory.workflow.primitives import FnNode
+
+    node = FnNode(id="good-fn", callable_name="my_module:my_fn")
+    assert node.callable_name == "my_module:my_fn"

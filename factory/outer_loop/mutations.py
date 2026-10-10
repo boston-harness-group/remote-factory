@@ -292,6 +292,7 @@ def _deep_copy_workflow(workflow: Workflow) -> Workflow:
         knob_expandable=dict(workflow.knob_expandable),
         knob_specs={k: dict(v) for k, v in workflow.knob_specs.items()},
         declared_capabilities=frozenset(workflow.declared_capabilities),
+        runtime_inputs=frozenset(workflow.runtime_inputs),
     )
 
 

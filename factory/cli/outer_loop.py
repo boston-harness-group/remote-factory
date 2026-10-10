@@ -871,7 +871,6 @@ def add_outer_loop_parser(subparsers: argparse._SubParsersAction) -> None:  # ty
     cal.add_argument("--budget", type=int, default=50)
     cal.add_argument("--population-size", type=int, default=4)
     cal.add_argument("--training-instances", nargs="*", default=[])
-    cal.add_argument("--holdout-instances", nargs="*", default=[])
     cal.add_argument(
         "--project-dir",
         default=None,

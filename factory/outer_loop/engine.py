@@ -629,18 +629,24 @@ class SwarmEngine:
                 holdout_result = self._evaluator.evaluate(
                     best_wf, project_dir, holdout_instances, split='val',
                 )
-                holdout_score_val = holdout_result.score
-                best = best.model_copy(update={"val_score": holdout_score_val})
+                if holdout_result.errored:
+                    holdout_score_val = None
+                    log.warning(
+                        "holdout_eval_errored",
+                        msg="holdout evaluation errored — skipping audit",
+                    )
+                else:
+                    holdout_score_val = holdout_result.score
+                    best = best.model_copy(update={"val_score": holdout_score_val})
 
-                # Audit with pre-computed training score to skip redundant re-eval
-                audit_result = self._overfit.audit(
-                    best_wf,
-                    train_instances,
-                    holdout_instances,
-                    self._evaluator,
-                    project_dir,
-                    training_score=best.score,
-                )
+                    # Audit with pre-computed scores to skip redundant re-eval
+                    audit_result = self._overfit.audit(
+                        best_wf,
+                        train_instances,
+                        holdout_instances,
+                        training_score=best.score,
+                        holdout_score=holdout_score_val,
+                    )
             else:
                 log.warning("holdout_skipped_no_val_instances", msg="Task has no val split — holdout evaluation skipped, val_score stays None")
 

@@ -253,7 +253,6 @@ class TestCanary:
         from factory.outer_loop.models import SwarmConfig
 
         model = os.environ.get("FACTORY_MODEL", "claude-haiku-4-5-20251001")
-        os.environ.setdefault("FACTORY_MODEL", model)
 
         task = DocQualityTask()
         wf = _make_doc_workflow()

@@ -1202,3 +1202,67 @@ class TestCollectSubgraphNodes:
 
         wf = self._make_workflow(nodes=["a", "b"], edges=[("a", "b")])
         assert _collect_subgraph_nodes(wf, "a", "a") == {"a"}
+
+
+# ── Bug 2 (moved from test_five_bugs): agent stdout overwrite ───
+
+
+async def test_agent_stdout_does_not_overwrite_tool_written_file(tmp_path: Path):
+    """When an agent writes a declared output file via tools, the executor
+    must NOT overwrite it with stdout."""
+    from typing import Any
+
+    wf = Workflow(
+        name="overwrite-test",
+        nodes={
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="Write document.md",
+                writes={"document.md"},
+                reads=set(),
+            ),
+        },
+        edges=[],
+        start_node="builder",
+    )
+
+    agent_written_content = "# Real Document\nWritten by agent tools"
+    stdout_content = "Summary printed to stdout"
+
+    async def tool_writing_agent(
+        role: str,
+        task: str,
+        project_path: Path | str,
+        *,
+        model: str | None = None,
+        timeout: float = 600.0,
+        node_id: str | None = None,
+        **kwargs: Any,
+    ) -> tuple[str, int]:
+        doc_path = Path(project_path) / "document.md"
+        doc_path.parent.mkdir(parents=True, exist_ok=True)
+        doc_path.write_text(agent_written_content)
+        return stdout_content, 0
+
+    factory_dir = tmp_path / ".factory"
+    factory_dir.mkdir()
+    (factory_dir / "reviews").mkdir()
+
+    executor = WorkflowExecutor(
+        wf,
+        tmp_path,
+        agent_fn=tool_writing_agent,
+        validate=False,
+        auto_write_outputs=True,
+    )
+    await executor.execute()
+
+    doc_path = tmp_path / "document.md"
+    assert doc_path.exists()
+    actual = doc_path.read_text()
+    assert actual == agent_written_content, (
+        f"Agent-written content was overwritten by stdout!\n"
+        f"Expected: {agent_written_content!r}\n"
+        f"Got: {actual!r}"
+    )

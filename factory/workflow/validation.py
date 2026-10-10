@@ -84,15 +84,18 @@ def _validate_data_dependencies(
     for nid, node in workflow.nodes.items():
         if node.reads:
             predecessors = nx.ancestors(g, nid)
-            available_writes: set[str] = set(runtime_provided)
+            if not predecessors:
+                if not runtime_provided:
+                    continue  # ordinary workflow: first node reads are external
+                available_writes: set[str] = set(runtime_provided)
+            else:
+                available_writes = set(runtime_provided)
             for pred_id in predecessors:
                 pred_node = workflow.nodes.get(pred_id)
                 if pred_node:
                     available_writes |= pred_node.writes
                     if type(pred_node).__name__ == 'DataNode':
                         available_writes.add('.factory/current_item.json')
-            if not predecessors:
-                available_writes = set(runtime_provided)
             missing = node.reads - available_writes
             if missing:
                 issues.append(

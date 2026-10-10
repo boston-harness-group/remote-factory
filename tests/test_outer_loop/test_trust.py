@@ -512,6 +512,43 @@ class TestReflectorContent:
             f"Expected real node IDs, got {node_ids}"
         )
 
+    # ── Bug 4 tests (moved from test_five_bugs) ──
+
+    def test_cycle_record_from_run_populates_node_ids(self) -> None:
+        """CycleRecord.from_run() must populate node IDs when given a workflow."""
+        wf = _make_two_node_workflow()
+        items = [{"item_id": "a", "status": "ok", "score": 1.0, "passed": True}]
+        record = CycleRecord.from_run(items, aggregate="mean", workflow=wf)
+
+        assert record.mutable_node_ids or record.node_trace, (
+            "CycleRecord.from_run() must populate node info from workflow"
+        )
+        all_ids = set(record.mutable_node_ids) | set(record.node_trace.keys())
+        assert "researcher" in all_ids or "builder" in all_ids, (
+            f"Expected workflow node IDs, got {all_ids}"
+        )
+
+    def test_filter_suggestions_drops_invented_nodes(self) -> None:
+        """_filter_suggestions must drop suggestions targeting non-existent nodes."""
+        real_nodes = {"builder", "researcher"}
+
+        suggestion_real = MutationSuggestion(
+            operator="prompt_mutate",
+            target="builder",
+            rationale="improve builder prompt",
+        )
+        suggestion_fake = MutationSuggestion(
+            operator="prompt_mutate",
+            target="invented_node_xyz",
+            rationale="this node doesn't exist",
+        )
+
+        filtered = _filter_suggestions(
+            [suggestion_real, suggestion_fake], real_nodes
+        )
+        assert len(filtered) == 1
+        assert filtered[0].target == "builder"
+
 
 # ── Test e: Planted solution — prompt change raises score ────────────
 
