@@ -386,7 +386,7 @@ class TestBug4SplitFiltering:
         wf = _make_test_workflow()
         task = _SplitTask()
 
-        with pytest.raises(ValueError, match="split firewall"):
+        with pytest.raises(ValueError, match="not in.*split.*train"):
             asyncio.run(run_fork(
                 wf,
                 wf.nodes["data"],  # type: ignore[arg-type]
@@ -397,6 +397,54 @@ class TestBug4SplitFiltering:
                 run_id="cross-split",
                 split="train",
                 allowed_instance_ids={"t1", "v1"},  # v1 is val — must raise
+            ))
+
+    def test_docquality_style_task_train_rejects_val_id(self, tmp_path: Path) -> None:
+        """DocQualityTask-style task (instances without explicit split set on
+        TaskInstance) — train run with 'api-reference' in the subset → raises.
+
+        This tests the split firewall gap: tasks that rely on holdout_ids
+        (not inst.split) must still reject val IDs during train runs.
+        """
+        from factory.workflow.data_runtime import run_fork
+
+        from factory.task import InstancesConfig
+
+        class DocStyleTask(Task):
+            def __init__(self) -> None:
+                super().__init__(TaskDefinition(
+                    name="doc-style",
+                    instances_config=InstancesConfig(holdout_ids=["api-reference"]),
+                ))
+
+            def _raw_instances(self) -> Iterator[TaskInstance]:
+                yield TaskInstance(id="readme-cli")
+                yield TaskInstance(id="tutorial-scraping")
+                yield TaskInstance(id="api-reference")
+
+            def setup(self, instance: TaskInstance, workspace: Path) -> None:
+                pass
+
+            def prompt(self, instance: TaskInstance) -> str:
+                return f"write about {instance.id}"
+
+            def verify(self, instance: TaskInstance, workspace: Path) -> VerifyResult:
+                return VerifyResult(passed=True, score=1.0)
+
+        project = _bootstrap(tmp_path)
+        task = DocStyleTask()
+        wf = _make_fn_workflow()
+
+        with pytest.raises(ValueError, match="not in.*split.*train"):
+            asyncio.run(run_fork(
+                workflow=wf,
+                data_node=wf.nodes["data"],
+                data_node_id="data",
+                project_path=project,
+                task=task,
+                run_id="test-firewall",
+                split="train",
+                allowed_instance_ids={"api-reference"},
             ))
 
     def test_subset_with_nonexistent_ids_raises(self, tmp_path: Path) -> None:
