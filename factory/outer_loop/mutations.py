@@ -364,48 +364,75 @@ def _deep_copy_workflow(workflow: Workflow) -> Workflow:
 def insert_node(
     workflow: Workflow,
     new_node: NodeType,
-    after_node_id: str,
+    ref_node_id: str,
     *,
+    position: str = 'after',
     frozen_nodes: set[str] | None = None,
 ) -> tuple[Workflow, MutationRecord] | None:
-    """Insert a new node after an existing node, reconnecting edges."""
+    """Insert a new node before or after an existing node, reconnecting edges."""
     frozen = frozen_nodes or set()
-    if _is_frozen(after_node_id, frozen):
+    # The REF node must exist. It must be non-frozen.
+    # But for 'before', the PREDECESSOR can be frozen (e.g. DataNode).
+    if ref_node_id not in workflow.nodes:
+        return None
+    if _is_frozen(ref_node_id, frozen):
         return None
 
     wf = _deep_copy_workflow(workflow)
-    if after_node_id not in wf.nodes:
-        return None
-
     wf.nodes[new_node.id] = new_node
 
-    outgoing = [e for e in wf.edges if e.source == after_node_id]
-    if not outgoing:
-        wf.edges.append(Edge(source=after_node_id, target=new_node.id))
+    if position == 'before':
+        # New node takes over ref_node's incoming edges, then feeds ref_node
+        incoming = [e for e in wf.edges if e.target == ref_node_id]
+        if not incoming:
+            # ref_node is the start node or has no incoming edges
+            # Insert at the start: new_node becomes start, feeds ref_node
+            if wf.start_node == ref_node_id:
+                wf.start_node = new_node.id
+            wf.edges.append(Edge(source=new_node.id, target=ref_node_id))
+        else:
+            # Redirect all incoming edges to point at new_node
+            new_edges = []
+            for e in wf.edges:
+                if e.target == ref_node_id:
+                    new_edges.append(Edge(source=e.source, target=new_node.id, condition=e.condition))
+                else:
+                    new_edges.append(e)
+            new_edges.append(Edge(source=new_node.id, target=ref_node_id))
+            wf.edges = new_edges
     else:
-        first_edge = outgoing[0]
-        old_target = first_edge.target
-        wf.edges = [e for e in wf.edges if not (e.source == after_node_id and e.target == old_target and e.condition is None)]
-        wf.edges.append(Edge(source=after_node_id, target=new_node.id))
-        wf.edges.append(Edge(source=new_node.id, target=old_target))
+        # Existing 'after' logic
+        outgoing = [e for e in wf.edges if e.source == ref_node_id]
+        if not outgoing:
+            wf.edges.append(Edge(source=ref_node_id, target=new_node.id))
+        else:
+            first_edge = outgoing[0]
+            old_target = first_edge.target
+            wf.edges = [
+                e for e in wf.edges
+                if not (e.source == ref_node_id and e.target == old_target and e.condition is None)
+            ]
+            wf.edges.append(Edge(source=ref_node_id, target=new_node.id))
+            wf.edges.append(Edge(source=new_node.id, target=old_target))
 
     # Update JoinNode.sources to match new edges
     for nid, node in wf.nodes.items():
         if isinstance(node, JoinNode):
-            incoming = [e.source for e in wf.edges if e.target == nid]
-            if set(node.sources) != set(incoming):
-                wf.nodes[nid] = node.model_copy(update={'sources': incoming})
+            incoming_j = [e.source for e in wf.edges if e.target == nid]
+            if set(node.sources) != set(incoming_j):
+                wf.nodes[nid] = node.model_copy(update={'sources': incoming_j})
 
     result = validate_and_repair(wf)
     if result is None:
         return None
 
+    pos_label = 'before' if position == 'before' else 'after'
     record = MutationRecord(
         operator=MutationType.NODE_INSERT,
         target_node=new_node.id,
         before={},
-        after={"inserted_after": after_node_id},
-        rationale=f"Inserted {new_node.id} after {after_node_id}",
+        after={'inserted_' + pos_label: ref_node_id},
+        rationale=f'Inserted {new_node.id} {pos_label} {ref_node_id}',
     )
     return result, record
 
@@ -1333,7 +1360,8 @@ def _try_mutation(
                     timeout=new_node.timeout,
                 )
 
-            return insert_node(workflow, new_node, target, frozen_nodes=frozen)
+            position = getattr(suggestion, 'position', 'after') if suggestion else 'after'
+            return insert_node(workflow, new_node, ref_node_id=target, position=position, frozen_nodes=frozen)
         else:
             # Unguided: existing random behavior
             # Pick target from non-frozen nodes; prefer AgentNodes
@@ -1424,7 +1452,7 @@ def _try_mutation(
                     timeout=agent_params.get("timeout"),
                 )
 
-            return insert_node(workflow, new_node, target, frozen_nodes=frozen)
+            return insert_node(workflow, new_node, ref_node_id=target, frozen_nodes=frozen)
 
     elif op == MutationType.NODE_REMOVE:
         target = random.choice(structurally_mutable)

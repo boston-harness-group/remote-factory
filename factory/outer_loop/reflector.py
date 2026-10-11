@@ -36,6 +36,7 @@ class MutationSuggestion:
     rationale: str
     value: str | None = None
     role: str | None = None
+    position: str = 'after'  # 'before' or 'after'
 
 
 @dataclass
@@ -917,7 +918,8 @@ class OuterLoopReflector:
             "    prompt_mutate — change an agent's prompt (target = node_id)\n"
             "    knob_mutate — change a tunable parameter (target = knob name, include value)\n"
             "    param_mutate — change agent params like timeout/model (target = node_id)\n"
-            "    node_insert — add a new agent node (target = existing node_id to insert after, "
+            "    node_insert — add a new agent node (target = existing node_id to insert before/after, "
+            "position = \"before\" or \"after\", "
             "role = one of [researcher, strategist, builder, health_checker, code_reviewer, "
             "adversarial_tester, failure_analyst], value = instructions for the new agent)\n"
             "    node_remove — remove an agent node (target = node_id or role)\n"
@@ -1016,12 +1018,15 @@ class OuterLoopReflector:
                     raw_value = item.get("value")
                     value = str(raw_value) if raw_value is not None else None
                     raw_role = item.get('role')
+                    raw_position = item.get('position', 'after')
+                    position = raw_position if raw_position in ('before', 'after') else 'after'
                     report.typed_suggestions.append(MutationSuggestion(
                         operator=op,
                         target=target,
                         rationale=rationale,
                         value=value,
                         role=str(raw_role) if raw_role else None,
+                        position=position,
                     ))
             log.info(
                 "llm_reflect_complete",

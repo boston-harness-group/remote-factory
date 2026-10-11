@@ -1379,3 +1379,181 @@ def test_prompt_value_preserves_current_item_json():
     assert 'current_item.json' in (builder.prompt_template or ''), (
         f'current_item.json reference was lost: {builder.prompt_template!r}'
     )
+
+
+# ── Insert-before tests ────────────────────────────────────────────────
+
+
+def _make_data_builder_join_workflow() -> Workflow:
+    """Helper: data → builder → _join_data (data frozen, _join_data frozen)."""
+    return Workflow(
+        name='before-test',
+        nodes={
+            'data': DataNode(id='data'),
+            'builder': AgentNode(
+                id='builder',
+                role=AgentRole.BUILDER,
+                prompt_template='Build.',
+                writes={'output.txt'},
+                reads=set(),
+            ),
+            '_join_data': JoinNode(id='_join_data', sources=['builder']),
+        },
+        edges=[
+            Edge(source='data', target='builder'),
+            Edge(source='builder', target='_join_data'),
+        ],
+        start_node='data',
+    )
+
+
+def test_insert_before_builder_on_datanode_graph() -> None:
+    """Insert researcher BEFORE builder on data → builder → _join_data.
+    Result: data → researcher → builder → _join_data.
+    validate_graph() passes."""
+    from factory.outer_loop.mutations import insert_node
+
+    wf = _make_data_builder_join_workflow()
+    researcher = AgentNode(
+        id='researcher_1',
+        role=AgentRole.RESEARCHER,
+        prompt_template='Research.',
+    )
+    result = insert_node(
+        wf, researcher, ref_node_id='builder',
+        position='before', frozen_nodes={'data', '_join_data'},
+    )
+    assert result is not None, 'insert_node returned None'
+    new_wf, rec = result
+
+    # Check edge topology: data → researcher_1 → builder → _join_data
+    edge_pairs = {(e.source, e.target) for e in new_wf.edges}
+    assert ('data', 'researcher_1') in edge_pairs, f'Missing data→researcher_1: {edge_pairs}'
+    assert ('researcher_1', 'builder') in edge_pairs, f'Missing researcher_1→builder: {edge_pairs}'
+    assert ('builder', '_join_data') in edge_pairs, f'Missing builder→_join_data: {edge_pairs}'
+    # Old direct edge should be gone
+    assert ('data', 'builder') not in edge_pairs, f'data→builder still present: {edge_pairs}'
+
+    # MutationRecord uses 'before' label
+    assert rec.after.get('inserted_before') == 'builder'
+    assert 'before' in rec.rationale
+
+    # validate_graph passes
+    issues = new_wf.validate_graph()
+    real_issues = [i for i in issues if 'empty prompt_template' not in i]
+    assert not real_issues, f'validate_graph failed: {real_issues}'
+
+
+def test_insert_before_with_fake_runner() -> None:
+    """Insert researcher before builder on a simple agent chain.
+    Run with a fake agent_fn that logs call order.
+    Assert researcher executes before builder."""
+    import asyncio
+    import tempfile
+    from pathlib import Path
+
+    from factory.outer_loop.mutations import insert_node
+    from factory.workflow.executor import WorkflowExecutor
+
+    # Simple two-agent chain: strategist → builder
+    wf = Workflow(
+        name='before-runner-test',
+        nodes={
+            'strategist': AgentNode(
+                id='strategist', role=AgentRole.STRATEGIST,
+                prompt_template='Plan.',
+            ),
+            'builder': AgentNode(
+                id='builder', role=AgentRole.BUILDER,
+                prompt_template='Build.',
+            ),
+        },
+        edges=[Edge(source='strategist', target='builder')],
+        start_node='strategist',
+    )
+
+    researcher = AgentNode(
+        id='researcher_1',
+        role=AgentRole.RESEARCHER,
+        prompt_template='Research.',
+    )
+    result = insert_node(
+        wf, researcher, ref_node_id='builder',
+        position='before',
+    )
+    assert result is not None
+    new_wf, _ = result
+
+    call_order: list[str] = []
+
+    async def fake_agent_fn(role, task, project_path, *, model=None,
+                            timeout=600.0, node_id=None, **kwargs):
+        call_order.append(node_id or role)
+        return (f'{node_id} done', 0)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        project_path = Path(tmp)
+        (project_path / '.factory').mkdir()
+        executor = WorkflowExecutor(
+            workflow=new_wf,
+            project_path=project_path,
+            agent_fn=fake_agent_fn,
+            dry_run=False,
+            validate=False,
+        )
+        asyncio.run(executor.execute())
+
+    # researcher_1 must come before builder in call order
+    assert 'researcher_1' in call_order, f'researcher_1 not in call_order: {call_order}'
+    assert 'builder' in call_order, f'builder not in call_order: {call_order}'
+    r_idx = call_order.index('researcher_1')
+    b_idx = call_order.index('builder')
+    assert r_idx < b_idx, (
+        f'researcher_1 did not execute before builder: {call_order}'
+    )
+
+
+def test_insert_after_unchanged() -> None:
+    """insert_node with position='after' (default) works as before."""
+    from factory.outer_loop.mutations import insert_node
+
+    wf = _make_data_builder_join_workflow()
+    reviewer = AgentNode(
+        id='reviewer_1',
+        role=AgentRole.CODE_REVIEWER,
+        prompt_template='Review.',
+    )
+    result = insert_node(
+        wf, reviewer, ref_node_id='builder',
+        frozen_nodes={'data', '_join_data'},
+    )
+    assert result is not None
+    new_wf, rec = result
+
+    # Check edge topology: data → builder → reviewer_1 → _join_data
+    edge_pairs = {(e.source, e.target) for e in new_wf.edges}
+    assert ('data', 'builder') in edge_pairs
+    assert ('builder', 'reviewer_1') in edge_pairs
+    assert ('reviewer_1', '_join_data') in edge_pairs
+
+    assert rec.after.get('inserted_after') == 'builder'
+    assert 'after' in rec.rationale
+
+    issues = new_wf.validate_graph()
+    real_issues = [i for i in issues if 'empty prompt_template' not in i]
+    assert not real_issues, f'validate_graph failed: {real_issues}'
+
+
+def test_reflector_prompt_mentions_position() -> None:
+    """build_reflection_prompt output contains 'position'."""
+    from factory.outer_loop.reflector import OuterLoopReflector
+
+    reflector = OuterLoopReflector()
+    prompt = reflector.build_reflection_prompt(
+        top_k=[('top1', 0.9, None)],
+        bottom_k=[('bot1', 0.1, None)],
+        records=[('top1', 0.9, None), ('bot1', 0.1, None)],
+    )
+    assert 'position' in prompt, (
+        'Reflection prompt should mention position for node_insert'
+    )
