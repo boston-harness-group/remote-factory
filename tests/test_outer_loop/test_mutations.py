@@ -418,8 +418,12 @@ class TestSelectGuidedOperatorStringFallback:
         strategy = WeightedRandomStrategy()
         wf = Workflow(
             name="test",
-            nodes={"b": AgentNode(id="b", role=AgentRole.BUILDER)},
-            edges=[], start_node="b")
+            nodes={
+                "b": AgentNode(id="b", role=AgentRole.BUILDER),
+                "r": AgentNode(id="r", role=AgentRole.RESEARCHER),
+            },
+            edges=[Edge(source="b", target="r")],
+            start_node="b")
         report = ReflectionReport(
             mutation_suggestions=["NODE_REMOVE: Consider removing strategist"],
             typed_suggestions=[])
@@ -435,8 +439,12 @@ class TestSelectGuidedOperatorStringFallback:
         strategy = WeightedRandomStrategy()
         wf = Workflow(
             name="test",
-            nodes={"b": AgentNode(id="b", role=AgentRole.BUILDER)},
-            edges=[], start_node="b")
+            nodes={
+                "b": AgentNode(id="b", role=AgentRole.BUILDER),
+                "r": AgentNode(id="r", role=AgentRole.RESEARCHER),
+            },
+            edges=[Edge(source="b", target="r")],
+            start_node="b")
         report = ReflectionReport(
             mutation_suggestions=[],
             structural_recommendations=["PARALLELIZE: Use parallel execution for agents"],

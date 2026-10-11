@@ -624,9 +624,12 @@ class OuterLoopReflector:
                         lines.append(f"        {pline}")
             else:
                 lines.append(f"    node: {nid} ({ntype})")
-        knob_values = workflow_data.get("knob_values", {})
-        if knob_values:
-            lines.append(f"    knob_values: {knob_values}")
+        real_knobs = {
+            k: v for k, v in workflow_data.get('knob_values', {}).items()
+            if not k.startswith('_prompt_')
+        }
+        if real_knobs:
+            lines.append(f"    knob_values: {real_knobs}")
         return "\n".join(lines)
 
     @staticmethod

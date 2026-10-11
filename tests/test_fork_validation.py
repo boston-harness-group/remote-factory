@@ -580,3 +580,224 @@ def test_infer_agent_params_nonexistent_node():
     params = _infer_agent_params(wf, "does-not-exist")
     assert params["model"] == "claude-haiku-4-5-20251001"
     assert params["timeout"] == 300
+
+
+# ── Bug 1 tests: prompt-knob sync ──────────────────────────────────
+
+
+def test_guided_prompt_knob_becomes_prompt_mutate():
+    """A guided knob suggestion on _prompt_builder → builder.prompt_template
+    changes and operator is prompt_mutate."""
+    from factory.outer_loop.mutations import mutate_knob, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion, ReflectionReport
+
+    wf = Workflow(
+        name="prompt-knob-test",
+        nodes={
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="old prompt",
+            ),
+        },
+        edges=[],
+        start_node="builder",
+        knob_values={"_prompt_builder": "old prompt"},
+        knob_bounds={"_prompt_builder": ["old prompt", "new prompt"]},
+    )
+    report = ReflectionReport(
+        typed_suggestions=[
+            MutationSuggestion(
+                operator="knob_mutate",
+                target="_prompt_builder",
+                rationale="test",
+                value="new prompt",
+            ),
+        ],
+    )
+    # Try multiple seeds to hit the guided path (random.random() < 0.7)
+    result = None
+    for seed in range(20):
+        random.seed(seed)
+        result = mutate_knob(wf, expander=None, reflection_report=report)
+        if result is not None:
+            break
+    assert result is not None, "mutate_knob returned None for all seeds"
+    new_wf, rec = result
+    assert rec.operator == MutationType.PROMPT_MUTATE
+    builder = new_wf.nodes["builder"]
+    assert isinstance(builder, AgentNode)
+    assert builder.prompt_template != "old prompt", (
+        "prompt_template was not changed"
+    )
+
+
+def test_prompt_template_and_knob_never_out_of_sync():
+    """After mutate_prompt, prompt_template and _prompt_<node> knob agree."""
+    from factory.outer_loop.mutations import mutate_prompt
+
+    wf = Workflow(
+        name="sync-test",
+        nodes={
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="original prompt",
+            ),
+        },
+        edges=[],
+        start_node="builder",
+        knob_values={"_prompt_builder": "original prompt"},
+    )
+    result = mutate_prompt(wf, "builder", frozen_nodes=frozenset(), prompt_hint="be better")
+    assert result is not None
+    new_wf, _rec = result
+    builder = new_wf.nodes["builder"]
+    assert isinstance(builder, AgentNode)
+    assert new_wf.knob_values["_prompt_builder"] == builder.prompt_template, (
+        f"knob={new_wf.knob_values['_prompt_builder']!r} != "
+        f"template={builder.prompt_template!r}"
+    )
+
+
+def test_select_guided_prompt_knob_reclassified():
+    """select_guided_operator counts _prompt_* knob_mutate as prompt_mutate."""
+    from factory.outer_loop.mutations import WeightedRandomStrategy, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion, ReflectionReport
+
+    wf = Workflow(
+        name="guided-test",
+        nodes={
+            "builder": AgentNode(id="builder", role=AgentRole.BUILDER),
+            "reviewer": AgentNode(id="reviewer", role=AgentRole.CODE_REVIEWER),
+        },
+        edges=[Edge(source="builder", target="reviewer")],
+        start_node="builder",
+    )
+    report = ReflectionReport(
+        typed_suggestions=[
+            MutationSuggestion(
+                operator="knob_mutate",
+                target="_prompt_builder",
+                rationale="test",
+                value="improve",
+            ),
+        ] * 10,  # Overwhelm: all suggestions are _prompt_* knobs
+    )
+    strategy = WeightedRandomStrategy()
+    # Call many times — should never return KNOB_MUTATE
+    results = set()
+    for seed in range(50):
+        random.seed(seed)
+        op = strategy.select_guided_operator(wf, 1, report)
+        results.add(op)
+    assert MutationType.KNOB_MUTATE not in results, (
+        f"KNOB_MUTATE should never be selected for _prompt_* suggestions, got {results}"
+    )
+    assert MutationType.PROMPT_MUTATE in results
+
+
+# ── Bug 2 tests: node_insert reliability ───────────────────────────
+
+
+def test_node_insert_canary_graph_50_seeds():
+    """node_insert on canary graph succeeds for 50 seeds; every result passes validate_graph()."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+
+    wf = Workflow(
+        name="canary",
+        nodes={
+            "data": DataNode(id="data"),
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="Build.",
+                writes={"output.txt"},
+                reads=set(),
+            ),
+            "_join_data": JoinNode(id="_join_data", sources=["builder"]),
+        },
+        edges=[
+            Edge(source="data", target="builder"),
+            Edge(source="builder", target="_join_data"),
+        ],
+        start_node="data",
+    )
+    frozen = frozenset({"data", "_join_data"})
+    successes = 0
+    for seed in range(50):
+        random.seed(seed)
+        result = _try_mutation(wf, MutationType.NODE_INSERT, frozen)
+        if result is None:
+            continue
+        child_wf, _rec = result
+        issues = child_wf.validate_graph()
+        real_issues = [i for i in issues if "empty prompt_template" not in i]
+        assert not real_issues, (
+            f"seed={seed}: validate_graph failed: {real_issues}"
+        )
+        successes += 1
+    assert successes > 0, "node_insert never succeeded in 50 seeds"
+
+
+def test_node_insert_updates_join_sources():
+    """After node_insert between builder and _join_data, JoinNode.sources
+    includes the inserted node."""
+    from factory.outer_loop.mutations import insert_node
+
+    wf = Workflow(
+        name="join-sources",
+        nodes={
+            "data": DataNode(id="data"),
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="Build.",
+            ),
+            "_join_data": JoinNode(id="_join_data", sources=["builder"]),
+        },
+        edges=[
+            Edge(source="data", target="builder"),
+            Edge(source="builder", target="_join_data"),
+        ],
+        start_node="data",
+    )
+    new_node = AgentNode(
+        id="reviewer_42",
+        role=AgentRole.CODE_REVIEWER,
+        prompt_template="Review.",
+    )
+    result = insert_node(wf, new_node, "builder", frozen_nodes={"data", "_join_data"})
+    assert result is not None, "insert_node returned None"
+    new_wf, _rec = result
+    join_node = new_wf.nodes["_join_data"]
+    assert isinstance(join_node, JoinNode)
+    assert "reviewer_42" in join_node.sources, (
+        f"JoinNode.sources={join_node.sources}, expected reviewer_42"
+    )
+
+
+def test_single_agent_graph_no_remove_parallelize_serialize():
+    """On a single-agent graph, node_remove/parallelize/serialize are never selected."""
+    from factory.outer_loop.mutations import WeightedRandomStrategy, MutationType
+
+    wf = Workflow(
+        name="single-agent",
+        nodes={
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="Build.",
+            ),
+        },
+        edges=[],
+        start_node="builder",
+    )
+    strategy = WeightedRandomStrategy()
+    forbidden = {MutationType.NODE_REMOVE, MutationType.PARALLELIZE, MutationType.SERIALIZE}
+    for seed in range(100):
+        random.seed(seed)
+        op = strategy.select_operator(wf, 1, {})
+        assert op not in forbidden, (
+            f"seed={seed}: got forbidden op {op} on single-agent graph"
+        )

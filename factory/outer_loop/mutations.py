@@ -114,6 +114,18 @@ class WeightedRandomStrategy:
     ) -> MutationType:
         types = list(MutationType)
         w = [self.weights.get(t.value, 0.1) for t in types]
+        # Zero out operators that can't apply to this workflow
+        agent_count = sum(1 for n in parent.nodes.values() if isinstance(n, AgentNode))
+        if agent_count <= 1:
+            for i, t in enumerate(types):
+                if t in (MutationType.NODE_REMOVE, MutationType.PARALLELIZE, MutationType.SERIALIZE):
+                    w[i] = 0.0
+        if len(parent.nodes) >= MAX_NODES:
+            for i, t in enumerate(types):
+                if t == MutationType.NODE_INSERT:
+                    w[i] = 0.0
+        if sum(w) == 0:
+            return MutationType.PROMPT_MUTATE  # fallback
         return random.choices(types, weights=w, k=1)[0]
 
     def select_guided_operator(
@@ -135,6 +147,9 @@ class WeightedRandomStrategy:
             for ts in reflection.typed_suggestions:
                 if ts.operator in _VALID_OPS:
                     mt = MutationType(ts.operator)
+                    # A knob_mutate targeting _prompt_* is really a prompt_mutate
+                    if mt == MutationType.KNOB_MUTATE and ts.target.startswith('_prompt_'):
+                        mt = MutationType.PROMPT_MUTATE
                     op_counts[mt] = op_counts.get(mt, 0) + 1
         else:
             for suggestion in reflection.mutation_suggestions + reflection.structural_recommendations:
@@ -151,6 +166,17 @@ class WeightedRandomStrategy:
                     op_counts[MutationType.PROMPT_MUTATE] = op_counts.get(MutationType.PROMPT_MUTATE, 0) + 1
                 elif "KNOB" in upper:
                     op_counts[MutationType.KNOB_MUTATE] = op_counts.get(MutationType.KNOB_MUTATE, 0) + 1
+
+        if not op_counts:
+            return self.select_operator(parent, generation, {})
+
+        # Remove operators that can't apply to this workflow
+        agent_count = sum(1 for n in parent.nodes.values() if isinstance(n, AgentNode))
+        if agent_count <= 1:
+            for t in (MutationType.NODE_REMOVE, MutationType.PARALLELIZE, MutationType.SERIALIZE):
+                op_counts.pop(t, None)
+        if len(parent.nodes) >= MAX_NODES:
+            op_counts.pop(MutationType.NODE_INSERT, None)
 
         if not op_counts:
             return self.select_operator(parent, generation, {})
@@ -345,6 +371,13 @@ def insert_node(
         wf.edges = [e for e in wf.edges if not (e.source == after_node_id and e.target == old_target and e.condition is None)]
         wf.edges.append(Edge(source=after_node_id, target=new_node.id))
         wf.edges.append(Edge(source=new_node.id, target=old_target))
+
+    # Update JoinNode.sources to match new edges
+    for nid, node in wf.nodes.items():
+        if isinstance(node, JoinNode):
+            incoming = [e.source for e in wf.edges if e.target == nid]
+            if set(node.sources) != set(incoming):
+                wf.nodes[nid] = node.model_copy(update={'sources': incoming})
 
     result = validate_and_repair(wf)
     if result is None:
@@ -949,6 +982,18 @@ def mutate_knob(
         if valid:
             guided_knob, guided_val = random.choice(valid)
 
+    # A _prompt_* knob suggestion should become a prompt_mutate
+    # so prompt_template stays in sync
+    if guided_knob and guided_knob.startswith('_prompt_'):
+        node_id = guided_knob[len('_prompt_'):]
+        if node_id in workflow.nodes and isinstance(workflow.nodes[node_id], AgentNode):
+            return mutate_prompt(
+                workflow, node_id,
+                frozen_nodes=set(),
+                prompt_hint=str(guided_val) if guided_val else None,
+            )
+        guided_knob = None  # fall through to random knob
+
     if guided_knob and guided_val is not None:
         knob_name = guided_knob
         old_val = wf.knob_values[knob_name]
@@ -1054,6 +1099,7 @@ def apply_random_mutation(
             if len(wf.nodes) > MAX_NODES:
                 continue
             return result
+        log.info('mutation_attempt_failed', operator=op.value, attempt=attempt + 1)
 
     return None
 
@@ -1129,8 +1175,16 @@ def _try_mutation(
         return None
 
     if op == MutationType.NODE_INSERT:
-        # Fix 2: contextual complementary node with inherited file wiring
-        target = random.choice(list(workflow.nodes.keys()))
+        # Pick target from non-frozen nodes; prefer AgentNodes
+        insert_candidates = [nid for nid in workflow.nodes if nid not in frozen]
+        if not insert_candidates:
+            log.info('mutation_no_target', operator='node_insert', reason='all nodes frozen')
+            return None
+        agent_candidates = [
+            nid for nid in insert_candidates
+            if isinstance(workflow.nodes[nid], AgentNode)
+        ]
+        target = random.choice(agent_candidates if agent_candidates else insert_candidates)
         target_node = workflow.nodes[target]
 
         all_agent_nodes = [
