@@ -632,6 +632,49 @@ def test_guided_prompt_knob_becomes_prompt_mutate():
     )
 
 
+def test_prompt_knob_redirect_respects_frozen():
+    """A guided _prompt_* knob suggestion on a frozen node returns None."""
+    from factory.outer_loop.mutations import mutate_knob
+    from factory.outer_loop.reflector import MutationSuggestion, ReflectionReport
+
+    wf = Workflow(
+        name="frozen-redirect-test",
+        nodes={
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="old prompt",
+            ),
+        },
+        edges=[],
+        start_node="builder",
+        knob_values={"_prompt_builder": "old prompt"},
+        knob_bounds={"_prompt_builder": ["old prompt", "new prompt"]},
+    )
+    report = ReflectionReport(
+        typed_suggestions=[
+            MutationSuggestion(
+                operator="knob_mutate",
+                target="_prompt_builder",
+                rationale="test",
+                value="new prompt",
+            ),
+        ],
+    )
+    # Try many seeds — every guided hit should be blocked by frozen_nodes
+    for seed in range(50):
+        random.seed(seed)
+        result = mutate_knob(
+            wf, expander=None, reflection_report=report,
+            frozen_nodes={"builder"},
+        )
+        # The redirect calls mutate_prompt with frozen builder → returns None.
+        # The fallback random knob path picks _prompt_builder again → same redirect → None.
+        assert result is None, (
+            f"seed={seed}: expected None because 'builder' is frozen, got {result}"
+        )
+
+
 def test_prompt_template_and_knob_never_out_of_sync():
     """After mutate_prompt, prompt_template and _prompt_<node> knob agree."""
     from factory.outer_loop.mutations import mutate_prompt

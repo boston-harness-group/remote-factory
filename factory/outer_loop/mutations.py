@@ -945,6 +945,7 @@ def mutate_knob(
     *,
     expander: KnobExpander | None = default_knob_expander,
     reflection_report: ReflectionReport | None = None,
+    frozen_nodes: set[str] | None = None,
 ) -> tuple[Workflow, MutationRecord] | None:
     """Mutate a single knob value within its declared bounds.
 
@@ -989,7 +990,7 @@ def mutate_knob(
         if node_id in workflow.nodes and isinstance(workflow.nodes[node_id], AgentNode):
             return mutate_prompt(
                 workflow, node_id,
-                frozen_nodes=set(),
+                frozen_nodes=frozen_nodes or set(),
                 prompt_hint=str(guided_val) if guided_val else None,
             )
         guided_knob = None  # fall through to random knob
@@ -1099,7 +1100,7 @@ def apply_random_mutation(
             if len(wf.nodes) > MAX_NODES:
                 continue
             return result
-        log.info('mutation_attempt_failed', operator=op.value, attempt=attempt + 1)
+        log.info('mutation_attempt_failed', operator=op.value, attempt=attempt + 1, reason='_try_mutation returned None')
 
     return None
 
@@ -1351,6 +1352,7 @@ def _try_mutation(
             workflow,
             expander=exp if callable(exp) else None,
             reflection_report=ref if isinstance(ref, ReflectionReport) else None,
+            frozen_nodes=frozen,
         )
 
     return None
