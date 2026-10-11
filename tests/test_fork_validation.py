@@ -949,3 +949,29 @@ def test_mutation_log_includes_before_after(caplog):
         assert 'after' in msg, f'mutation_applied log missing after: {msg}'
     finally:
         structlog.configure(**old_config)
+
+
+def test_param_mutate_never_from_guided():
+    """With a reflection suggesting only param_mutate, the operator chosen is never PARAM_MUTATE."""
+    from factory.outer_loop.mutations import WeightedRandomStrategy, MutationType
+    from factory.outer_loop.reflector import ReflectionReport, MutationSuggestion
+
+    strategy = WeightedRandomStrategy()
+    wf = Workflow(
+        name='t',
+        nodes={
+            'b': AgentNode(id='b', role=AgentRole.BUILDER, prompt_template='x'),
+            'r': AgentNode(id='r', role=AgentRole.RESEARCHER),
+        },
+        edges=[Edge(source='b', target='r')],
+        start_node='b',
+    )
+    report = ReflectionReport(typed_suggestions=[
+        MutationSuggestion(operator='param_mutate', target='b', rationale='increase timeout'),
+        MutationSuggestion(operator='param_mutate', target='r', rationale='change model'),
+    ])
+    random.seed(42)
+    ops = set()
+    for _ in range(100):
+        ops.add(strategy.select_guided_operator(wf, 0, report))
+    assert MutationType.PARAM_MUTATE not in ops, f'PARAM_MUTATE should never be selected, got {ops}'

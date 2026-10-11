@@ -108,6 +108,7 @@ class WeightedRandomStrategy:
         }
         self._mutation_rate = mutation_rate
         self._designer_ratio = designer_ratio
+        self._knobs_warned = False
 
     def select_operator(
         self, parent: Workflow, generation: int, archive_stats: dict[str, object]
@@ -127,8 +128,9 @@ class WeightedRandomStrategy:
         # knob_mutate only applies to _prompt_* knobs (redirected to prompt_mutate)
         # Non-prompt knobs aren't applied by the executor, so never mutate them
         real_knobs = [k for k in parent.knob_values if not k.startswith('_prompt_')]
-        if real_knobs:
+        if real_knobs and not self._knobs_warned:
             log.warning('knobs_not_applied', knobs=real_knobs, msg='Non-prompt knobs declared but executor does not apply them; skipping knob_mutate')
+            self._knobs_warned = True
         for i, t in enumerate(types):
             if t == MutationType.KNOB_MUTATE:
                 w[i] = 0.0
@@ -191,6 +193,7 @@ class WeightedRandomStrategy:
             op_counts.pop(MutationType.NODE_INSERT, None)
         # knob_mutate is handled via prompt_mutate redirect; remove from guided too
         op_counts.pop(MutationType.KNOB_MUTATE, None)
+        op_counts.pop(MutationType.PARAM_MUTATE, None)
 
         if not op_counts:
             return self.select_operator(parent, generation, {})
@@ -1104,7 +1107,7 @@ def apply_random_mutation(
             op = strategy.select_operator(workflow, generation, stats)
 
         if op == MutationType.NODE_INSERT and len(workflow.nodes) >= MAX_NODES:
-            op = MutationType.PARAM_MUTATE
+            op = MutationType.PROMPT_MUTATE
 
         prompt_hint = _extract_prompt_hint(reflection_report) if reflection_report else None
         result = _try_mutation(workflow, op, frozen, prompt_hint=prompt_hint,

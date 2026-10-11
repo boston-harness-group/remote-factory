@@ -455,7 +455,8 @@ class TestSelectGuidedOperatorStringFallback:
             counts[op] = counts.get(op, 0) + 1
         assert MutationType.PARALLELIZE in counts
 
-    def test_string_fallback_param_mutate(self) -> None:
+    def test_string_fallback_param_mutate_blocked(self) -> None:
+        """PARAM_MUTATE is stripped from guided selection even when string suggestions mention it."""
         from factory.outer_loop.reflector import ReflectionReport
 
         strategy = WeightedRandomStrategy()
@@ -470,7 +471,7 @@ class TestSelectGuidedOperatorStringFallback:
         for _ in range(100):
             op = strategy.select_guided_operator(wf, 0, report)
             counts[op] = counts.get(op, 0) + 1
-        assert MutationType.PARAM_MUTATE in counts
+        assert MutationType.PARAM_MUTATE not in counts
 
     def test_string_fallback_prompt_mutate(self) -> None:
         from factory.outer_loop.reflector import ReflectionReport
