@@ -1224,53 +1224,72 @@ def _try_mutation(
 
     if op == MutationType.NODE_INSERT:
         if suggestion is not None:
-            # Guided: use suggestion's target as insertion point
+            # Target = existing node to insert after
             target_id = suggestion.target
             if target_id in workflow.nodes and target_id not in frozen:
                 target = target_id
             else:
-                reason = 'frozen' if target_id in frozen else 'not found'
-                log.info('suggestion_target_skipped', operator='node_insert', target=target_id, reason=reason)
-                return None
+                # Fallback: insert after the first agent node
+                agent_candidates = [
+                    nid for nid in workflow.nodes
+                    if nid not in frozen and isinstance(workflow.nodes[nid], AgentNode)
+                ]
+                if not agent_candidates:
+                    log.info(
+                        'suggestion_target_fallback_failed',
+                        operator='node_insert', target=target_id,
+                        reason='no non-frozen agent',
+                    )
+                    return None
+                target = agent_candidates[0]
+                log.info(
+                    'suggestion_target_fallback',
+                    operator='node_insert',
+                    original_target=target_id, fallback_target=target,
+                )
 
-            target_node = workflow.nodes[target]
-            all_agent_nodes = [n for n in workflow.nodes.values() if isinstance(n, AgentNode)]
+            # Role from suggestion.role — must be a valid AgentRole
+            complementary_role: AgentRole | None = None
+            if suggestion.role:
+                try:
+                    complementary_role = AgentRole(suggestion.role)
+                except ValueError:
+                    log.info(
+                        'suggestion_role_invalid',
+                        role=suggestion.role,
+                        msg='using complementary role table',
+                    )
+            if complementary_role is None:
+                # Use complementary role table (existing logic)
+                target_node = workflow.nodes[target]
+                upstream_agent: AgentNode | None = (
+                    target_node if isinstance(target_node, AgentNode)
+                    else _find_nearest_upstream_agent(workflow, target)
+                )
+                all_agent_nodes = [
+                    n for n in workflow.nodes.values() if isinstance(n, AgentNode)
+                ]
+                base_role = (
+                    upstream_agent.role if upstream_agent
+                    else (random.choice(all_agent_nodes).role if all_agent_nodes
+                          else random.choice(list(AgentRole)))
+                )
+                complementary_role = _COMPLEMENTARY_ROLES.get(
+                    base_role, random.choice(list(AgentRole)),
+                )
 
-            # Use suggestion's role if valid (check rationale for role name).
-            # Prefer roles not already present as node IDs (since we're inserting).
-            suggested_role: AgentRole | None = None
-            existing_node_ids = set(workflow.nodes.keys())
-            rationale_lower = (suggestion.rationale or '').lower()
-            candidate_roles = [r for r in AgentRole if r.value in rationale_lower and r.value not in existing_node_ids]
-            if not candidate_roles:
-                candidate_roles = [r for r in AgentRole if r.value in rationale_lower]
-            if candidate_roles:
-                suggested_role = candidate_roles[0]
-
-            if suggested_role:
-                complementary_role = suggested_role
-            else:
-                # Existing complementary_role logic
-                upstream_agent: AgentNode | None = None
-                if isinstance(target_node, AgentNode):
-                    upstream_agent = target_node
-                else:
-                    upstream_agent = _find_nearest_upstream_agent(workflow, target)
-                if upstream_agent is not None:
-                    base_role = upstream_agent.role
-                elif all_agent_nodes:
-                    base_role = random.choice(all_agent_nodes).role
-                else:
-                    base_role = random.choice(list(AgentRole))
-                complementary_role = _COMPLEMENTARY_ROLES.get(base_role, random.choice(list(AgentRole)))
-
-            # Use rationale in the new node's prompt
-            prompt_tmpl = suggestion.rationale[:200] if suggestion.rationale else _ROLE_PROMPT_TEMPLATES.get(complementary_role, '')
+            # Prompt: suggestion.value if given, else role template.
+            # NEVER rationale as prompt.
+            prompt_tmpl = (
+                suggestion.value if suggestion.value and suggestion.value.strip()
+                else _ROLE_PROMPT_TEMPLATES.get(complementary_role, '')
+            )
 
             # Inherit file wiring from context
+            target_node_wiring = workflow.nodes[target]
             upstream_agent_for_wiring: AgentNode | None = None
-            if isinstance(target_node, AgentNode):
-                upstream_agent_for_wiring = target_node
+            if isinstance(target_node_wiring, AgentNode):
+                upstream_agent_for_wiring = target_node_wiring
             else:
                 upstream_agent_for_wiring = _find_nearest_upstream_agent(workflow, target)
             new_reads = upstream_agent_for_wiring.writes.copy() if (
@@ -1506,6 +1525,15 @@ def _try_mutation(
                 wf = _deep_copy_workflow(workflow)
                 node = wf.nodes[target]
                 old_prompt = node.prompt_template or ''  # type: ignore[union-attr]
+                # Preserve current_item.json reference for DataNode branch nodes
+                if (new_prompt
+                        and 'current_item.json' not in new_prompt
+                        and 'current_item.json' in old_prompt
+                        and _is_in_data_subgraph(wf, target)):
+                    new_prompt = (
+                        'Read .factory/current_item.json for the current item. '
+                        + new_prompt
+                    )
                 try:
                     updated = type(node)(**{**node.model_dump(), 'prompt_template': new_prompt})
                     wf.nodes[target] = updated

@@ -1222,3 +1222,160 @@ def test_guided_node_insert_with_role():
     assert rec.after.get('inserted_after') == 'builder', (
         f'Expected inserted_after=builder, got {rec.after}'
     )
+
+
+# ── Bug fix: guided node_insert with role field ─────────────────────
+
+
+def test_guided_node_insert_with_role_and_value():
+    """Suggestion: target='builder', role='health_checker',
+    value='Check document.md has Overview, Installation, Usage, Errors.'
+    Assert: inserted node has role=health_checker, prompt contains 'Check document.md',
+    inserted after builder."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+    suggestion = MutationSuggestion(
+        operator='node_insert',
+        target='builder',
+        rationale='add health check step',
+        value='Check document.md has Overview, Installation, Usage, Errors.',
+        role='health_checker',
+    )
+
+    result = _try_mutation(
+        wf, MutationType.NODE_INSERT, frozenset(),
+        suggestion=suggestion,
+    )
+    assert result is not None, '_try_mutation returned None for guided node_insert'
+    new_wf, rec = result
+    assert rec.operator == MutationType.NODE_INSERT
+
+    # Find the inserted node
+    new_node_ids = set(new_wf.nodes.keys()) - set(wf.nodes.keys())
+    assert len(new_node_ids) >= 1, 'No new node was inserted'
+
+    inserted_node = new_wf.nodes[list(new_node_ids)[0]]
+    assert isinstance(inserted_node, AgentNode)
+    assert inserted_node.role == AgentRole.HEALTH_CHECKER, (
+        f'Expected health_checker role, got {inserted_node.role}'
+    )
+    assert 'Check document.md' in (inserted_node.prompt_template or ''), (
+        f'Prompt should contain suggestion value, got: {inserted_node.prompt_template!r}'
+    )
+    assert rec.after.get('inserted_after') == 'builder', (
+        f'Expected inserted_after=builder, got {rec.after}'
+    )
+
+
+def test_guided_node_insert_invalid_role_uses_complementary(caplog):
+    """Suggestion: target='builder', role='validator' (not a valid AgentRole).
+    Assert: result is not None (uses complementary role), log contains
+    'suggestion_role_invalid'."""
+    import logging
+
+    import structlog
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+    suggestion = MutationSuggestion(
+        operator='node_insert',
+        target='builder',
+        rationale='add validation step',
+        role='validator',  # Not a valid AgentRole
+    )
+
+    old_config = structlog.get_config()
+    structlog.configure(
+        processors=[structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+    )
+    try:
+        with caplog.at_level(logging.DEBUG):
+            result = _try_mutation(
+                wf, MutationType.NODE_INSERT, frozenset(),
+                suggestion=suggestion,
+            )
+        assert result is not None, (
+            'Expected non-None result (complementary role fallback)'
+        )
+        invalid_logs = [
+            r for r in caplog.records
+            if 'suggestion_role_invalid' in r.getMessage()
+        ]
+        assert len(invalid_logs) >= 1, (
+            f'Expected log with "suggestion_role_invalid", got: '
+            f'{[r.getMessage() for r in caplog.records]}'
+        )
+    finally:
+        structlog.configure(**old_config)
+
+
+def test_reflector_prompt_contains_role_list():
+    """Build a reflection prompt and check it contains 'health_checker' and
+    'code_reviewer' in the node_insert guide."""
+    from factory.outer_loop.reflector import OuterLoopReflector
+
+    reflector = OuterLoopReflector()
+    prompt = reflector.build_reflection_prompt(
+        top_k=[('top1', 0.9, None)],
+        bottom_k=[('bot1', 0.1, None)],
+        records=[('top1', 0.9, None), ('bot1', 0.1, None)],
+    )
+    assert 'health_checker' in prompt, (
+        'Reflection prompt should list health_checker as valid role'
+    )
+    assert 'code_reviewer' in prompt, (
+        'Reflection prompt should list code_reviewer as valid role'
+    )
+    assert 'node_insert' in prompt
+
+
+def test_prompt_value_preserves_current_item_json():
+    """DataNode workflow, builder reads .factory/current_item.json.
+    Suggestion with value='Write docs.' (no current_item.json mention).
+    After mutation, builder's prompt still contains 'current_item.json'."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = Workflow(
+        name='data-prompt-test',
+        nodes={
+            'data': DataNode(id='data', inline_items=[DataItem(id='i1')]),
+            'builder': AgentNode(
+                id='builder',
+                role=AgentRole.BUILDER,
+                prompt_template=(
+                    'Read .factory/current_item.json for the current item. Build it.'
+                ),
+                reads={'.factory/current_item.json'},
+                writes={'output.txt'},
+            ),
+            '_join_data': JoinNode(id='_join_data', sources=['builder']),
+        },
+        edges=[
+            Edge(source='data', target='builder'),
+            Edge(source='builder', target='_join_data'),
+        ],
+        start_node='data',
+    )
+    suggestion = MutationSuggestion(
+        operator='prompt_mutate',
+        target='builder',
+        rationale='improve docs',
+        value='Write docs.',
+    )
+    result = _try_mutation(
+        wf, MutationType.PROMPT_MUTATE, frozenset({'data', '_join_data'}),
+        suggestion=suggestion,
+    )
+    assert result is not None, '_try_mutation returned None'
+    new_wf, _rec = result
+    builder = new_wf.nodes['builder']
+    assert isinstance(builder, AgentNode)
+    assert 'current_item.json' in (builder.prompt_template or ''), (
+        f'current_item.json reference was lost: {builder.prompt_template!r}'
+    )

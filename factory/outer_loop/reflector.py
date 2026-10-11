@@ -35,6 +35,7 @@ class MutationSuggestion:
     target: str
     rationale: str
     value: str | None = None
+    role: str | None = None
 
 
 @dataclass
@@ -909,12 +910,16 @@ class OuterLoopReflector:
             '    "operator": one of [' + operators_list + ']\n'
             '    "target": the node_id or knob name to mutate\n'
             '    "rationale": why this mutation would help\n'
-            '    "value": (optional) suggested new value for knob_mutate\n'
+            '    "value": (optional) suggested new value for knob_mutate or '
+            'full prompt for node_insert\n'
+            '    "role": (for node_insert) one of the agent roles listed above\n'
             "  Operator guide:\n"
             "    prompt_mutate — change an agent's prompt (target = node_id)\n"
             "    knob_mutate — change a tunable parameter (target = knob name, include value)\n"
             "    param_mutate — change agent params like timeout/model (target = node_id)\n"
-            "    node_insert — add a new agent node (target = role name)\n"
+            "    node_insert — add a new agent node (target = existing node_id to insert after, "
+            "role = one of [researcher, strategist, builder, health_checker, code_reviewer, "
+            "adversarial_tester, failure_analyst], value = instructions for the new agent)\n"
             "    node_remove — remove an agent node (target = node_id or role)\n"
             "  For each improvement you identify, also specify which mutation "
             "operator and target would implement it. Be specific — name the "
@@ -1010,11 +1015,13 @@ class OuterLoopReflector:
                         rationale = ""
                     raw_value = item.get("value")
                     value = str(raw_value) if raw_value is not None else None
+                    raw_role = item.get('role')
                     report.typed_suggestions.append(MutationSuggestion(
                         operator=op,
                         target=target,
                         rationale=rationale,
                         value=value,
+                        role=str(raw_role) if raw_role else None,
                     ))
             log.info(
                 "llm_reflect_complete",
