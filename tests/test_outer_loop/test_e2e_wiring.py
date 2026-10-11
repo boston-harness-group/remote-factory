@@ -527,7 +527,7 @@ class TestStandalone:
             inner_loop_factory=True,
             project_dir=project)
 
-        result = evaluator.evaluate(wf, str(project), ["i5", "i6"])
+        result = evaluator.evaluate(wf, str(project), ["i5", "i6"], split='val')
 
         irs = result.details.get("instance_results", [])
         evaluated_ids = {

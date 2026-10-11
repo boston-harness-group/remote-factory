@@ -267,6 +267,18 @@ def _resolve_items(
             if item.id in allowed_instance_ids
         ]
 
+        # Split firewall: reject IDs whose split doesn't match the run split
+        if resolved_task is not None and split != "all":
+            wrong_split_ids = []
+            for item, inst in task_instances:
+                if inst is not None and inst.split is not None and inst.split != split:
+                    wrong_split_ids.append((item.id, inst.split))
+            if wrong_split_ids:
+                raise ValueError(
+                    f"DataNode split firewall: requested split={split!r} but these IDs "
+                    f"belong to a different split: {wrong_split_ids}"
+                )
+
     # Apply shuffle/limit
     if node.shuffle:
         seed = (
@@ -365,6 +377,9 @@ async def run_fork(
             item_project_path = project_path
             wt_branch: str | None = None
             t0 = time.monotonic()
+            # Use the item's own split (from TaskInstance) when available,
+            # otherwise fall back to the run-level split.
+            item_split = inst.split if (inst is not None and inst.split is not None) else split
             async with sem:
                 try:
                     if dry_run:
@@ -425,7 +440,7 @@ async def run_fork(
                             duration_s = time.monotonic() - t0
                             return ItemResult(
                                 item_id=item.id,
-                                split=split,
+                                split=item_split,
                                 status=ItemStatus.errored,
                                 score=0.0,
                                 error=f"setup_failed: {setup_exc}",
@@ -516,7 +531,7 @@ async def run_fork(
                         )
                         return ItemResult(
                             item_id=item.id,
-                            split=split,
+                            split=item_split,
                             status=ItemStatus.failed,
                             score=0.0,
                             error=f"branch_failed: {branch_exc}",
@@ -555,7 +570,7 @@ async def run_fork(
 
                     return ItemResult(
                         item_id=item.id,
-                        split=split,
+                        split=item_split,
                         status=status,
                         score=score,
                         passed=passed,
@@ -570,7 +585,7 @@ async def run_fork(
                     duration_s = time.monotonic() - t0
                     return ItemResult(
                         item_id=item.id,
-                        split=split,
+                        split=item_split,
                         status=ItemStatus.errored,
                         score=0.0,
                         error=str(exc),

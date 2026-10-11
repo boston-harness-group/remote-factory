@@ -336,7 +336,7 @@ def _run_pipeline(
 
     # ── Run val evaluation (split="val") ──────────────────────
     val_ids = [inst.id for inst in task.instances(split="val")]
-    val_eval = evaluator.evaluate(wf, str(project), val_ids)
+    val_eval = evaluator.evaluate(wf, str(project), val_ids, split='val')
     if val_eval.details.get("instance_results"):
         for r in val_eval.details["instance_results"]:
             result.val_results.append(r if isinstance(r, dict) else dict(r))

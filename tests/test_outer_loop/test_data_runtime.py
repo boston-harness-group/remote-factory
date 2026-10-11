@@ -378,34 +378,26 @@ class TestBug4SplitFiltering:
             f"Expected train items {{t1, t2, t3}}, got {item_ids}"
         )
 
-    def test_subset_cross_split_allowed(self, tmp_path: Path) -> None:
-        """Explicit allowed_instance_ids may include IDs from any split.
-
-        When allowed_instance_ids is provided, split filtering is bypassed
-        (effective split="all") so cross-split IDs work without error.
-        """
+    def test_train_run_with_val_id_raises(self, tmp_path: Path) -> None:
+        """Train run with a val ID in the subset → raises naming the ID."""
         from factory.workflow.data_runtime import run_fork
 
         project = _bootstrap(tmp_path)
         wf = _make_test_workflow()
         task = _SplitTask()
 
-        results = asyncio.run(run_fork(
-            wf,
-            wf.nodes["data"],  # type: ignore[arg-type]
-            "data",
-            project,
-            dry_run=True,
-            task=task,
-            run_id="cross-split",
-            split="train",
-            allowed_instance_ids={"t1", "v1"},  # v1 is val — allowed via explicit IDs
-        ))
-
-        item_ids = {r["item_id"] for r in results}
-        assert item_ids == {"t1", "v1"}, (
-            f"Expected {{t1, v1}} from cross-split subset, got {item_ids}"
-        )
+        with pytest.raises(ValueError, match="split firewall"):
+            asyncio.run(run_fork(
+                wf,
+                wf.nodes["data"],  # type: ignore[arg-type]
+                "data",
+                project,
+                dry_run=True,
+                task=task,
+                run_id="cross-split",
+                split="train",
+                allowed_instance_ids={"t1", "v1"},  # v1 is val — must raise
+            ))
 
     def test_subset_with_nonexistent_ids_raises(self, tmp_path: Path) -> None:
         """If subset contains IDs that don't exist at all, raise ValueError."""
@@ -948,8 +940,8 @@ class TestFix3PerItemSplitLabel:
                 f"Item {r['item_id']} has split={r['split']!r}, expected 'val'"
             )
 
-    def test_all_items_carry_all_split(self, tmp_path: Path) -> None:
-        """run_fork with split='all' → each ItemResult has split='all'."""
+    def test_all_split_items_carry_own_split(self, tmp_path: Path) -> None:
+        """run_fork with split='all' → each ItemResult has its own split label."""
         from factory.workflow.data_runtime import run_fork
 
         project = _bootstrap(tmp_path)
@@ -968,9 +960,15 @@ class TestFix3PerItemSplitLabel:
         ))
 
         assert len(results) == 5, f"Expected 5 items (all), got {len(results)}"
-        for r in results:
-            assert r["split"] == "all", (
-                f"Item {r['item_id']} has split={r['split']!r}, expected 'all'"
+        splits_by_id = {r["item_id"]: r["split"] for r in results}
+        # Items with holdout_ids v1, v2 → split='val'; rest → split='train'
+        for iid in ("t1", "t2", "t3"):
+            assert splits_by_id[iid] == "train", (
+                f"Item {iid} has split={splits_by_id[iid]!r}, expected 'train'"
+            )
+        for iid in ("v1", "v2"):
+            assert splits_by_id[iid] == "val", (
+                f"Item {iid} has split={splits_by_id[iid]!r}, expected 'val'"
             )
 
 

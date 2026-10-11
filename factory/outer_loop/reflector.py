@@ -936,7 +936,7 @@ class OuterLoopReflector:
         from factory.runners.claude import _claude_bin, _claude_model, _cli_error_text
 
         try:
-            cmd = [_claude_bin(), "-p", prompt, "--model", _claude_model(),
+            cmd = [_claude_bin(), "--model", _claude_model(),
                    "--append-system-prompt", "Output only valid JSON.",
                    "--output-format", "text"]
             data: dict[str, object] | None = None

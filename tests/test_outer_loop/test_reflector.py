@@ -1398,7 +1398,7 @@ def test_items_not_duplicated():
 
 
 def test_prompt_via_stdin_not_argv():
-    """Prompt passed via -p AND stdin (input=). -p is present, input= is set."""
+    """Prompt piped via stdin only — -p must NOT be in command args."""
     items = [{"item_id": "a", "status": "ok", "score": 0.5, "passed": True}]
     rec = CycleRecord.from_run(items, aggregate="mean")
     reflector = OuterLoopReflector(llm_reflect=True)
@@ -1429,9 +1429,9 @@ def test_prompt_via_stdin_not_argv():
     mock_run.assert_called_once()
     call_args = mock_run.call_args
     cmd_list = call_args[0][0]
-    # -p must be present in the command args
-    assert "-p" in cmd_list, f"-p not found in command args: {cmd_list}"
-    # Prompt must also be in input= kwarg
+    # -p must NOT be in command args (prompt is via stdin only)
+    assert "-p" not in cmd_list, f"-p found in command args: {cmd_list}"
+    # Prompt must be in input= kwarg
     assert call_args.kwargs.get("input") is not None, "prompt not passed via input="
 
 
