@@ -844,3 +844,28 @@ def test_single_agent_graph_no_remove_parallelize_serialize():
         assert op not in forbidden, (
             f"seed={seed}: got forbidden op {op} on single-agent graph"
         )
+
+
+def test_mutation_applied_logged(caplog):
+    import logging
+    import random
+
+    import structlog
+    from factory.outer_loop.mutations import apply_random_mutation, WeightedRandomStrategy
+    # Configure structlog to route through stdlib logging so caplog captures it
+    old_config = structlog.get_config()
+    structlog.configure(
+        processors=[structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+    )
+    try:
+        wf = Workflow(name='log-test', nodes={'b': AgentNode(id='b', role=AgentRole.BUILDER, prompt_template='x', writes={'o.txt'}, reads=set())}, edges=[], start_node='b')
+        random.seed(0)
+        with caplog.at_level(logging.DEBUG):
+            result = apply_random_mutation(wf, WeightedRandomStrategy(mutation_rate=1.0), generation=0)
+        assert result is not None
+        applied = [r for r in caplog.records if 'mutation_applied' in r.getMessage()]
+        assert len(applied) >= 1, f'No mutation_applied log found in {[r.getMessage() for r in caplog.records]}'
+    finally:
+        structlog.configure(**old_config)

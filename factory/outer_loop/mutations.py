@@ -1081,7 +1081,8 @@ def apply_random_mutation(
     )
 
     for attempt in range(max_attempts):
-        if use_guided and random.random() < 0.7:
+        guided = use_guided and random.random() < 0.7
+        if guided:
             op = strategy.select_guided_operator(  # type: ignore[attr-defined]
                 workflow, generation, reflection_report,
             )
@@ -1099,6 +1100,7 @@ def apply_random_mutation(
             wf, rec = result
             if len(wf.nodes) > MAX_NODES:
                 continue
+            log.info('mutation_applied', operator=rec.operator.value if hasattr(rec.operator, 'value') else str(rec.operator), target=rec.target_node, source='guided' if guided else 'random')
             return result
         log.info('mutation_attempt_failed', operator=op.value, attempt=attempt + 1, reason='_try_mutation returned None')
 
