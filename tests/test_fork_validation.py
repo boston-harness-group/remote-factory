@@ -975,3 +975,250 @@ def test_param_mutate_never_from_guided():
     for _ in range(100):
         ops.add(strategy.select_guided_operator(wf, 0, report))
     assert MutationType.PARAM_MUTATE not in ops, f'PARAM_MUTATE should never be selected, got {ops}'
+
+
+# ── Guided suggestion tests ─────────────────────────────────────────
+
+
+def _stub_rewriter(node_id: str, current_prompt: str, hint: str | None) -> str | None:
+    """Deterministic prompt rewriter stub for tests."""
+    return f"rewritten:{node_id}:{hint or 'none'}"
+
+
+def _make_two_agent_workflow() -> Workflow:
+    """Two-agent graph: builder → researcher."""
+    return Workflow(
+        name='two-agent',
+        nodes={
+            'builder': AgentNode(
+                id='builder',
+                role=AgentRole.BUILDER,
+                prompt_template='Build things.',
+            ),
+            'researcher': AgentNode(
+                id='researcher',
+                role=AgentRole.RESEARCHER,
+                prompt_template='Research things.',
+            ),
+        },
+        edges=[Edge(source='builder', target='researcher')],
+        start_node='builder',
+    )
+
+
+def test_guided_prompt_mutate_targets_named_node():
+    """Suggestion targeting 'builder' only mutates builder's prompt (50 seeds).
+    Uses suggestion.value so the direct-set path is taken (no rewriter needed)."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+
+    for seed in range(50):
+        random.seed(seed)
+        suggestion = MutationSuggestion(
+            operator='prompt_mutate',
+            target='builder',
+            rationale='improve builder prompt',
+            value=f'Improved prompt seed={seed}',
+        )
+        result = _try_mutation(
+            wf, MutationType.PROMPT_MUTATE, frozenset(),
+            prompt_hint=None,
+            suggestion=suggestion,
+        )
+        assert result is not None, f'seed={seed}: _try_mutation returned None'
+        new_wf, rec = result
+        assert rec.target_node == 'builder', (
+            f'seed={seed}: expected target builder, got {rec.target_node}'
+        )
+        builder = new_wf.nodes['builder']
+        researcher = new_wf.nodes['researcher']
+        assert isinstance(builder, AgentNode)
+        assert isinstance(researcher, AgentNode)
+        assert builder.prompt_template == f'Improved prompt seed={seed}', (
+            f'seed={seed}: builder prompt was not set correctly'
+        )
+        assert researcher.prompt_template == 'Research things.', (
+            f'seed={seed}: researcher prompt was changed unexpectedly'
+        )
+
+
+def test_guided_prompt_with_value():
+    """Suggestion with value='<full prompt>' sets prompt_template exactly."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+    full_prompt = 'You are a master builder. Build with precision and care.'
+    suggestion = MutationSuggestion(
+        operator='prompt_mutate',
+        target='builder',
+        rationale='set exact prompt',
+        value=full_prompt,
+    )
+
+    result = _try_mutation(
+        wf, MutationType.PROMPT_MUTATE, frozenset(),
+        prompt_hint=None,
+        suggestion=suggestion,
+    )
+    assert result is not None, '_try_mutation returned None'
+    new_wf, rec = result
+    builder = new_wf.nodes['builder']
+    assert isinstance(builder, AgentNode)
+    assert builder.prompt_template == full_prompt, (
+        f'Expected exact prompt, got {builder.prompt_template!r}'
+    )
+    assert rec.target_node == 'builder'
+    assert 'Applied suggestion' in rec.rationale
+    # Knob should be in sync
+    assert new_wf.knob_values.get('_prompt_builder') == full_prompt
+
+
+def test_target_any_single_agent():
+    """Single-agent graph, suggestion target='any' → that agent is mutated."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = Workflow(
+        name='single-agent',
+        nodes={
+            'builder': AgentNode(
+                id='builder',
+                role=AgentRole.BUILDER,
+                prompt_template='Build.',
+            ),
+        },
+        edges=[],
+        start_node='builder',
+    )
+    suggestion = MutationSuggestion(
+        operator='prompt_mutate',
+        target='any',
+        rationale='general improvement',
+        value='You are an improved builder.',
+    )
+
+    result = _try_mutation(
+        wf, MutationType.PROMPT_MUTATE, frozenset(),
+        prompt_hint=None,
+        suggestion=suggestion,
+    )
+    assert result is not None, '_try_mutation returned None'
+    new_wf, rec = result
+    assert rec.target_node == 'builder'
+    builder = new_wf.nodes['builder']
+    assert isinstance(builder, AgentNode)
+    assert builder.prompt_template == 'You are an improved builder.'
+
+
+def test_frozen_target_skipped(caplog):
+    """Suggestion targeting a frozen node returns None and logs 'frozen'."""
+    import logging
+
+    import structlog
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+    suggestion = MutationSuggestion(
+        operator='prompt_mutate',
+        target='builder',
+        rationale='improve it',
+    )
+
+    old_config = structlog.get_config()
+    structlog.configure(
+        processors=[structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+    )
+    try:
+        with caplog.at_level(logging.DEBUG):
+            result = _try_mutation(
+                wf, MutationType.PROMPT_MUTATE, frozenset({'builder'}),
+                prompt_hint=None,
+                suggestion=suggestion,
+            )
+        assert result is None, f'Expected None for frozen target, got {result}'
+        frozen_logs = [r for r in caplog.records if 'frozen' in r.getMessage()]
+        assert len(frozen_logs) >= 1, (
+            f'Expected log with "frozen", got: {[r.getMessage() for r in caplog.records]}'
+        )
+    finally:
+        structlog.configure(**old_config)
+
+
+def test_missing_target_skipped(caplog):
+    """Suggestion targeting nonexistent node returns None and logs 'not found'."""
+    import logging
+
+    import structlog
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+    suggestion = MutationSuggestion(
+        operator='prompt_mutate',
+        target='nonexistent_node',
+        rationale='improve it',
+    )
+
+    old_config = structlog.get_config()
+    structlog.configure(
+        processors=[structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+    )
+    try:
+        with caplog.at_level(logging.DEBUG):
+            result = _try_mutation(
+                wf, MutationType.PROMPT_MUTATE, frozenset(),
+                prompt_hint=None,
+                suggestion=suggestion,
+            )
+        assert result is None, f'Expected None for missing target, got {result}'
+        missing_logs = [r for r in caplog.records if 'not found' in r.getMessage()]
+        assert len(missing_logs) >= 1, (
+            f'Expected log with "not found", got: {[r.getMessage() for r in caplog.records]}'
+        )
+    finally:
+        structlog.configure(**old_config)
+
+
+def test_guided_node_insert_with_role():
+    """Suggestion 'node_insert' target='builder', rationale mentions 'code_reviewer'.
+    Assert inserted after builder with code_reviewer role."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+    suggestion = MutationSuggestion(
+        operator='node_insert',
+        target='builder',
+        rationale='add a code_reviewer after builder to validate output quality',
+    )
+
+    result = _try_mutation(
+        wf, MutationType.NODE_INSERT, frozenset(),
+        prompt_hint=None,
+        suggestion=suggestion,
+    )
+    assert result is not None, '_try_mutation returned None for guided node_insert'
+    new_wf, rec = result
+    assert rec.operator == MutationType.NODE_INSERT
+
+    # Find the inserted node
+    new_node_ids = set(new_wf.nodes.keys()) - set(wf.nodes.keys())
+    assert len(new_node_ids) >= 1, 'No new node was inserted'
+
+    inserted_node = new_wf.nodes[list(new_node_ids)[0]]
+    assert isinstance(inserted_node, AgentNode)
+    assert inserted_node.role == AgentRole.CODE_REVIEWER, (
+        f'Expected code_reviewer role, got {inserted_node.role}'
+    )
+    # Inserted node should be after builder
+    assert rec.after.get('inserted_after') == 'builder', (
+        f'Expected inserted_after=builder, got {rec.after}'
+    )
