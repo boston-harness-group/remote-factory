@@ -1557,3 +1557,45 @@ def test_reflector_prompt_mentions_position() -> None:
     assert 'position' in prompt, (
         'Reflection prompt should mention position for node_insert'
     )
+
+
+def test_insert_before_wires_notes_file():
+    '''Insert before builder → researcher writes notes file, builder reads it, prompt references it, graph validates.'''
+    from factory.outer_loop.mutations import insert_node
+    from factory.workflow.validation import validate_workflow
+
+    wf = Workflow(
+        name='wire-test',
+        nodes={
+            'data': DataNode(id='data'),
+            'builder': AgentNode(id='builder', role=AgentRole.BUILDER,
+                prompt_template='Build docs', writes={'document.md'}, reads=set(),
+                model='haiku'),
+            '_join_data': JoinNode(id='_join_data', sources=['builder']),
+        },
+        edges=[Edge(source='data', target='builder'), Edge(source='builder', target='_join_data')],
+        start_node='data',
+        runtime_inputs=frozenset({'.factory/current_item.json'}),
+    )
+
+    researcher = AgentNode(id='researcher_1', role=AgentRole.RESEARCHER,
+        prompt_template='Research the topic', reads=set(), writes=set(),
+        model='haiku')
+
+    result = insert_node(wf, researcher, 'builder', position='before', frozen_nodes={'data', '_join_data'})
+    assert result is not None
+    new_wf, rec = result
+
+    # Researcher writes the notes file
+    r_node = new_wf.nodes['researcher_1']
+    assert any('researcher_1_notes.md' in w for w in r_node.writes), f'researcher writes: {r_node.writes}'
+    assert 'researcher_1_notes.md' in r_node.prompt_template
+
+    # Builder reads the notes file
+    b_node = new_wf.nodes['builder']
+    assert any('researcher_1_notes.md' in r for r in b_node.reads), f'builder reads: {b_node.reads}'
+    assert 'researcher_1_notes.md' in b_node.prompt_template
+
+    # Graph validates
+    issues = validate_workflow(new_wf)
+    assert not issues, f'Validation failed: {issues}'

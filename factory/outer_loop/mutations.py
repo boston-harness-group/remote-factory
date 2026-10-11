@@ -400,6 +400,33 @@ def insert_node(
                     new_edges.append(e)
             new_edges.append(Edge(source=new_node.id, target=ref_node_id))
             wf.edges = new_edges
+
+        # Wire the new node's output to the target's input
+        notes_file = f'.factory/{new_node.id}_notes.md'
+
+        # Add writes to new node
+        new_n = wf.nodes[new_node.id]
+        if isinstance(new_n, AgentNode):
+            updated_writes = set(new_n.writes or set()) | {notes_file}
+            updated_prompt = (new_n.prompt_template or '') + f'\nWrite your findings to {notes_file}'
+            wf.nodes[new_node.id] = new_n.model_copy(update={
+                'writes': updated_writes,
+                'prompt_template': updated_prompt,
+            })
+
+        # Add reads to the target node
+        ref_n = wf.nodes[ref_node_id]
+        if isinstance(ref_n, AgentNode):
+            updated_reads = set(ref_n.reads or set()) | {notes_file}
+            updated_ref_prompt = f'Read {notes_file} first. ' + (ref_n.prompt_template or '')
+            wf.nodes[ref_node_id] = ref_n.model_copy(update={
+                'reads': updated_reads,
+                'prompt_template': updated_ref_prompt,
+            })
+            # Keep _prompt_ knob in sync
+            prompt_knob = f'_prompt_{ref_node_id}'
+            if prompt_knob in wf.knob_values:
+                wf.knob_values[prompt_knob] = updated_ref_prompt
     else:
         # Existing 'after' logic
         outgoing = [e for e in wf.edges if e.source == ref_node_id]
