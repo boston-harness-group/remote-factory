@@ -1647,3 +1647,120 @@ class TestWorkflowVisibility:
         )
         assert "identical prompts" in prompt.lower()
         assert "run-to-run variance" in prompt.lower()
+
+
+# ── Shared-failure detection tests ───────────────────────────────────
+
+
+class TestSharedFailureDetection:
+    """Tests for _find_shared_failures and its integration in build_reflection_prompt."""
+
+    def test_shared_missing_section_in_payload(self) -> None:
+        """When every candidate misses the same section, payload marks it as shared failure."""
+        items_a = [
+            {"item_id": "readme-cli", "status": "ok", "score": 0.5, "passed": False,
+             "verify_details": {"missing_sections": ["Errors"], "missing_terms": []}},
+            {"item_id": "tutorial", "status": "ok", "score": 0.6, "passed": False,
+             "verify_details": {"missing_sections": ["Errors", "Usage"], "missing_terms": []}},
+        ]
+        items_b = [
+            {"item_id": "readme-cli", "status": "ok", "score": 0.4, "passed": False,
+             "verify_details": {"missing_sections": ["Errors", "Overview"], "missing_terms": []}},
+            {"item_id": "tutorial", "status": "ok", "score": 0.3, "passed": False,
+             "verify_details": {"missing_sections": ["Errors"], "missing_terms": ["parse"]}},
+        ]
+        rec_a = CycleRecord.from_run(items_a, aggregate="mean")
+        rec_b = CycleRecord.from_run(items_b, aggregate="mean")
+        reflector = OuterLoopReflector()
+        prompt = reflector.build_reflection_prompt(
+            [("a", 0.5, rec_a)], [("b", 0.3, rec_b)],
+            [("a", 0.5, rec_a), ("b", 0.3, rec_b)],
+        )
+        # 'Errors' is missing on BOTH candidates for BOTH items → shared failure
+        assert "FAILURES COMMON TO ALL CANDIDATES" in prompt
+        assert "Errors" in prompt.split("FAILURES COMMON")[1]
+        # 'Overview' is only missing for candidate b → NOT shared
+        # 'Usage' is only missing for candidate a on tutorial → NOT shared
+        # Check item IDs are listed
+        assert "readme-cli" in prompt.split("FAILURES COMMON")[1]
+
+    def test_no_shared_failures_no_section(self) -> None:
+        """When candidates have different failures, no shared failure section."""
+        items_a = [{"item_id": "x", "status": "ok", "score": 0.8, "passed": True,
+                    "verify_details": {"missing_sections": [], "missing_terms": []}}]
+        items_b = [{"item_id": "x", "status": "ok", "score": 0.4, "passed": False,
+                    "verify_details": {"missing_sections": ["Errors"], "missing_terms": ["flag"]}}]
+        rec_a = CycleRecord.from_run(items_a, aggregate="mean")
+        rec_b = CycleRecord.from_run(items_b, aggregate="mean")
+        reflector = OuterLoopReflector()
+        prompt = reflector.build_reflection_prompt(
+            [("a", 0.8, rec_a)], [("b", 0.4, rec_b)],
+            [("a", 0.8, rec_a), ("b", 0.4, rec_b)],
+        )
+        assert "FAILURES COMMON TO ALL CANDIDATES" not in prompt
+
+    def test_find_shared_failures_empty_records(self) -> None:
+        """No records → no shared failures."""
+        result = OuterLoopReflector._find_shared_failures([])
+        assert result == []
+
+    def test_find_shared_failures_none_records_skipped(self) -> None:
+        """Records with None CycleRecord are skipped."""
+        records: list[tuple[str, float, CycleRecord | None]] = [
+            ("a", 0.5, None),
+            ("b", 0.3, None),
+        ]
+        result = OuterLoopReflector._find_shared_failures(records)
+        assert result == []
+
+    def test_find_shared_failures_single_candidate(self) -> None:
+        """A single candidate's failures are trivially shared (all = 1)."""
+        items = [{"item_id": "x", "status": "ok", "score": 0.4, "passed": False,
+                  "verify_details": {"missing_sections": ["Errors"], "missing_terms": ["flag"]}}]
+        rec = CycleRecord.from_run(items, aggregate="mean")
+        result = OuterLoopReflector._find_shared_failures([("a", 0.4, rec)])
+        assert len(result) == 2  # one for sections, one for terms
+        assert any("Errors" in line for line in result)
+        assert any("flag" in line for line in result)
+
+    def test_find_shared_failures_non_dict_verify_details(self) -> None:
+        """Non-dict verify_details are skipped gracefully."""
+        items = [{"item_id": "x", "status": "ok", "score": 0.4, "passed": False,
+                  "verify_details": "not a dict"}]
+        rec = CycleRecord.from_run(items, aggregate="mean")
+        result = OuterLoopReflector._find_shared_failures([("a", 0.4, rec)])
+        assert result == []
+
+    def test_find_shared_failures_non_list_values(self) -> None:
+        """Non-list missing_sections/missing_terms values are skipped."""
+        items = [{"item_id": "x", "status": "ok", "score": 0.4, "passed": False,
+                  "verify_details": {"missing_sections": "not a list", "missing_terms": 42}}]
+        rec = CycleRecord.from_run(items, aggregate="mean")
+        result = OuterLoopReflector._find_shared_failures([("a", 0.4, rec)])
+        assert result == []
+
+    def test_shared_missing_terms(self) -> None:
+        """Shared missing terms across all candidates are reported."""
+        items_a = [{"item_id": "doc1", "status": "ok", "score": 0.3, "passed": False,
+                    "verify_details": {"missing_sections": [], "missing_terms": ["flag", "verbose"]}}]
+        items_b = [{"item_id": "doc1", "status": "ok", "score": 0.4, "passed": False,
+                    "verify_details": {"missing_sections": [], "missing_terms": ["flag", "debug"]}}]
+        rec_a = CycleRecord.from_run(items_a, aggregate="mean")
+        rec_b = CycleRecord.from_run(items_b, aggregate="mean")
+        result = OuterLoopReflector._find_shared_failures([("a", 0.3, rec_a), ("b", 0.4, rec_b)])
+        # 'flag' is missing for both → shared; 'verbose'/'debug' differ → not shared
+        assert len(result) == 1
+        assert 'terms "flag"' in result[0]
+        assert "doc1" in result[0]
+
+    def test_systemic_gaps_instruction_in_prompt(self) -> None:
+        """The instruction about systemic gaps appears in the prompt."""
+        reflector = OuterLoopReflector(k=1)
+        rec = _make_record(0.9, [_make_step("builder")], kept=2)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("w1", 0.9, rec)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [
+            ("l1", 0.1, _make_record(0.1)),
+        ]
+        prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
+        assert "failures common to all candidates" in prompt.lower()
+        assert "systemic gaps" in prompt.lower()

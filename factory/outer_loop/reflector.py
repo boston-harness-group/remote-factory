@@ -533,6 +533,66 @@ class OuterLoopReflector:
                 )
 
     @staticmethod
+    def _find_shared_failures(
+        records: Sequence[tuple[str, float, CycleRecord | None]],
+    ) -> list[str]:
+        """Find failures common to ALL candidates across all items.
+
+        Scans verify_details for keys like missing_sections, missing_terms
+        where the same value appears in every candidate's results for that item.
+        Returns lines like:
+          'All candidates miss sections "Errors" on items: readme-cli, tutorial'
+          'All candidates miss terms "flag" on items: readme-cli'
+        """
+        from collections import defaultdict
+
+        item_failures: dict[str, dict[str, dict[str, set[str]]]] = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(set))
+        )
+        candidate_ids: set[str] = set()
+
+        for cand_id, _, rec in records:
+            if rec is None or not rec.instance_results:
+                continue
+            candidate_ids.add(cand_id)
+            for item in rec.instance_results:
+                if not isinstance(item, dict):
+                    continue
+                item_id = item.get("item_id", "")
+                vd = item.get("verify_details", {})
+                if not isinstance(vd, dict):
+                    continue
+                for key in ("missing_sections", "missing_terms"):
+                    vals = vd.get(key, [])
+                    if isinstance(vals, list):
+                        for v in vals:
+                            item_failures[item_id][key][str(v)].add(cand_id)
+
+        if not candidate_ids:
+            return []
+
+        n_candidates = len(candidate_ids)
+
+        # Group by failure type and value across items
+        # {(key, value): [item_ids where ALL candidates have this failure]}
+        shared: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for item_id, keys in sorted(item_failures.items()):
+            for key, values in sorted(keys.items()):
+                for value, cands in sorted(values.items()):
+                    if len(cands) == n_candidates:
+                        shared[(key, value)].append(item_id)
+
+        lines: list[str] = []
+        for (key, value), item_ids in sorted(shared.items()):
+            label = key.replace("missing_", "")  # 'sections' or 'terms'
+            items_str = ", ".join(item_ids)
+            lines.append(
+                f'All candidates miss {label} "{value}" on items: {items_str}'
+            )
+
+        return lines
+
+    @staticmethod
     def _format_workflow_summary(workflow_data: dict) -> str:
         """Format workflow_data dict into a WORKFLOW section for LLM context.
 
@@ -814,6 +874,13 @@ class OuterLoopReflector:
             if identical_lines:
                 payload += "\n\n" + "\n".join(identical_lines)
 
+        # Shared failures across all candidates
+        all_records = list(top_k) + list(bottom_k)
+        shared_failures = self._find_shared_failures(all_records)
+        if shared_failures:
+            payload += "\n\nFAILURES COMMON TO ALL CANDIDATES:\n"
+            payload += "\n".join(f"  - {f}" for f in shared_failures)
+
         if len(payload) > _LLM_PAYLOAD_BUDGET:
             payload = payload[:_LLM_PAYLOAD_BUDGET] + "\n... (truncated)"
 
@@ -831,6 +898,9 @@ class OuterLoopReflector:
             "Produce concrete improvement advice — specific changes to agent "
             "prompts, parameter choices, or strategies that would move bottom "
             "candidates toward top candidate behavior.\n\n"
+            "Also list failures common to ALL candidates — these are systemic gaps "
+            "that no candidate has solved yet, and should be the highest priority "
+            "for prompt improvements.\n\n"
             "Output a JSON object with three fields:\n"
             '  "prompt_improvements": list of concrete advice strings\n'
             '  "failure_patterns": list of identified failure mode strings\n'
