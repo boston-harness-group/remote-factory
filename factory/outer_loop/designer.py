@@ -12,7 +12,6 @@ from __future__ import annotations
 import structlog
 
 from factory.outer_loop.models import EvalResult, MutationRecord, MutationType
-from factory.workflow.executor import _collect_subgraph_nodes
 from factory.workflow.primitives import (
     AgentNode,
     AgentRole,
@@ -26,6 +25,34 @@ from factory.workflow.primitives import (
 )
 
 log = structlog.get_logger()
+
+
+def _seed_agent_params(seed_workflow: Workflow | None) -> dict[str, object]:
+    """Extract model and timeout from the first AgentNode with a model in the seed workflow."""
+    if seed_workflow is None:
+        return {}
+    for node in seed_workflow.nodes.values():
+        if isinstance(node, AgentNode) and node.model:
+            return {'model': node.model, 'timeout': node.timeout}
+    return {}
+
+
+def _apply_seed_params(
+    nodes: dict[str, NodeType],
+    seed_workflow: Workflow | None,
+) -> None:
+    """Copy model and timeout from seed AgentNodes to designed AgentNodes."""
+    params = _seed_agent_params(seed_workflow)
+    if not params:
+        return
+    model = str(params.get('model', ''))
+    timeout = params.get('timeout')
+    for nid, node in list(nodes.items()):
+        if isinstance(node, AgentNode) and not node.model:
+            update: dict[str, object] = {'model': model}
+            if timeout is not None:
+                update['timeout'] = timeout
+            nodes[nid] = node.model_copy(update=update)
 
 
 def _detect_frozen_data_node(
@@ -90,6 +117,7 @@ class DesignerAgent:
         # Detect if we're creating a subgraph for a DataNode
         is_data_subgraph = _detect_frozen_data_node(seed_workflow, frozen_node_ids) is not None
 
+        _apply_seed_params(nodes, seed_workflow)
         _propagate_prompts_from_seed(nodes, seed_workflow)
         _inject_frozen_nodes(nodes, edges, seed_workflow, frozen_node_ids)
 
@@ -262,6 +290,7 @@ class DesignerAgent:
 
             start_node = "study"
 
+        _apply_seed_params(nodes, seed_workflow)
         _propagate_prompts_from_seed(nodes, seed_workflow)
         _inject_frozen_nodes(nodes, edges, seed_workflow, frozen_node_ids)
 
@@ -354,6 +383,7 @@ class DesignerAgent:
             )
             edges.append(Edge(source=prev_id, target=gate_id))
 
+        _apply_seed_params(nodes, seed_workflow)
         _propagate_prompts_from_seed(nodes, seed_workflow)
         _inject_frozen_nodes(nodes, edges, seed_workflow, frozen_node_ids)
 
@@ -577,14 +607,19 @@ def _inject_frozen_nodes(
             node = seed_workflow.nodes[frozen_id]
             if isinstance(node, DataNode):
                 # DO NOT inject subgraph nodes — template nodes replace them.
-                # Instead, propagate prompt_template from seed subgraph to
+                # Instead, propagate prompt_template from seed branch to
                 # template by matching AgentRole.
-                if (node.subgraph_entry in seed_workflow.nodes
-                        and node.subgraph_exit in seed_workflow.nodes):
-                    subgraph_ids = _collect_subgraph_nodes(
-                        seed_workflow, node.subgraph_entry, node.subgraph_exit
+                from factory.workflow.data_runtime import _find_branch_and_join
+
+                try:
+                    _, _, subgraph_ids = _find_branch_and_join(
+                        seed_workflow, frozen_id
                     )
-                    # Build role→prompt_template map from seed subgraph
+                except ValueError:
+                    subgraph_ids = set()
+
+                if subgraph_ids:
+                    # Build role→prompt_template map from seed branch
                     seed_prompts: dict[str, str] = {}
                     for sg_id in subgraph_ids:
                         sg_node = seed_workflow.nodes.get(sg_id)
@@ -619,19 +654,18 @@ def _rewire_data_nodes(
 ) -> str | None:
     """Rewire injected frozen DataNodes so they integrate into the template.
 
-    For each frozen DataNode, unconditionally update:
-    - subgraph_entry → template's original start_node (the first template node)
-    - subgraph_exit  → template's terminal node (no outgoing edges)
+    For each frozen DataNode, set up real edges:
+    - DataNode → template's original start_node (branch entry)
+    - template's terminal node → JoinNode
 
-    The template nodes ARE the new subgraph — the DataNode's old subgraph
-    references are replaced because the outer loop evolves the subgraph
+    The template nodes ARE the new branch — the DataNode's old branch
+    references are replaced because the outer loop evolves the branch
     topology, not the DataNode infrastructure.
-
-    No explicit edge is added from the DataNode to subgraph_entry — the
-    executor reads subgraph_entry directly from the DataNode object.
 
     Returns the DataNode ID (new start_node) or None if no DataNode was injected.
     """
+    from factory.workflow.primitives import JoinNode as _JoinNode
+
     if not seed_workflow or not frozen_node_ids:
         return None
 
@@ -639,7 +673,7 @@ def _rewire_data_nodes(
     sources = {e.source for e in edges}
     all_node_ids = set(nodes.keys())
     terminal_candidates = all_node_ids - sources
-    # Exclude the frozen DataNodes themselves from terminal candidates
+    # Exclude the frozen DataNodes and JoinNodes from terminal candidates
     frozen_data_ids: set[str] = set()
 
     for fid in frozen_node_ids:
@@ -650,7 +684,10 @@ def _rewire_data_nodes(
     if not frozen_data_ids:
         return None
 
+    # Also exclude JoinNodes from terminal candidates
+    join_ids = {nid for nid, n in nodes.items() if isinstance(n, _JoinNode)}
     terminal_candidates -= frozen_data_ids
+    terminal_candidates -= join_ids
     terminal_node = next(iter(terminal_candidates)) if terminal_candidates else original_start
 
     new_start: str | None = None
@@ -658,11 +695,7 @@ def _rewire_data_nodes(
         data_node = nodes[data_id]
         assert isinstance(data_node, DataNode)
 
-        # Determine subgraph entry: if the DataNode ID collides with the
-        # template's original_start, follow edges to find the actual first
-        # template node (otherwise subgraph_entry would point to itself).
-        # Also remove the now-stale edges from original_start — they would
-        # become invalid edges from the DataNode to its own subgraph.
+        # Determine branch entry
         entry = original_start
         if data_id == original_start:
             for edge in edges:
@@ -671,36 +704,20 @@ def _rewire_data_nodes(
                     break
             edges[:] = [e for e in edges if e.source != original_start]
 
-        updated = data_node.model_copy(
-            update={"subgraph_entry": entry, "subgraph_exit": terminal_node}
-        )
-        nodes[data_id] = updated
+        # Remove any stale edges from DataNode (e.g. old edge→subgraph_entry)
+        edges[:] = [e for e in edges if e.source != data_id]
 
-        # Part D: If the terminal node is a GateNode that now serves as
-        # subgraph_exit, it needs a PROCEED edge to advance past the
-        # subgraph boundary.  The original template had it as a terminal
-        # node (zero outgoing edges — valid for SKILL.md), but inside a
-        # DataNode subgraph the executor expects a PROCEED edge.
-        exit_node = nodes.get(terminal_node)
-        if exit_node is not None and type(exit_node).__name__ == "GateNode":
-            has_proceed = any(
-                e.source == terminal_node and e.condition == VerdictType.PROCEED
-                for e in edges
-            )
-            if not has_proceed:
-                # Find the next node after the DataNode in the edge list
-                after_data_targets = [
-                    e.target for e in edges
-                    if e.source == data_id and e.target != terminal_node
-                ]
-                proceed_target = after_data_targets[0] if after_data_targets else data_id
-                edges.append(
-                    Edge(
-                        source=terminal_node,
-                        target=proceed_target,
-                        condition=VerdictType.PROCEED,
-                    )
-                )
+        # Add edge: DataNode → branch entry
+        edges.append(Edge(source=data_id, target=entry))
+
+        # Ensure a JoinNode exists after the terminal node
+        join_id = f"_join_{data_id}"
+        if join_id not in nodes:
+            nodes[join_id] = _JoinNode(id=join_id, sources=[terminal_node])
+        # Add edge: terminal → JoinNode (if not already present)
+        if not any(e.source == terminal_node and e.target == join_id for e in edges):
+            edges.append(Edge(source=terminal_node, target=join_id))
+
         new_start = data_id
 
     return new_start

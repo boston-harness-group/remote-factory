@@ -7,6 +7,7 @@ failure patterns, success patterns, and informed mutation suggestions.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import time
@@ -21,8 +22,7 @@ from factory.outer_loop.models import MutationType
 
 log = structlog.get_logger()
 
-_INSTANCE_CHAR_BUDGET = 800
-_MAX_INSTANCES_PER_INDIVIDUAL = 5
+_PER_CANDIDATE_CHAR_BUDGET = 30000
 _LLM_PAYLOAD_BUDGET = 8000
 _VALID_LLM_OPERATORS = {t.value for t in MutationType}
 
@@ -51,6 +51,37 @@ class ReflectionReport:
     typed_suggestions: list[MutationSuggestion] = field(default_factory=list)
 
 
+def _filter_suggestions(
+    suggestions: list[MutationSuggestion],
+    valid_node_ids: set[str],
+) -> list[MutationSuggestion]:
+    """Drop mutation suggestions targeting nodes that don't exist in the workflow.
+
+    Keeps suggestions whose target is:
+    - A known node ID
+    - A known role name (agent roles like "builder")
+    - A generic target like "any"
+    - A knob name (contains no dots, doesn't look like a node ID)
+    """
+    # Operators that target knob names or roles, not node IDs
+    _NON_NODE_OPERATORS = {"knob_mutate", "node_insert"}
+
+    result: list[MutationSuggestion] = []
+    for s in suggestions:
+        if s.operator in _NON_NODE_OPERATORS:
+            result.append(s)
+        elif s.target in valid_node_ids or s.target == "any":
+            result.append(s)
+        else:
+            log.debug(
+                "reflector_dropped_suggestion",
+                operator=s.operator,
+                target=s.target,
+                reason="target node not in workflow",
+            )
+    return result
+
+
 class OuterLoopReflector:
     """Two-stage contrastive reflection on CycleRecord exhaust.
 
@@ -74,6 +105,7 @@ class OuterLoopReflector:
         records: list[tuple[str, float, CycleRecord | None]],
         generation: int = 0,
         knob_values_by_id: dict[str, dict[str, object]] | None = None,
+        workflow_data_by_id: dict[str, dict] | None = None,
     ) -> ReflectionReport:
         """Analyze a generation's results via contrastive reflection.
 
@@ -83,6 +115,9 @@ class OuterLoopReflector:
             knob_values_by_id: optional mapping of individual_id to knob_values
                 dict. When provided, enables knob-contrastive analysis that
                 identifies which knob settings correlate with high/low scores.
+            workflow_data_by_id: optional mapping of individual_id to workflow
+                data dict. When provided, includes workflow summaries with full
+                prompts in the reflection context and detects identical prompts.
 
         Returns:
             ReflectionReport with patterns and suggestions
@@ -124,7 +159,20 @@ class OuterLoopReflector:
             self._extract_knob_patterns(valid, top_k, bottom_k, knob_values_by_id, report)
 
         if self._llm_reflect_enabled:
-            self._llm_reflect(top_k, bottom_k, records, report)
+            self._llm_reflect(top_k, bottom_k, records, report,
+                              workflow_data_by_id=workflow_data_by_id)
+
+        # Collect real node IDs from CycleRecords and filter suggestions
+        # to prevent the reflector from targeting invented node names.
+        all_node_ids: set[str] = set()
+        for _, _, rec in valid:
+            if rec is not None:
+                all_node_ids.update(rec.node_trace.keys())
+                all_node_ids.update(rec.mutable_node_ids)
+        if all_node_ids:
+            report.typed_suggestions = _filter_suggestions(
+                report.typed_suggestions, all_node_ids,
+            )
 
         if self._project_dir:
             self._save_report(report, generation)
@@ -485,73 +533,215 @@ class OuterLoopReflector:
                 )
 
     @staticmethod
+    def _find_shared_failures(
+        records: Sequence[tuple[str, float, CycleRecord | None]],
+    ) -> list[str]:
+        """Find failures common to ALL candidates across all items.
+
+        Scans verify_details for keys like missing_sections, missing_terms
+        where the same value appears in every candidate's results for that item.
+        Returns lines like:
+          'All candidates miss sections "Errors" on items: readme-cli, tutorial'
+          'All candidates miss terms "flag" on items: readme-cli'
+        """
+        from collections import defaultdict
+
+        item_failures: dict[str, dict[str, dict[str, set[str]]]] = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(set))
+        )
+        candidate_ids: set[str] = set()
+
+        for cand_id, _, rec in records:
+            if rec is None or not rec.instance_results:
+                continue
+            candidate_ids.add(cand_id)
+            for item in rec.instance_results:
+                if not isinstance(item, dict):
+                    continue
+                item_id = item.get("item_id", "")
+                vd = item.get("verify_details", {})
+                if not isinstance(vd, dict):
+                    continue
+                for key in ("missing_sections", "missing_terms"):
+                    vals = vd.get(key, [])
+                    if isinstance(vals, list):
+                        for v in vals:
+                            item_failures[item_id][key][str(v)].add(cand_id)
+
+        if not candidate_ids:
+            return []
+
+        n_candidates = len(candidate_ids)
+
+        # Group by failure type and value across items
+        # {(key, value): [item_ids where ALL candidates have this failure]}
+        shared: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for item_id, keys in sorted(item_failures.items()):
+            for key, values in sorted(keys.items()):
+                for value, cands in sorted(values.items()):
+                    if len(cands) == n_candidates:
+                        shared[(key, value)].append(item_id)
+
+        lines: list[str] = []
+        for (key, value), item_ids in sorted(shared.items()):
+            label = key.replace("missing_", "")  # 'sections' or 'terms'
+            items_str = ", ".join(item_ids)
+            lines.append(
+                f'All candidates miss {label} "{value}" on items: {items_str}'
+            )
+
+        return lines
+
+    @staticmethod
+    def _format_workflow_summary(workflow_data: dict) -> str:
+        """Format workflow_data dict into a WORKFLOW section for LLM context.
+
+        For AgentNode: show id, type, role, model, timeout, max_iterations,
+        and full prompt_template (indented, never truncated).
+        For other nodes: just id and type.
+        """
+        lines: list[str] = ["  WORKFLOW:"]
+        nodes = workflow_data.get("nodes", {})
+        for nid, node in nodes.items():
+            ntype = node.get("_type", "Unknown")
+            if ntype == "AgentNode":
+                role = node.get("role", "")
+                model = node.get("model", "")
+                timeout = node.get("timeout")
+                max_iter = node.get("max_iterations", 1)
+                parts = [f"role={role}"]
+                if model:
+                    parts.append(f"model={model}")
+                if timeout is not None:
+                    parts.append(f"timeout={timeout}")
+                if max_iter != 1:
+                    parts.append(f"max_turns={max_iter}")
+                lines.append(f"    node: {nid} ({ntype}, {', '.join(parts)})")
+                prompt = node.get("prompt_template", "")
+                if prompt:
+                    lines.append("      prompt_template: |")
+                    for pline in prompt.splitlines():
+                        lines.append(f"        {pline}")
+            else:
+                lines.append(f"    node: {nid} ({ntype})")
+        knob_values = workflow_data.get("knob_values", {})
+        if knob_values:
+            lines.append(f"    knob_values: {knob_values}")
+        return "\n".join(lines)
+
+    @staticmethod
     def _collect_individual_details(
         id_: str, score: float, rec: CycleRecord | None,
         *, char_budget: int | None = None,
+        workflow_data: dict | None = None,
     ) -> str:
-        """Collect eval/verify details from one individual for LLM context."""
-        parts = [f"ID: {id_[:8]}, score: {score:.3f}"]
-        if rec is None:
-            return "; ".join(parts)
-        if rec.eval_details and isinstance(rec.eval_details, dict):
-            verify = rec.eval_details.get("verify")
-            if isinstance(verify, dict):
-                instances = verify.get("instance_results")
-                if isinstance(instances, list):
-                    for inst in instances[:_MAX_INSTANCES_PER_INDIVIDUAL]:
-                        if not isinstance(inst, dict):
-                            continue
-                        inst_parts: list[str] = []
-                        for k, v in inst.items():
-                            s = str(v)[:_INSTANCE_CHAR_BUDGET // max(len(inst), 1)]
-                            inst_parts.append(f"{k}={s}")
-                        parts.append("instance: " + ", ".join(inst_parts))
-                for k, v in verify.items():
-                    if k == "instance_results":
-                        continue
-                    parts.append(f"{k}={str(v)[:120]}")
-            for k, v in rec.eval_details.items():
-                if k == "verify":
-                    continue
-                parts.append(f"{k}={str(v)[:200]}")
-        if rec.instance_results and isinstance(rec.instance_results, list):
-            for inst in rec.instance_results[:_MAX_INSTANCES_PER_INDIVIDUAL]:
-                if isinstance(inst, dict):
-                    for k, v in inst.items():
-                        parts.append(f"{k}={str(v)[:120]}")
-        if rec.steps:
-            roles = [f"{s.role}({'ok' if s.succeeded else 'FAIL'})" for s in rec.steps[:5]]
-            parts.append("agents: " + ", ".join(roles))
+        """Collect eval/verify details from one individual for LLM context.
 
+        Uses a multi-line block format per item.  Never truncates inside a
+        block.  When total output exceeds *char_budget* (default
+        ``_PER_CANDIDATE_CHAR_BUDGET``), whole items are dropped — passed
+        items first — and a summary line is appended.
+        """
+        budget = char_budget if char_budget is not None else _PER_CANDIDATE_CHAR_BUDGET
+        header = f"ID: {id_[:8]}, score: {score:.3f}"
+        if rec is None:
+            return header
+
+        lines: list[str] = [header]
+
+        # --- Workflow summary (before item results) ---
+        if workflow_data:
+            wf_summary = OuterLoopReflector._format_workflow_summary(workflow_data)
+            lines.append(wf_summary)
+
+        # --- Instance blocks (single source: rec.instance_results) ---
+        if rec.instance_results and isinstance(rec.instance_results, list):
+            blocks: list[tuple[bool, str]] = []  # (passed, block_text)
+            for inst in rec.instance_results:
+                if not isinstance(inst, dict):
+                    continue
+                item_id = inst.get("item_id", "?")
+                split = inst.get("split", "?")
+                status = inst.get("status", "?")
+                inst_score = inst.get("score", "?")
+                passed = inst.get("passed", False)
+                block_lines = [
+                    f"  instance: item_id={item_id}, split={split}, "
+                    f"status={status}, score={inst_score}, passed={passed}",
+                ]
+                error = inst.get("error")
+                if error:
+                    block_lines.append(f"    error: {error}")
+                vd = inst.get("verify_details")
+                if isinstance(vd, dict) and vd:
+                    block_lines.append("    verify_details:")
+                    for k, v in vd.items():
+                        block_lines.append(f"      {k}: {v}")
+                blocks.append((bool(passed), "\n".join(block_lines)))
+
+            # Budget check: drop whole items (passed first) if over budget
+            total_len = sum(len(header) + 1 + len(b) for _, b in blocks)
+            if total_len > budget:
+                # Sort: passed items first so they get dropped first
+                indexed = list(enumerate(blocks))
+                indexed.sort(key=lambda x: (not x[1][0], x[0]))
+                kept_indices: set[int] = set()
+                running = len(header) + 1
+                # Reserve space for omission message
+                omit_reserve = 60
+                for orig_idx, (passed, text) in indexed:
+                    if running + len(text) + 1 + omit_reserve <= budget:
+                        kept_indices.add(orig_idx)
+                        running += len(text) + 1
+                omitted = len(blocks) - len(kept_indices)
+                for orig_idx, (_, text) in enumerate(blocks):
+                    if orig_idx in kept_indices:
+                        lines.append(text)
+                if omitted > 0:
+                    lines.append(
+                        f"  ({omitted} items omitted"
+                        " — see runs/<run>/items/)"
+                    )
+            else:
+                for _, text in blocks:
+                    lines.append(text)
+
+        # --- eval_details (legacy / extra keys) ---
+        if rec.eval_details and isinstance(rec.eval_details, dict):
+            for k, v in rec.eval_details.items():
+                if k == 'verify':
+                    # Render non-instance_results keys from verify dict
+                    if isinstance(v, dict):
+                        for vk, vv in v.items():
+                            if vk == 'instance_results':
+                                continue  # Already rendered above
+                            lines.append(f"{vk}: {str(vv)[:200]}")
+                    continue
+                lines.append(f"{k}: {str(v)[:200]}")
+
+        # --- Steps ---
+        if rec.steps:
+            roles = [
+                f"{s.role}({'ok' if s.succeeded else 'FAIL'})"
+                for s in rec.steps[:5]
+            ]
+            lines.append("agents: " + ", ".join(roles))
+
+        # --- Experiments ---
         if rec.experiments:
-            _EXP_OVERHEAD = 25
-            remaining: float = (
-                (char_budget - len("; ".join(parts)))
-                if char_budget is not None
-                else 2000.0
-            )
-            exp_lines: list[str] = []
             for exp in rec.experiments[:5]:
                 line = f"exp{exp.exp_id}({exp.verdict}"
                 if exp.score_delta is not None:
                     line += f" Δ={exp.score_delta:+.3f}"
                 line += ")"
                 if exp.hypothesis:
-                    hyp_budget = max(0, int(remaining) - _EXP_OVERHEAD - len(line))
-                    if hyp_budget > 0:
-                        line += f" {exp.hypothesis[:hyp_budget]}"
-                candidate_len = len("; ".join(parts + exp_lines + [line]))
-                if char_budget is not None and candidate_len > char_budget:
+                    line += f" {exp.hypothesis[:200]}"
+                candidate = "\n".join(lines + [line])
+                if len(candidate) > budget:
                     break
-                exp_lines.append(line)
-                remaining = (
-                    (char_budget - len("; ".join(parts + exp_lines)))
-                    if char_budget is not None
-                    else remaining - len(line) - 2
-                )
-            parts.extend(exp_lines)
+                lines.append(line)
 
-        return "; ".join(parts)
+        return "\n".join(lines)
 
     @staticmethod
     def _collect_node_ids(
@@ -570,26 +760,95 @@ class OuterLoopReflector:
                     seen[step.role] = step.role
         return [{"node_id": nid, "role": role} for nid, role in seen.items()]
 
-    def _llm_reflect(
+    @staticmethod
+    def _compare_prompts_across_candidates(
+        workflow_data_by_id: dict[str, dict],
+        all_ids: list[str],
+    ) -> list[str]:
+        """Compare prompt_templates across candidates.
+
+        Returns lines describing candidates with identical prompts and
+        what differs between them (params, knobs, timeout, etc.).
+        """
+        # Build a fingerprint → list of (id, node_params) mapping
+        # Fingerprint = hash of all agent prompt_templates sorted by node id
+        fingerprints: dict[str, list[tuple[str, dict]]] = {}
+        for cid in all_ids:
+            wf = workflow_data_by_id.get(cid, {})
+            nodes = wf.get("nodes", {})
+            agent_prompts: list[tuple[str, str]] = []
+            for nid in sorted(nodes):
+                node = nodes[nid]
+                if node.get("_type") == "AgentNode":
+                    agent_prompts.append((nid, node.get("prompt_template", "")))
+            if not agent_prompts:
+                continue
+            fp = hashlib.sha256(
+                json.dumps(agent_prompts, sort_keys=True).encode()
+            ).hexdigest()[:16]
+            fingerprints.setdefault(fp, []).append((cid, wf))
+
+        result_lines: list[str] = []
+        for _fp, group in fingerprints.items():
+            if len(group) < 2:
+                continue
+            ids = [cid[:8] for cid, _ in group]
+            # Find differences in non-prompt params
+            diffs: set[str] = set()
+            first_wf = group[0][1]
+            first_nodes = first_wf.get("nodes", {})
+            for _, other_wf in group[1:]:
+                other_nodes = other_wf.get("nodes", {})
+                for nid in set(first_nodes) | set(other_nodes):
+                    fn = first_nodes.get(nid, {})
+                    on = other_nodes.get(nid, {})
+                    if fn.get("_type") == "AgentNode" or on.get("_type") == "AgentNode":
+                        for key in ("model", "timeout", "max_iterations"):
+                            if fn.get(key) != on.get(key):
+                                diffs.add(key)
+                first_knobs = first_wf.get("knob_values", {})
+                other_knobs = other_wf.get("knob_values", {})
+                if first_knobs != other_knobs:
+                    for k in set(first_knobs) | set(other_knobs):
+                        if first_knobs.get(k) != other_knobs.get(k):
+                            diffs.add(f"knob:{k}")
+            diff_desc = ", ".join(sorted(diffs)) if diffs else "run-to-run variance only"
+            result_lines.append(
+                f"IDENTICAL PROMPTS: Candidates {' and '.join(ids)} have identical "
+                f"prompts; their score difference comes from {diff_desc}."
+            )
+        return result_lines
+
+    def build_reflection_prompt(
         self,
         top_k: Sequence[tuple[str, float, CycleRecord | None]],
         bottom_k: Sequence[tuple[str, float, CycleRecord | None]],
-        records: list[tuple[str, float, CycleRecord | None]],
-        report: ReflectionReport,
-    ) -> None:
-        """LLM-based contrastive reflection: one call per generation."""
-        n_individuals = len(top_k) + len(bottom_k)
-        per_individual = int(_LLM_PAYLOAD_BUDGET * 0.85) // max(n_individuals, 1)
+        records: Sequence[tuple[str, float, CycleRecord | None]],
+        workflow_data_by_id: dict[str, dict] | None = None,
+    ) -> str:
+        """Build the LLM reflection prompt without calling the LLM.
+
+        Public so tests can inspect the prompt text directly.
+        """
+        per_individual = _PER_CANDIDATE_CHAR_BUDGET
+
+        wf_by_id = workflow_data_by_id or {}
 
         top_details = []
         for id_, score, rec in top_k:
             top_details.append(
-                self._collect_individual_details(id_, score, rec, char_budget=per_individual)
+                self._collect_individual_details(
+                    id_, score, rec, char_budget=per_individual,
+                    workflow_data=wf_by_id.get(id_),
+                )
             )
         bottom_details = []
         for id_, score, rec in bottom_k:
             bottom_details.append(
-                self._collect_individual_details(id_, score, rec, char_budget=per_individual)
+                self._collect_individual_details(
+                    id_, score, rec, char_budget=per_individual,
+                    workflow_data=wf_by_id.get(id_),
+                )
             )
 
         node_info = self._collect_node_ids(list(top_k) + list(bottom_k))
@@ -608,19 +867,38 @@ class OuterLoopReflector:
             + "\n".join(f"  {d}" for d in bottom_details)
             + node_section
         )
-        if len(payload) > _LLM_PAYLOAD_BUDGET:
-            payload = payload[:_LLM_PAYLOAD_BUDGET] + "\n... (truncated)"
+
+        # Compare prompts across candidates and append identical-prompt lines
+        if wf_by_id:
+            all_ids = [id_ for id_, _, _ in top_k] + [id_ for id_, _, _ in bottom_k]
+            identical_lines = self._compare_prompts_across_candidates(wf_by_id, all_ids)
+            if identical_lines:
+                payload += "\n\n" + "\n".join(identical_lines)
+
+        # Shared failures across all candidates
+        all_records = list(top_k) + list(bottom_k)
+        shared_failures = self._find_shared_failures(all_records)
+        if shared_failures:
+            payload += "\n\nFAILURES COMMON TO ALL CANDIDATES:\n"
+            payload += "\n".join(f"  - {f}" for f in shared_failures)
 
         operators_list = ", ".join(sorted(_VALID_LLM_OPERATORS))
-        prompt = (
+        return (
             "Analyze these verification results from an evolutionary search. "
             "Here are the details from the top-performing candidates and the "
             "bottom-performing candidates.\n\n"
+            "Before attributing a score difference to a prompt change, check "
+            "whether the prompts actually differ. Candidates with identical "
+            "prompts have their score difference explained by parameter changes "
+            "or run-to-run variance, not prompt quality.\n\n"
             f"{payload}\n\n"
             "Identify what distinguishes successful from unsuccessful candidates. "
             "Produce concrete improvement advice — specific changes to agent "
             "prompts, parameter choices, or strategies that would move bottom "
             "candidates toward top candidate behavior.\n\n"
+            "Also list failures common to ALL candidates — these are systemic gaps "
+            "that no candidate has solved yet, and should be the highest priority "
+            "for prompt improvements.\n\n"
             "Output a JSON object with three fields:\n"
             '  "prompt_improvements": list of concrete advice strings\n'
             '  "failure_patterns": list of identified failure mode strings\n'
@@ -641,16 +919,31 @@ class OuterLoopReflector:
             "Output ONLY the JSON object."
         )
 
+    def _llm_reflect(
+        self,
+        top_k: Sequence[tuple[str, float, CycleRecord | None]],
+        bottom_k: Sequence[tuple[str, float, CycleRecord | None]],
+        records: list[tuple[str, float, CycleRecord | None]],
+        report: ReflectionReport,
+        workflow_data_by_id: dict[str, dict] | None = None,
+    ) -> None:
+        """LLM-based contrastive reflection: one call per generation."""
+        prompt = self.build_reflection_prompt(
+            top_k, bottom_k, records,
+            workflow_data_by_id=workflow_data_by_id,
+        )
+
         from factory.runners.claude import _claude_bin, _claude_model, _cli_error_text
 
         try:
-            cmd = [_claude_bin(), "-p", prompt, "--model", _claude_model(),
+            cmd = [_claude_bin(), "--model", _claude_model(),
                    "--append-system-prompt", "Output only valid JSON.",
                    "--output-format", "text"]
             data: dict[str, object] | None = None
             for attempt in range(3):
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=120,
+                    cmd, input=prompt,
+                    capture_output=True, text=True, timeout=120,
                 )
                 raw = proc.stdout.strip()
                 if _cli_error_text(raw):

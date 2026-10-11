@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import networkx as nx
 import structlog
@@ -26,20 +26,51 @@ from factory.outer_loop.reflector import MutationSuggestion, ReflectionReport
 log = structlog.get_logger()
 
 
+def _infer_agent_params(workflow: Workflow, near_node_id: str) -> dict[str, Any]:
+    """Infer model and timeout from the node at *near_node_id*, falling back to
+    the first AgentNode with a model set."""
+    params: dict[str, Any] = {}
+    # Try the target node first
+    target_node = workflow.nodes.get(near_node_id)
+    if isinstance(target_node, AgentNode):
+        if target_node.model:
+            params["model"] = target_node.model
+        if target_node.timeout is not None:
+            params["timeout"] = target_node.timeout
+    # Fallback: scan all nodes for first AgentNode with model set
+    if "model" not in params:
+        for node in workflow.nodes.values():
+            if isinstance(node, AgentNode) and node.model:
+                params.setdefault("model", node.model)
+                if node.timeout is not None:
+                    params.setdefault("timeout", node.timeout)
+                break
+    return params
+
+
 def _is_in_data_subgraph(workflow: Workflow, node_id: str) -> bool:
-    """Check if node_id is inside any DataNode's subgraph."""
-    from factory.workflow.executor import _collect_subgraph_nodes
-    from factory.workflow.primitives import DataNode
+    """Check if node_id is inside any DataNode's fork branch."""
+    from factory.workflow.primitives import DataNode, JoinNode
 
     for nid, node in workflow.nodes.items():
         if isinstance(node, DataNode):
-            if (node.subgraph_entry in workflow.nodes
-                    and node.subgraph_exit in workflow.nodes):
-                subgraph = _collect_subgraph_nodes(
-                    workflow, node.subgraph_entry, node.subgraph_exit
-                )
-                if node_id in subgraph:
-                    return True
+            # Walk forward from DataNode edges to find branch nodes
+            edge_targets = [e.target for e in workflow.edges if e.source == nid]
+            visited: set[str] = set()
+            queue = list(edge_targets)
+            while queue:
+                current = queue.pop(0)
+                if current in visited:
+                    continue
+                target_node = workflow.nodes.get(current)
+                if isinstance(target_node, JoinNode):
+                    continue  # Don't go past JoinNode
+                visited.add(current)
+                for e in workflow.edges:
+                    if e.source == current:
+                        queue.append(e.target)
+            if node_id in visited:
+                return True
     return False
 
 
@@ -201,16 +232,46 @@ def validate_and_repair(workflow: Workflow) -> Workflow | None:
         if not has_gated_edge:
             return None
 
+    # Reject JoinNode with dangling sources
+    for _nid, _node in workflow.nodes.items():
+        if isinstance(_node, JoinNode):
+            for src in _node.sources:
+                if src not in workflow.nodes:
+                    return None
+
+    # Reject DataNode workflows with broken fork/join structure
+    for _nid, _node in workflow.nodes.items():
+        if isinstance(_node, _DataNodeType):
+            has_out = any(e.source == _nid for e in workflow.edges)
+            if not has_out:
+                return None
+            # Check that a JoinNode is reachable from the DataNode
+            visited_dn: set[str] = set()
+            queue_dn = [e.target for e in workflow.edges if e.source == _nid]
+            found_join = False
+            while queue_dn:
+                cur = queue_dn.pop(0)
+                if cur in visited_dn:
+                    continue
+                visited_dn.add(cur)
+                if isinstance(workflow.nodes.get(cur), JoinNode):
+                    found_join = True
+                    break
+                for e in workflow.edges:
+                    if e.source == cur:
+                        queue_dn.append(e.target)
+            if not found_join:
+                return None
+
     # Verify reads/writes chain
-    # For nodes inside a DataNode subgraph, .factory/current_item.json is
-    # a system-provided file (written by the executor before subgraph runs).
+    # For nodes inside a DataNode branch, .factory/current_item.json is
+    # a system-provided file (written by the runtime before branch runs).
     _data_subgraph_nodes: set[str] = set()
     for _nid, _node in workflow.nodes.items():
         if isinstance(_node, _DataNodeType):
-            if (_node.subgraph_entry in workflow.nodes
-                    and _node.subgraph_exit in workflow.nodes):
-                from factory.workflow.executor import _collect_subgraph_nodes as _csn
-                _data_subgraph_nodes |= _csn(workflow, _node.subgraph_entry, _node.subgraph_exit)
+            for nid_check in workflow.nodes:
+                if _is_in_data_subgraph(workflow, nid_check):
+                    _data_subgraph_nodes.add(nid_check)
 
     for nid, node in workflow.nodes.items():
         if node.reads:
@@ -253,6 +314,7 @@ def _deep_copy_workflow(workflow: Workflow) -> Workflow:
         knob_expandable=dict(workflow.knob_expandable),
         knob_specs={k: dict(v) for k, v in workflow.knob_specs.items()},
         declared_capabilities=frozenset(workflow.declared_capabilities),
+        runtime_inputs=frozenset(workflow.runtime_inputs),
     )
 
 
@@ -999,7 +1061,8 @@ def apply_random_mutation(
 def _extract_prompt_hint(report: ReflectionReport) -> str | None:
     """Extract a prompt improvement hint from a ReflectionReport."""
     if report.prompt_improvements:
-        return random.choice(report.prompt_improvements)
+        numbered = [f"{i+1}. {imp}" for i, imp in enumerate(report.prompt_improvements)]
+        return "\n".join(numbered)
     if report.success_patterns:
         return random.choice(report.success_patterns)
     return None
@@ -1106,12 +1169,15 @@ def _try_mutation(
             new_id = _generate_unique_agent_id(set(workflow.nodes.keys()), complementary_role)
             prompt_tmpl = _ROLE_PROMPT_TEMPLATES.get(complementary_role, "")
 
+            agent_params = _infer_agent_params(workflow, target)
             new_node = AgentNode(
                 id=new_id,
                 role=complementary_role,
                 reads=new_reads,
                 writes=new_writes,
                 prompt_template=prompt_tmpl,
+                model=agent_params.get("model", ""),
+                timeout=agent_params.get("timeout"),
             )
 
             # If inserting into a DataNode subgraph, make the new node data-aware
@@ -1128,12 +1194,20 @@ def _try_mutation(
                     reads=data_reads,
                     writes=new_node.writes,
                     prompt_template=data_prompt,
+                    model=new_node.model,
+                    timeout=new_node.timeout,
                 )
         else:
             # Fallback: no AgentNodes exist at all
             role = random.choice(list(AgentRole))
             new_id = _generate_unique_agent_id(set(workflow.nodes.keys()), role)
-            new_node = AgentNode(id=new_id, role=role)
+            agent_params = _infer_agent_params(workflow, target)
+            new_node = AgentNode(
+                id=new_id,
+                role=role,
+                model=agent_params.get("model", ""),
+                timeout=agent_params.get("timeout"),
+            )
 
         return insert_node(workflow, new_node, target, frozen_nodes=frozen)
 

@@ -159,6 +159,14 @@ class FnNode(Node):
     callable_name: str | None = None
     notes: str = ""
 
+    @model_validator(mode="after")
+    def _require_command_or_callable(self) -> FnNode:
+        if not self.command and not self.callable_name:
+            raise ValueError(
+                f"FnNode '{self.id}' must have either command or callable_name set"
+            )
+        return self
+
 
 class GateNode(Node):
     """Decision node that produces a Verdict."""
@@ -216,7 +224,10 @@ class DataItem(BaseModel):
 
 
 class DataNode(Node):
-    """Node that loads data items and drives per-item execution of a subgraph."""
+    """Fork node: when a run reaches it, the workflow forks into one item
+    branch per Task instance.  Branch topology is defined by real edges
+    (DataNode → ... → JoinNode), not by subgraph_entry/subgraph_exit.
+    """
 
     model_config = ConfigDict(strict=True, extra="forbid")
 
@@ -224,10 +235,7 @@ class DataNode(Node):
     source_path: str | None = None
     source_format: Literal["directory", "jsonl", "csv"] | None = None
     inline_items: list[DataItem] = Field(default_factory=list)
-    subgraph_entry: str
-    subgraph_exit: str
     parallelism: int = Field(default=1, ge=1)
-    split: Literal["train", "val", "test", "all"] = "all"
     shuffle: bool = False
     shuffle_seed: int | None = None
     limit: int | None = None
@@ -362,6 +370,7 @@ class Workflow(BaseModel):
     # and what kind of mutation is legal, not just the value and bounds.
     knob_specs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     declared_capabilities: frozenset[str] = frozenset()
+    runtime_inputs: frozenset[str] = frozenset()
 
     def validate_graph(self) -> list[str]:
         """Validate workflow graph structure using NetworkX. Returns list of issues."""
@@ -431,6 +440,8 @@ class Workflow(BaseModel):
             result["knob_specs"] = {k: dict(v) for k, v in self.knob_specs.items()}
         if self.declared_capabilities:
             result["declared_capabilities"] = sorted(self.declared_capabilities)
+        if self.runtime_inputs:
+            result["runtime_inputs"] = sorted(self.runtime_inputs)
         return result
 
     @classmethod
@@ -450,6 +461,9 @@ class Workflow(BaseModel):
         }
         _SET_FIELDS = {"reads", "writes"}
 
+        # Track legacy DataNode fields for load-time conversion
+        _legacy_data_nodes: dict[str, tuple[str, str]] = {}
+
         nodes: dict[str, NodeType] = {}
         for nid, node_data in data["nodes"].items():
             node_data = dict(node_data)
@@ -460,9 +474,40 @@ class Workflow(BaseModel):
             for fld in _SET_FIELDS:
                 if fld in node_data and isinstance(node_data[fld], list):
                     node_data[fld] = set(node_data[fld])
+            # Strip legacy subgraph_entry/subgraph_exit from DataNode
+            if type_name == "DataNode":
+                entry = node_data.pop("subgraph_entry", None)
+                exit_node = node_data.pop("subgraph_exit", None)
+                # Also strip removed split field
+                node_data.pop("split", None)
+                if entry and exit_node:
+                    _legacy_data_nodes[nid] = (entry, exit_node)
             nodes[nid] = node_cls.model_validate(node_data, strict=False)  # type: ignore[assignment]
 
         edges = [Edge.model_validate(e, strict=False) for e in data["edges"]]
+
+        # Convert legacy subgraph_entry/subgraph_exit to real edges
+        for nid, (entry, exit_node) in _legacy_data_nodes.items():
+            # Add edge from DataNode to entry if missing
+            has_entry_edge = any(
+                e.source == nid and e.target == entry for e in edges
+            )
+            if not has_entry_edge:
+                edges.append(Edge(source=nid, target=entry))
+            # Auto-create JoinNode if exit_node doesn't have one downstream
+            join_id = f"_join_{nid}"
+            if join_id not in nodes:
+                # Check if there's already a JoinNode after exit_node
+                existing_join = None
+                for e in edges:
+                    if e.source == exit_node:
+                        target_node = nodes.get(e.target)
+                        if isinstance(target_node, JoinNode):
+                            existing_join = e.target
+                            break
+                if existing_join is None:
+                    nodes[join_id] = JoinNode(id=join_id, sources=[exit_node])
+                    edges.append(Edge(source=exit_node, target=join_id))
 
         return cls(
             name=data["name"],
@@ -476,6 +521,7 @@ class Workflow(BaseModel):
             knob_expandable=data.get("knob_expandable", {}),
             knob_specs=data.get("knob_specs", {}),
             declared_capabilities=frozenset(data.get("declared_capabilities", [])),
+            runtime_inputs=frozenset(data.get("runtime_inputs", [])),
         )
 
 

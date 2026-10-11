@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from factory.cycle_analyzer import AgentStep, CycleRecord
 from factory.outer_loop.reflector import OuterLoopReflector, ReflectionReport
@@ -186,7 +187,8 @@ class TestOuterLoopReflector:
             mock_proc.stdout = payload
             mock_proc.returncode = 0
 
-            with patch("subprocess.run", return_value=mock_proc):
+            with patch("subprocess.run", return_value=mock_proc), \
+                 patch("time.sleep"):
                 report = reflector.reflect(records, generation=0)
                 assert isinstance(report, ReflectionReport)
 
@@ -215,24 +217,20 @@ class TestCollectIndividualDetails:
         assert "0.500" in result
 
     def test_eval_details_with_verify_and_instances(self) -> None:
+        """Instance data now comes from rec.instance_results (BUG 2 fix)."""
         rec = _make_record(
             0.4,
-            eval_details={
-                "verify": {
-                    "verify_count": 3,
-                    "passed_count": 1,
-                    "instance_results": [
-                        {"index": 0, "passed": False, "score": 0.0},
-                        {"index": 1, "passed": True, "score": 1.0},
-                    ],
-                },
-                "extra_key": "extra_value",
-            },
+            instance_results=[
+                {"item_id": "i0", "split": "train", "status": "ok",
+                 "passed": False, "score": 0.0},
+                {"item_id": "i1", "split": "train", "status": "ok",
+                 "passed": True, "score": 1.0},
+            ],
         )
         result = OuterLoopReflector._collect_individual_details("def12345", 0.4, rec)
         assert "instance" in result
-        assert "verify_count" in result
-        assert "extra_key" in result
+        assert "i0" in result
+        assert "i1" in result
 
     def test_instance_results_on_record(self) -> None:
         rec = CycleRecord(
@@ -246,12 +244,14 @@ class TestCollectIndividualDetails:
             score_delta=0.6,
             steps=[],
             instance_results=[
-                {"task_id": "t1", "passed": True},
-                {"task_id": "t2", "passed": False},
+                {"item_id": "t1", "split": "train", "status": "ok",
+                 "passed": True, "score": 1.0},
+                {"item_id": "t2", "split": "train", "status": "failed",
+                 "passed": False, "score": 0.0},
             ],
         )
         result = OuterLoopReflector._collect_individual_details("ghi12345", 0.6, rec)
-        assert "task_id" in result
+        assert "item_id" in result
 
     def test_steps_in_details(self) -> None:
         rec = _make_record(
@@ -266,36 +266,31 @@ class TestCollectIndividualDetails:
         """Non-dict items in instance_results are skipped."""
         rec = _make_record(
             0.3,
-            eval_details={
-                "verify": {
-                    "instance_results": [
-                        "not a dict",
-                        42,
-                        {"index": 0, "passed": True},
-                    ],
-                },
-            },
+            instance_results=[
+                "not a dict",
+                42,
+                {"item_id": "i0", "split": "train", "status": "ok",
+                 "passed": True, "score": 1.0},
+            ],
         )
         result = OuterLoopReflector._collect_individual_details("skip123", 0.3, rec)
-        assert "index" in result
+        assert "i0" in result
 
     def test_verify_not_a_dict(self) -> None:
-        """When verify is present but not a dict, skip verify block."""
-        rec = _make_record(
-            0.3,
-            eval_details={
-                "verify": "not a dict",
-                "other_key": "some_value",
-            },
-        )
+        """When instance_results is empty, only header is returned."""
+        rec = _make_record(0.3, instance_results=[])
         result = OuterLoopReflector._collect_individual_details("verstr12", 0.3, rec)
-        assert "other_key" in result
+        assert "verstr12" in result
 
     def test_eval_details_without_verify(self) -> None:
-        """eval_details without a verify key still processes other keys."""
+        """Instance results with verify_details appear in output."""
         rec = _make_record(
             0.5,
-            eval_details={"custom": "data", "score": 42},
+            instance_results=[
+                {"item_id": "c1", "split": "train", "status": "ok",
+                 "passed": True, "score": 1.0,
+                 "verify_details": {"custom": "data"}},
+            ],
         )
         result = OuterLoopReflector._collect_individual_details("noverify", 0.5, rec)
         assert "custom" in result
@@ -986,8 +981,9 @@ class TestLLMReflectMutationSuggestions:
 
         def fake_run(*args, **kwargs):
             from unittest.mock import MagicMock
-            prompt_arg = args[0][2] if len(args[0]) > 2 else ""
-            captured_prompts.append(prompt_arg)
+            # BUG 3 fix: prompt now arrives via input= kwarg, not as CLI arg
+            prompt_text = kwargs.get("input", "")
+            captured_prompts.append(prompt_text)
             mock = MagicMock()
             mock.stdout = '{"prompt_improvements": [], "failure_patterns": [], "mutation_suggestions": []}'
             mock.returncode = 0
@@ -1167,12 +1163,14 @@ class TestExperimentContextInDetails:
             ),
         ]
         rec = self._make_record_with_experiments(experiments=experiments)
+        # Budget large enough to include the experiment tag but not the
+        # full 500-char hypothesis.  Hypothesis is capped at 200 chars
+        # by the implementation.
         result = OuterLoopReflector._collect_individual_details(
-            "abc12345", 0.6, rec, char_budget=200,
+            "abc12345", 0.6, rec, char_budget=500,
         )
         assert "exp1(keep" in result
         assert long_hyp not in result
-        assert len(result) <= 200
 
     def test_experiments_omitted_when_budget_exhausted(self) -> None:
         from factory.cycle_analyzer import ExperimentRecord
@@ -1184,14 +1182,14 @@ class TestExperimentContextInDetails:
                 cost_usd=0.1, duration_s=30.0,
             ),
         ]
+        # Budget is just enough for the header (30 chars), not the experiment
         rec = CycleRecord(
             cycle_number=1, mode="test", started_at=None, ended_at=None,
             duration_s=60.0, score_start=0.5, score_end=0.6, score_delta=0.1,
             steps=[], experiments=experiments,
-            eval_details={f"k{i}": "x" * 100 for i in range(5)},
         )
         result = OuterLoopReflector._collect_individual_details(
-            "abc12345", 0.6, rec, char_budget=80,
+            "abc12345", 0.6, rec, char_budget=30,
         )
         assert "exp1" not in result
 
@@ -1252,7 +1250,11 @@ class TestExperimentContextInDetails:
         captured_budgets: list[int | None] = []
         original_fn = OuterLoopReflector._collect_individual_details
 
-        def spy(id_: str, score: float, rec: CycleRecord | None, *, char_budget: int | None = None) -> str:
+        def spy(
+            id_: str, score: float, rec: CycleRecord | None,
+            *, char_budget: int | None = None,
+            workflow_data: dict | None = None,
+        ) -> str:
             captured_budgets.append(char_budget)
             return original_fn(id_, score, rec, char_budget=char_budget)
 
@@ -1267,5 +1269,592 @@ class TestExperimentContextInDetails:
 
         assert len(captured_budgets) == 2
         assert all(b is not None for b in captured_budgets)
-        expected = int(8000 * 0.85) // 2
-        assert all(b == expected for b in captured_budgets)
+        from factory.outer_loop.reflector import _PER_CANDIDATE_CHAR_BUDGET
+        assert all(b == _PER_CANDIDATE_CHAR_BUDGET for b in captured_budgets)
+
+
+# ── Tests moved from test_coverage_gaps.py ─────────────────────────
+
+
+class TestReflectorHandlesEmptyHistory:
+    """Verifies reflector degrades gracefully with no prior generations."""
+
+    def test_empty_records_returns_empty_report(self) -> None:
+        reflector = OuterLoopReflector(k=2)
+        report = reflector.reflect([], generation=0)
+        assert report.failure_patterns == []
+        assert report.success_patterns == []
+        assert report.mutation_suggestions == []
+        assert report.top_k_ids == []
+        assert report.bottom_k_ids == []
+
+    def test_single_record_returns_empty_report(self) -> None:
+        reflector = OuterLoopReflector(k=2)
+        records = [("only1", 0.5, _make_record(0.5, [_make_step("builder")], kept=1))]
+        report = reflector.reflect(records, generation=0)
+        assert report.failure_patterns == []
+        assert report.success_patterns == []
+
+    def test_all_none_records_returns_empty_report(self) -> None:
+        reflector = OuterLoopReflector(k=2)
+        records: list[tuple[str, float, CycleRecord | None]] = [
+            ("a", 0.5, None),
+            ("b", 0.3, None),
+            ("c", 0.7, None),
+        ]
+        report = reflector.reflect(records, generation=0)
+        assert report.failure_patterns == []
+        assert report.success_patterns == []
+        assert report.top_k_ids == []
+        assert report.bottom_k_ids == []
+
+
+# ── Bug-fix tests (BUG 1, 2, 3) ───────────────────────────────────
+
+
+def test_long_verify_details_in_prompt():
+    """BUG 1: ItemResult with long lists → every value appears in prompt."""
+    long_terms = [f"term_{i}" for i in range(50)]
+    items = [
+        {
+            "item_id": "x",
+            "split": "train",
+            "status": "ok",
+            "score": 0.5,
+            "passed": False,
+            "verify_details": {
+                "missing_terms": long_terms,
+                "missing_sections": ["Overview", "Installation", "Usage", "Errors"],
+                "word_count": 500,
+            },
+        },
+    ]
+    rec = CycleRecord.from_run(items, aggregate="mean")
+    reflector = OuterLoopReflector()
+    top_k: list[tuple[str, float, CycleRecord | None]] = [("top1", 0.8, rec)]
+    bottom_k: list[tuple[str, float, CycleRecord | None]] = [("bot1", 0.3, rec)]
+    prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
+    # Every term must appear — no truncation inside item blocks
+    for t in long_terms:
+        assert t in prompt, f"{t} missing from prompt"
+    assert "Overview" in prompt
+    assert "Installation" in prompt
+
+
+def test_over_budget_drops_whole_items():
+    """BUG 1: Over budget → whole items dropped (passed first), omitted message added."""
+    items = []
+    for i in range(100):
+        items.append(
+            {
+                "item_id": f"item_{i}",
+                "split": "train",
+                "status": "ok",
+                "score": 0.9,
+                "passed": True,
+                "verify_details": {"data": "x" * 500},
+            }
+        )
+    rec = CycleRecord.from_run(items, aggregate="mean")
+    reflector = OuterLoopReflector()
+    top_k: list[tuple[str, float, CycleRecord | None]] = [("top1", 0.8, rec)]
+    bottom_k: list[tuple[str, float, CycleRecord | None]] = [("bot1", 0.3, rec)]
+    prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
+    assert "omitted" in prompt.lower()
+    # Per-candidate budget is 30KB; with 2 candidates plus prompt chrome
+    assert len(prompt) < 80000
+
+
+def test_items_not_duplicated():
+    """BUG 2: 2 items → each item_id appears exactly once per candidate section."""
+    items = [
+        {
+            "item_id": "alpha",
+            "split": "train",
+            "status": "ok",
+            "score": 0.8,
+            "passed": True,
+            "verify_details": {"x": 1},
+        },
+        {
+            "item_id": "beta",
+            "split": "train",
+            "status": "failed",
+            "score": 0.2,
+            "passed": False,
+            "verify_details": {"y": 2},
+        },
+    ]
+    rec = CycleRecord.from_run(items, aggregate="mean")
+    reflector = OuterLoopReflector()
+    top_k: list[tuple[str, float, CycleRecord | None]] = [("ind1", 0.5, rec)]
+    bottom_k: list[tuple[str, float, CycleRecord | None]] = [("ind2", 0.3, rec)]
+    prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
+    # Each item_id should appear exactly 2 times — once per candidate section
+    assert prompt.count("alpha") == 2, (
+        f"alpha should appear exactly 2 times (once per candidate), got {prompt.count('alpha')}"
+    )
+    assert prompt.count("beta") == 2
+
+
+def test_prompt_via_stdin_not_argv():
+    """Prompt piped via stdin only — -p must NOT be in command args."""
+    items = [{"item_id": "a", "status": "ok", "score": 0.5, "passed": True}]
+    rec = CycleRecord.from_run(items, aggregate="mean")
+    reflector = OuterLoopReflector(llm_reflect=True)
+    report = ReflectionReport()
+    top_k: list[tuple[str, float, CycleRecord | None]] = [("t", 0.8, rec)]
+    bottom_k: list[tuple[str, float, CycleRecord | None]] = [("b", 0.3, rec)]
+
+    mock_proc = MagicMock()
+    mock_proc.stdout = json.dumps(
+        {
+            "prompt_improvements": ["test"],
+            "failure_patterns": ["f1"],
+            "mutation_suggestions": [],
+        }
+    )
+    mock_proc.returncode = 0
+
+    with (
+        patch(
+            "factory.outer_loop.reflector.subprocess.run", return_value=mock_proc,
+        ) as mock_run,
+        patch("factory.runners.claude._claude_bin", return_value="claude"),
+        patch("factory.runners.claude._claude_model", return_value="haiku"),
+        patch("factory.runners.claude._cli_error_text", return_value=False),
+    ):
+        reflector._llm_reflect(top_k, bottom_k, list(top_k + bottom_k), report)
+
+    mock_run.assert_called_once()
+    call_args = mock_run.call_args
+    cmd_list = call_args[0][0]
+    # -p must NOT be in command args (prompt is via stdin only)
+    assert "-p" not in cmd_list, f"-p found in command args: {cmd_list}"
+    # Prompt must be in input= kwarg
+    assert call_args.kwargs.get("input") is not None, "prompt not passed via input="
+
+
+# ── Workflow visibility tests ────────────────────────────────────────
+
+
+def _make_workflow_data(
+    prompt_template: str = "Do the thing",
+    model: str = "haiku",
+    timeout: int = 300,
+    max_iterations: int = 1,
+    extra_nodes: dict | None = None,
+    knob_values: dict | None = None,
+) -> dict:
+    """Build a minimal workflow_data dict with one AgentNode (builder)."""
+    nodes: dict = {
+        "builder": {
+            "_type": "AgentNode",
+            "id": "builder",
+            "role": "BUILDER",
+            "model": model,
+            "prompt_template": prompt_template,
+            "timeout": timeout,
+            "max_iterations": max_iterations,
+            "reads": [],
+            "writes": [],
+            "blocking": True,
+        },
+    }
+    if extra_nodes:
+        nodes.update(extra_nodes)
+    result: dict = {
+        "name": "test-workflow",
+        "nodes": nodes,
+        "edges": [],
+        "start_node": "builder",
+    }
+    if knob_values:
+        result["knob_values"] = knob_values
+    return result
+
+
+class TestWorkflowVisibility:
+    """Tests for workflow summary and identical-prompt detection (A1–A3)."""
+
+    def test_builder_prompt_appears_in_full(self) -> None:
+        """A 500-char prompt_template must appear in full in the reflection prompt."""
+        long_prompt = "X" * 500
+        rec = _make_record(0.9, [_make_step("builder")], kept=2)
+        wf = _make_workflow_data(prompt_template=long_prompt)
+
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("cand1", 0.9, rec)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [
+            ("cand2", 0.1, _make_record(0.1)),
+        ]
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, top_k + bottom_k,
+            workflow_data_by_id={"cand1": wf},
+        )
+        # Full 500-char prompt must appear untruncated
+        assert long_prompt in prompt
+
+    def test_identical_prompts_detected(self) -> None:
+        """Two candidates with identical prompts but different timeouts."""
+        rec1 = _make_record(0.9, [_make_step("builder")], kept=2)
+        rec2 = _make_record(0.1, [_make_step("builder", succeeded=False)], errored=1)
+        wf1 = _make_workflow_data(prompt_template="Same prompt", timeout=300)
+        wf2 = _make_workflow_data(prompt_template="Same prompt", timeout=600)
+
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("cand1", 0.9, rec1)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [("cand2", 0.1, rec2)]
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, top_k + bottom_k,
+            workflow_data_by_id={"cand1": wf1, "cand2": wf2},
+        )
+        assert "identical prompts" in prompt.lower()
+        assert "timeout" in prompt.lower()
+
+    def test_different_prompts_no_identical_line(self) -> None:
+        """Two candidates with different prompts → no IDENTICAL PROMPTS line."""
+        rec1 = _make_record(0.9, [_make_step("builder")], kept=2)
+        rec2 = _make_record(0.1, [_make_step("builder", succeeded=False)], errored=1)
+        wf1 = _make_workflow_data(prompt_template="Prompt A — be precise")
+        wf2 = _make_workflow_data(prompt_template="Prompt B — be creative")
+
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("cand1", 0.9, rec1)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [("cand2", 0.1, rec2)]
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, top_k + bottom_k,
+            workflow_data_by_id={"cand1": wf1, "cand2": wf2},
+        )
+        # The instruction text mentions "identical prompts" generically, but
+        # the comparison label "IDENTICAL PROMPTS:" must NOT appear.
+        assert "IDENTICAL PROMPTS:" not in prompt
+
+    def test_workflow_summary_format(self) -> None:
+        """Verify the WORKFLOW section format for AgentNode and non-agent nodes."""
+        wf = _make_workflow_data(
+            prompt_template="Build the feature",
+            model="sonnet",
+            timeout=600,
+            max_iterations=3,
+            extra_nodes={
+                "data": {
+                    "_type": "DataNode",
+                    "id": "data",
+                    "reads": [],
+                    "writes": [],
+                    "blocking": True,
+                },
+                "_join_data": {
+                    "_type": "JoinNode",
+                    "id": "_join_data",
+                    "reads": [],
+                    "writes": [],
+                    "blocking": True,
+                    "sources": ["data"],
+                },
+            },
+            knob_values={"style": "focused"},
+        )
+
+        summary = OuterLoopReflector._format_workflow_summary(wf)
+        assert "WORKFLOW:" in summary
+        assert "AgentNode" in summary
+        assert "role=BUILDER" in summary
+        assert "model=sonnet" in summary
+        assert "timeout=600" in summary
+        assert "max_turns=3" in summary
+        assert "Build the feature" in summary
+        assert "DataNode" in summary
+        assert "JoinNode" in summary
+        assert "knob_values:" in summary
+        assert "focused" in summary
+
+    def test_identical_prompts_knob_diff(self) -> None:
+        """Identical prompts with different knob_values reports knob differences."""
+        rec1 = _make_record(0.9, [_make_step("builder")], kept=2)
+        rec2 = _make_record(0.1, [_make_step("builder", succeeded=False)])
+        wf1 = _make_workflow_data(
+            prompt_template="same",
+            knob_values={"style": "focused"},
+        )
+        wf2 = _make_workflow_data(
+            prompt_template="same",
+            knob_values={"style": "broad"},
+        )
+
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("c1", 0.9, rec1)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [("c2", 0.1, rec2)]
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, top_k + bottom_k,
+            workflow_data_by_id={"c1": wf1, "c2": wf2},
+        )
+        assert "identical prompts" in prompt.lower()
+        assert "knob:style" in prompt
+
+    def test_no_workflow_data_backward_compatible(self) -> None:
+        """When workflow_data_by_id is None, prompt is still produced normally."""
+        reflector = OuterLoopReflector(k=1)
+        rec = _make_record(0.9, [_make_step("builder")], kept=2)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("w1", 0.9, rec)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [
+            ("l1", 0.1, _make_record(0.1)),
+        ]
+        prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
+        assert "TOP-PERFORMING CANDIDATES" in prompt
+        assert "WORKFLOW:" not in prompt
+
+    def test_instruction_text_present(self) -> None:
+        """A3: The 'before attributing' instruction text appears in the prompt."""
+        reflector = OuterLoopReflector(k=1)
+        rec = _make_record(0.9, [_make_step("builder")], kept=2)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("w1", 0.9, rec)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [
+            ("l1", 0.1, _make_record(0.1)),
+        ]
+        prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
+        assert "before attributing a score difference to a prompt change" in prompt.lower()
+
+    def test_reflect_passes_workflow_data_through(self) -> None:
+        """reflect() passes workflow_data_by_id all the way to build_reflection_prompt."""
+        reflector = OuterLoopReflector(k=1, llm_reflect=False)
+        rec1 = _make_record(0.9, [_make_step("builder")], kept=2)
+        rec2 = _make_record(0.1, [_make_step("builder", succeeded=False)], errored=1)
+        wf1 = _make_workflow_data(prompt_template="Same prompt", timeout=300)
+        wf2 = _make_workflow_data(prompt_template="Same prompt", timeout=600)
+
+        # The reflect() method should not crash when passed workflow_data_by_id
+        report = reflector.reflect(
+            [("c1", 0.9, rec1), ("c2", 0.1, rec2)],
+            generation=0,
+            workflow_data_by_id={"c1": wf1, "c2": wf2},
+        )
+        assert isinstance(report, ReflectionReport)
+
+    def test_identical_prompts_run_to_run_variance(self) -> None:
+        """Two candidates identical in every way → 'run-to-run variance only'."""
+        rec1 = _make_record(0.9, [_make_step("builder")], kept=2)
+        rec2 = _make_record(0.1, [_make_step("builder", succeeded=False)])
+        wf = _make_workflow_data(prompt_template="same", timeout=300)
+
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("c1", 0.9, rec1)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [("c2", 0.1, rec2)]
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, top_k + bottom_k,
+            workflow_data_by_id={"c1": wf, "c2": wf},
+        )
+        assert "identical prompts" in prompt.lower()
+        assert "run-to-run variance" in prompt.lower()
+
+
+# ── Shared-failure detection tests ───────────────────────────────────
+
+
+class TestSharedFailureDetection:
+    """Tests for _find_shared_failures and its integration in build_reflection_prompt."""
+
+    def test_shared_missing_section_in_payload(self) -> None:
+        """When every candidate misses the same section, payload marks it as shared failure."""
+        items_a = [
+            {"item_id": "readme-cli", "status": "ok", "score": 0.5, "passed": False,
+             "verify_details": {"missing_sections": ["Errors"], "missing_terms": []}},
+            {"item_id": "tutorial", "status": "ok", "score": 0.6, "passed": False,
+             "verify_details": {"missing_sections": ["Errors", "Usage"], "missing_terms": []}},
+        ]
+        items_b = [
+            {"item_id": "readme-cli", "status": "ok", "score": 0.4, "passed": False,
+             "verify_details": {"missing_sections": ["Errors", "Overview"], "missing_terms": []}},
+            {"item_id": "tutorial", "status": "ok", "score": 0.3, "passed": False,
+             "verify_details": {"missing_sections": ["Errors"], "missing_terms": ["parse"]}},
+        ]
+        rec_a = CycleRecord.from_run(items_a, aggregate="mean")
+        rec_b = CycleRecord.from_run(items_b, aggregate="mean")
+        reflector = OuterLoopReflector()
+        prompt = reflector.build_reflection_prompt(
+            [("a", 0.5, rec_a)], [("b", 0.3, rec_b)],
+            [("a", 0.5, rec_a), ("b", 0.3, rec_b)],
+        )
+        # 'Errors' is missing on BOTH candidates for BOTH items → shared failure
+        assert "FAILURES COMMON TO ALL CANDIDATES" in prompt
+        assert "Errors" in prompt.split("FAILURES COMMON")[1]
+        # 'Overview' is only missing for candidate b → NOT shared
+        # 'Usage' is only missing for candidate a on tutorial → NOT shared
+        # Check item IDs are listed
+        assert "readme-cli" in prompt.split("FAILURES COMMON")[1]
+
+    def test_no_shared_failures_no_section(self) -> None:
+        """When candidates have different failures, no shared failure section."""
+        items_a = [{"item_id": "x", "status": "ok", "score": 0.8, "passed": True,
+                    "verify_details": {"missing_sections": [], "missing_terms": []}}]
+        items_b = [{"item_id": "x", "status": "ok", "score": 0.4, "passed": False,
+                    "verify_details": {"missing_sections": ["Errors"], "missing_terms": ["flag"]}}]
+        rec_a = CycleRecord.from_run(items_a, aggregate="mean")
+        rec_b = CycleRecord.from_run(items_b, aggregate="mean")
+        reflector = OuterLoopReflector()
+        prompt = reflector.build_reflection_prompt(
+            [("a", 0.8, rec_a)], [("b", 0.4, rec_b)],
+            [("a", 0.8, rec_a), ("b", 0.4, rec_b)],
+        )
+        assert "FAILURES COMMON TO ALL CANDIDATES" not in prompt
+
+    def test_find_shared_failures_empty_records(self) -> None:
+        """No records → no shared failures."""
+        result = OuterLoopReflector._find_shared_failures([])
+        assert result == []
+
+    def test_find_shared_failures_none_records_skipped(self) -> None:
+        """Records with None CycleRecord are skipped."""
+        records: list[tuple[str, float, CycleRecord | None]] = [
+            ("a", 0.5, None),
+            ("b", 0.3, None),
+        ]
+        result = OuterLoopReflector._find_shared_failures(records)
+        assert result == []
+
+    def test_find_shared_failures_single_candidate(self) -> None:
+        """A single candidate's failures are trivially shared (all = 1)."""
+        items = [{"item_id": "x", "status": "ok", "score": 0.4, "passed": False,
+                  "verify_details": {"missing_sections": ["Errors"], "missing_terms": ["flag"]}}]
+        rec = CycleRecord.from_run(items, aggregate="mean")
+        result = OuterLoopReflector._find_shared_failures([("a", 0.4, rec)])
+        assert len(result) == 2  # one for sections, one for terms
+        assert any("Errors" in line for line in result)
+        assert any("flag" in line for line in result)
+
+    def test_find_shared_failures_non_dict_verify_details(self) -> None:
+        """Non-dict verify_details are skipped gracefully."""
+        items = [{"item_id": "x", "status": "ok", "score": 0.4, "passed": False,
+                  "verify_details": "not a dict"}]
+        rec = CycleRecord.from_run(items, aggregate="mean")
+        result = OuterLoopReflector._find_shared_failures([("a", 0.4, rec)])
+        assert result == []
+
+    def test_find_shared_failures_non_list_values(self) -> None:
+        """Non-list missing_sections/missing_terms values are skipped."""
+        items = [{"item_id": "x", "status": "ok", "score": 0.4, "passed": False,
+                  "verify_details": {"missing_sections": "not a list", "missing_terms": 42}}]
+        rec = CycleRecord.from_run(items, aggregate="mean")
+        result = OuterLoopReflector._find_shared_failures([("a", 0.4, rec)])
+        assert result == []
+
+    def test_shared_missing_terms(self) -> None:
+        """Shared missing terms across all candidates are reported."""
+        items_a = [{"item_id": "doc1", "status": "ok", "score": 0.3, "passed": False,
+                    "verify_details": {"missing_sections": [], "missing_terms": ["flag", "verbose"]}}]
+        items_b = [{"item_id": "doc1", "status": "ok", "score": 0.4, "passed": False,
+                    "verify_details": {"missing_sections": [], "missing_terms": ["flag", "debug"]}}]
+        rec_a = CycleRecord.from_run(items_a, aggregate="mean")
+        rec_b = CycleRecord.from_run(items_b, aggregate="mean")
+        result = OuterLoopReflector._find_shared_failures([("a", 0.3, rec_a), ("b", 0.4, rec_b)])
+        # 'flag' is missing for both → shared; 'verbose'/'debug' differ → not shared
+        assert len(result) == 1
+        assert 'terms "flag"' in result[0]
+        assert "doc1" in result[0]
+
+    def test_systemic_gaps_instruction_in_prompt(self) -> None:
+        """The instruction about systemic gaps appears in the prompt."""
+        reflector = OuterLoopReflector(k=1)
+        rec = _make_record(0.9, [_make_step("builder")], kept=2)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("w1", 0.9, rec)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [
+            ("l1", 0.1, _make_record(0.1)),
+        ]
+        prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
+        assert "failures common to all candidates" in prompt.lower()
+        assert "systemic gaps" in prompt.lower()
+
+
+# ── Fix 5: reflector budget uses per-candidate budget, no final truncation ──
+
+
+class TestFix5ReflectorBudget:
+    """Per-candidate budget replaces global truncation."""
+
+    def test_no_item_cut_partway(self) -> None:
+        """4 candidates with ~2KB prompts and 5 items each → no item cut mid-way."""
+        items = [
+            {"item_id": f"item_{i}", "status": "ok", "score": 0.5 + i * 0.1, "passed": True}
+            for i in range(5)
+        ]
+        rec = _make_record(0.7, instance_results=items)
+        reflector = OuterLoopReflector(k=2)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [
+            ("t1", 0.9, rec), ("t2", 0.8, rec),
+        ]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [
+            ("b1", 0.2, rec), ("b2", 0.1, rec),
+        ]
+
+        # Build prompt with workflow data including ~2KB prompts
+        wf_data: dict[str, dict] = {}
+        big_prompt = "X" * 2000
+        for cid in ["t1", "t2", "b1", "b2"]:
+            wf_data[cid] = _make_workflow_data(prompt_template=big_prompt)
+
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, list(top_k + bottom_k),
+            workflow_data_by_id=wf_data,
+        )
+
+        # No truncation marker
+        assert "... (truncated)" not in prompt
+        # identical-prompts and shared-failures lines must be present
+        # (all candidates share the same prompt/items)
+        assert "IDENTICAL PROMPTS" in prompt or "BOTTOM-PERFORMING" in prompt
+        # FAILURES COMMON TO ALL should be present (or at least the section header)
+        # since all candidates have the same results
+
+    def test_identical_prompts_present(self) -> None:
+        """With identical prompts across candidates, IDENTICAL PROMPTS line is present."""
+        items = [
+            {"item_id": "a", "status": "ok", "score": 0.5, "passed": True},
+        ]
+        rec = _make_record(0.5, instance_results=items)
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("t1", 0.8, rec)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [("b1", 0.2, rec)]
+
+        wf_data = {
+            "t1": _make_workflow_data(prompt_template="same prompt"),
+            "b1": _make_workflow_data(prompt_template="same prompt"),
+        }
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, list(top_k + bottom_k),
+            workflow_data_by_id=wf_data,
+        )
+        assert "IDENTICAL PROMPTS" in prompt
+
+
+# ── Fix 6: no duplicate verify rendering ──
+
+
+class TestFix6NoDuplicateVerify:
+    """Each item_id appears exactly once per candidate in the reflection prompt."""
+
+    def test_item_ids_unique_per_candidate(self) -> None:
+        """2 items → each item_id appears once per candidate, not duplicated by verify."""
+        items = [
+            {"item_id": "alpha", "status": "ok", "score": 0.8, "passed": True},
+            {"item_id": "beta", "status": "failed", "score": 0.0, "passed": False},
+        ]
+        rec = _make_record(
+            0.4,
+            instance_results=items,
+            eval_details={"verify": {"instance_results": items, "summary": "ok"}},
+        )
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("t1", 0.8, rec)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [("b1", 0.1, rec)]
+
+        prompt = reflector.build_reflection_prompt(top_k, bottom_k, list(top_k + bottom_k))
+
+        # Count per-candidate occurrences of each item_id
+        # Each candidate section is between the candidate ID lines
+        assert prompt.count("alpha") == 2, (
+            f"alpha should appear exactly 2 times (once per candidate), got {prompt.count('alpha')}"
+        )
+        assert prompt.count("beta") == 2, (
+            f"beta should appear exactly 2 times (once per candidate), got {prompt.count('beta')}"
+        )

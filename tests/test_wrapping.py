@@ -1,8 +1,7 @@
 """Tests for factory/workflow/wrapping.py — mechanical DataNode wrapping."""
 import pytest
 from factory.workflow.primitives import (
-    DataNode, Edge, FnNode, Workflow,
-)
+    DataNode, Edge, FnNode, JoinNode, Workflow)
 from factory.workflow.wrapping import wrap_with_data_node
 
 
@@ -17,23 +16,23 @@ class TestWrapWithDataNode:
                 "c": FnNode(id="c", command="echo c"),
             },
             edges=[Edge(source="a", target="b"), Edge(source="b", target="c")],
-            start_node="a",
-        )
+            start_node="a")
         wrapped = wrap_with_data_node(wf, task_ref="my.mod:MyTask")
         assert wrapped.start_node == "data"
         assert "data" in wrapped.nodes
         dn = wrapped.nodes["data"]
         assert isinstance(dn, DataNode)
-        assert dn.subgraph_entry == "a"
-        assert dn.subgraph_exit == "c"
         assert dn.task_ref == "my.mod:MyTask"
         assert wrapped.task == "my.mod:MyTask"
         # All original nodes preserved
         assert "a" in wrapped.nodes
         assert "b" in wrapped.nodes
         assert "c" in wrapped.nodes
-        # Original edges preserved, no new edges
-        assert len(wrapped.edges) == 2
+        # JoinNode added
+        join_ids = [nid for nid, n in wrapped.nodes.items() if isinstance(n, JoinNode)]
+        assert len(join_ids) == 1
+        # Edges: data→a, a→b, b→c, c→join
+        assert len(wrapped.edges) == 4
 
     def test_late_bound_no_task_ref(self) -> None:
         """Wrap without task_ref — DataNode has no source (late-bound)."""
@@ -44,8 +43,7 @@ class TestWrapWithDataNode:
                 "end": FnNode(id="end", command="echo done"),
             },
             edges=[Edge(source="start", target="end")],
-            start_node="start",
-        )
+            start_node="start")
         wrapped = wrap_with_data_node(wf)
         dn = wrapped.nodes["data"]
         assert isinstance(dn, DataNode)
@@ -59,12 +57,16 @@ class TestWrapWithDataNode:
             name="solo",
             nodes={"only": FnNode(id="only", command="echo solo")},
             edges=[],
-            start_node="only",
-        )
+            start_node="only")
         wrapped = wrap_with_data_node(wf, task_ref="x:Y")
         dn = wrapped.nodes["data"]
-        assert dn.subgraph_entry == "only"
-        assert dn.subgraph_exit == "only"
+        assert isinstance(dn, DataNode)
+        # JoinNode should be present
+        join_ids = [nid for nid, n in wrapped.nodes.items() if isinstance(n, JoinNode)]
+        assert len(join_ids) == 1
+        # Edges: data→only, only→join
+        edge_srcs = {(e.source, e.target) for e in wrapped.edges}
+        assert ("data", "only") in edge_srcs
 
     def test_id_collision_resolved(self) -> None:
         """If 'data' already exists, fallback to '_data'."""
@@ -75,8 +77,7 @@ class TestWrapWithDataNode:
                 "end": FnNode(id="end", command="echo end"),
             },
             edges=[Edge(source="data", target="end")],
-            start_node="data",
-        )
+            start_node="data")
         wrapped = wrap_with_data_node(wf, task_ref="x:Y")
         assert "_data" in wrapped.nodes
         assert wrapped.start_node == "_data"
@@ -96,8 +97,7 @@ class TestWrapWithDataNode:
                 "b": FnNode(id="b", command="echo b"),
             },
             edges=[Edge(source="a", target="b")],
-            start_node="a",
-        )
+            start_node="a")
         wrapped = wrap_with_data_node(wf, task_ref="x:Y")
         issues = wrapped.validate_graph()
         assert len(issues) == 0
@@ -110,8 +110,7 @@ class TestWrapWithDataNode:
                 "a": FnNode(id="a", command="echo a"),
             },
             edges=[],
-            start_node="a",
-        )
+            start_node="a")
         wrapped = wrap_with_data_node(wf, parallelism=4)
         dn = wrapped.nodes["data"]
         assert isinstance(dn, DataNode)
@@ -130,8 +129,7 @@ class TestWrapWithDataNode:
                 Edge(source="data", target="_data"),
                 Edge(source="_data", target="end"),
             ],
-            start_node="data",
-        )
+            start_node="data")
         with pytest.raises(ValueError, match="collision"):
             wrap_with_data_node(wf)
 
@@ -141,8 +139,7 @@ class TestWrapWithDataNode:
             name="t",
             nodes={"a": FnNode(id="a", command="echo a")},
             edges=[],
-            start_node="missing",
-        )
+            start_node="missing")
         with pytest.raises(ValueError, match="start_node"):
             wrap_with_data_node(wf)
 
@@ -155,8 +152,7 @@ class TestWrapWithDataNode:
                 "b": FnNode(id="b", command="echo b"),
             },
             edges=[Edge(source="a", target="b"), Edge(source="b", target="a")],
-            start_node="a",
-        )
+            start_node="a")
         with pytest.raises(ValueError, match="No terminal"):
             wrap_with_data_node(wf)
 
@@ -170,7 +166,6 @@ class TestWrapWithDataNode:
                 "c": FnNode(id="c", command="echo c"),
             },
             edges=[Edge(source="a", target="b")],
-            start_node="a",
-        )
+            start_node="a")
         with pytest.raises(ValueError, match="Multiple terminal"):
             wrap_with_data_node(wf)

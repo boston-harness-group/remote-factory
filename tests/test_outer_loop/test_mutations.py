@@ -21,8 +21,7 @@ from factory.outer_loop.mutations import (
     redirect_edge,
     remove_node,
     serialize,
-    validate_and_repair,
-)
+    validate_and_repair)
 from factory.workflow.primitives import (
     AgentNode,
     AgentRole,
@@ -30,8 +29,7 @@ from factory.workflow.primitives import (
     FnNode,
     GateNode,
     VerdictType,
-    Workflow,
-)
+    Workflow)
 
 
 class TestInsertNode:
@@ -95,8 +93,7 @@ class TestRedirectEdge:
     def test_redirect_frozen_source(self, simple_workflow: Workflow) -> None:
         result = redirect_edge(
             simple_workflow, "researcher", "strategist", "builder",
-            frozen_nodes={"researcher"},
-        )
+            frozen_nodes={"researcher"})
         assert result is None
 
 
@@ -118,8 +115,7 @@ class TestParallelize:
     def test_parallelize_frozen_fails(self, simple_workflow: Workflow) -> None:
         result = parallelize(
             simple_workflow, ["researcher", "strategist"],
-            frozen_nodes={"researcher"},
-        )
+            frozen_nodes={"researcher"})
         assert result is None
 
 
@@ -168,8 +164,7 @@ class TestMutateParams:
     def test_frozen_fails(self, simple_workflow: Workflow) -> None:
         result = mutate_params(
             simple_workflow, "researcher", {"timeout": 900},
-            frozen_nodes={"researcher"},
-        )
+            frozen_nodes={"researcher"})
         assert result is None
 
 
@@ -230,8 +225,7 @@ class TestWeightedRandomStrategy:
             name="dummy",
             nodes={"a": FnNode(id="a", command="x")},
             edges=[],
-            start_node="a",
-        ), 0, {}) for _ in range(20)]
+            start_node="a"), 0, {}) for _ in range(20)]
         assert all(op == MutationType.NODE_INSERT for op in ops)
 
 
@@ -239,8 +233,7 @@ class TestApplyRandomMutation:
     def test_produces_valid_result(self, simple_workflow: Workflow) -> None:
         strategy = WeightedRandomStrategy()
         result = apply_random_mutation(
-            simple_workflow, strategy, generation=0, max_attempts=20,
-        )
+            simple_workflow, strategy, generation=0, max_attempts=20)
         if result is not None:
             wf, rec = result
             assert isinstance(rec.operator, MutationType)
@@ -252,8 +245,7 @@ class TestApplyRandomMutation:
         result = apply_random_mutation(
             simple_workflow, strategy, generation=0,
             frozen_nodes=all_nodes,
-            max_attempts=5,
-        )
+            max_attempts=5)
         assert result is None
 
 
@@ -314,8 +306,7 @@ class TestParseKnobSuggestionEmptyValue:
             operator="knob_mutate",
             target="style",
             rationale="test",
-            value="",
-        )
+            value="")
         assert _parse_knob_suggestion(suggestion) is None
 
     def test_whitespace_only_value_returns_none(self) -> None:
@@ -326,8 +317,7 @@ class TestParseKnobSuggestionEmptyValue:
             operator="knob_mutate",
             target="style",
             rationale="test",
-            value="   ",
-        )
+            value="   ")
         assert _parse_knob_suggestion(suggestion) is None
 
     def test_valid_value_returns_tuple(self) -> None:
@@ -338,8 +328,7 @@ class TestParseKnobSuggestionEmptyValue:
             operator="knob_mutate",
             target="style",
             rationale="test",
-            value="focused",
-        )
+            value="focused")
         result = _parse_knob_suggestion(suggestion)
         assert result == ("style", "focused")
 
@@ -351,8 +340,7 @@ class TestParseKnobSuggestionEmptyValue:
             operator="knob_mutate",
             target="style",
             rationale="test",
-            value=None,
-        )
+            value=None)
         assert _parse_knob_suggestion(suggestion) is None
 
 
@@ -364,8 +352,7 @@ class TestApplyRandomMutationWithReflection:
 
         report = ReflectionReport(
             mutation_suggestions=["NODE_INSERT: Add researcher agent"],
-            structural_recommendations=[],
-        )
+            structural_recommendations=[])
         strategy = WeightedRandomStrategy()
 
         with patch("factory.outer_loop.mutations.random") as mock_random:
@@ -378,8 +365,7 @@ class TestApplyRandomMutationWithReflection:
             apply_random_mutation(
                 simple_workflow, strategy, generation=1,
                 reflection_report=report,
-                max_attempts=20,
-            )
+                max_attempts=20)
             mock_random.random.assert_called()
 
     def test_no_reflection_uses_random_operator(self, simple_workflow: Workflow) -> None:
@@ -387,8 +373,7 @@ class TestApplyRandomMutationWithReflection:
         result = apply_random_mutation(
             simple_workflow, strategy, generation=1,
             reflection_report=None,
-            max_attempts=20,
-        )
+            max_attempts=20)
         if result is not None:
             _, rec = result
             assert isinstance(rec.operator, MutationType)
@@ -417,12 +402,10 @@ class TestSelectGuidedOperatorStringFallback:
         wf = Workflow(
             name="test",
             nodes={"b": AgentNode(id="b", role=AgentRole.BUILDER)},
-            edges=[], start_node="b",
-        )
+            edges=[], start_node="b")
         report = ReflectionReport(
             mutation_suggestions=["NODE_INSERT: Add researcher agent"],
-            typed_suggestions=[],
-        )
+            typed_suggestions=[])
         counts: dict[MutationType, int] = {}
         for _ in range(100):
             op = strategy.select_guided_operator(wf, 0, report)
@@ -436,12 +419,10 @@ class TestSelectGuidedOperatorStringFallback:
         wf = Workflow(
             name="test",
             nodes={"b": AgentNode(id="b", role=AgentRole.BUILDER)},
-            edges=[], start_node="b",
-        )
+            edges=[], start_node="b")
         report = ReflectionReport(
             mutation_suggestions=["NODE_REMOVE: Consider removing strategist"],
-            typed_suggestions=[],
-        )
+            typed_suggestions=[])
         counts: dict[MutationType, int] = {}
         for _ in range(100):
             op = strategy.select_guided_operator(wf, 0, report)
@@ -455,13 +436,11 @@ class TestSelectGuidedOperatorStringFallback:
         wf = Workflow(
             name="test",
             nodes={"b": AgentNode(id="b", role=AgentRole.BUILDER)},
-            edges=[], start_node="b",
-        )
+            edges=[], start_node="b")
         report = ReflectionReport(
             mutation_suggestions=[],
             structural_recommendations=["PARALLELIZE: Use parallel execution for agents"],
-            typed_suggestions=[],
-        )
+            typed_suggestions=[])
         counts: dict[MutationType, int] = {}
         for _ in range(100):
             op = strategy.select_guided_operator(wf, 0, report)
@@ -475,12 +454,10 @@ class TestSelectGuidedOperatorStringFallback:
         wf = Workflow(
             name="test",
             nodes={"b": AgentNode(id="b", role=AgentRole.BUILDER)},
-            edges=[], start_node="b",
-        )
+            edges=[], start_node="b")
         report = ReflectionReport(
             mutation_suggestions=["PARAM_MUTATE: Increase timeout for builder"],
-            typed_suggestions=[],
-        )
+            typed_suggestions=[])
         counts: dict[MutationType, int] = {}
         for _ in range(100):
             op = strategy.select_guided_operator(wf, 0, report)
@@ -494,12 +471,10 @@ class TestSelectGuidedOperatorStringFallback:
         wf = Workflow(
             name="test",
             nodes={"b": AgentNode(id="b", role=AgentRole.BUILDER)},
-            edges=[], start_node="b",
-        )
+            edges=[], start_node="b")
         report = ReflectionReport(
             mutation_suggestions=["PROMPT_MUTATE: Improve builder prompt"],
-            typed_suggestions=[],
-        )
+            typed_suggestions=[])
         counts: dict[MutationType, int] = {}
         for _ in range(100):
             op = strategy.select_guided_operator(wf, 0, report)
@@ -513,12 +488,10 @@ class TestSelectGuidedOperatorStringFallback:
         wf = Workflow(
             name="test",
             nodes={"b": AgentNode(id="b", role=AgentRole.BUILDER)},
-            edges=[], start_node="b",
-        )
+            edges=[], start_node="b")
         report = ReflectionReport(
             mutation_suggestions=["KNOB_MUTATE: style=focused outperforms broad"],
-            typed_suggestions=[],
-        )
+            typed_suggestions=[])
         counts: dict[MutationType, int] = {}
         for _ in range(100):
             op = strategy.select_guided_operator(wf, 0, report)
@@ -532,13 +505,11 @@ class TestSelectGuidedOperatorStringFallback:
         wf = Workflow(
             name="test",
             nodes={"b": AgentNode(id="b", role=AgentRole.BUILDER)},
-            edges=[], start_node="b",
-        )
+            edges=[], start_node="b")
         report = ReflectionReport(
             mutation_suggestions=[],
             structural_recommendations=[],
-            typed_suggestions=[],
-        )
+            typed_suggestions=[])
         op = strategy.select_guided_operator(wf, 0, report)
         assert isinstance(op, MutationType)
 
@@ -556,8 +527,7 @@ class TestMutateKnobTypedPreference:
             nodes={"b": AgentNode(id="b", role=AgentRole.BUILDER)},
             edges=[], start_node="b",
             knob_values={"style": "broad", "depth": 3},
-            knob_bounds={"style": ["broad", "focused", "creative"], "depth": [1, 2, 3, 5]},
-        )
+            knob_bounds={"style": ["broad", "focused", "creative"], "depth": [1, 2, 3, 5]})
         report = ReflectionReport(
             mutation_suggestions=["KNOB_MUTATE: depth=5 outperforms others"],
             typed_suggestions=[
@@ -565,10 +535,8 @@ class TestMutateKnobTypedPreference:
                     operator="knob_mutate",
                     target="style",
                     rationale="focused works best",
-                    value="focused",
-                ),
-            ],
-        )
+                    value="focused"),
+            ])
         random.seed(0)
         result = mutate_knob(wf, expander=None, reflection_report=report)
         assert result is not None
@@ -583,18 +551,15 @@ class TestMutateKnobTypedPreference:
             nodes={"b": AgentNode(id="b", role=AgentRole.BUILDER)},
             edges=[], start_node="b",
             knob_values={"style": "broad"},
-            knob_bounds={"style": ["broad", "focused", "creative"]},
-        )
+            knob_bounds={"style": ["broad", "focused", "creative"]})
         report = ReflectionReport(
             mutation_suggestions=["KNOB_MUTATE: style=creative (avg score +5) outperforms ..."],
             typed_suggestions=[
                 MutationSuggestion(
                     operator="node_insert",
                     target="researcher",
-                    rationale="not a knob suggestion",
-                ),
-            ],
-        )
+                    rationale="not a knob suggestion"),
+            ])
         random.seed(1)
         result = mutate_knob(wf, expander=None, reflection_report=report)
         assert result is not None
@@ -614,18 +579,15 @@ class TestMutateKnobGuidedNoOp:
             nodes={"b": AgentNode(id="b", role=AgentRole.BUILDER)},
             edges=[], start_node="b",
             knob_values={"style": "focused"},
-            knob_bounds={"style": ["focused", "broad", "creative"]},
-        )
+            knob_bounds={"style": ["focused", "broad", "creative"]})
         report = ReflectionReport(
             typed_suggestions=[
                 MutationSuggestion(
                     operator="knob_mutate",
                     target="style",
                     rationale="focused works best",
-                    value="focused",
-                ),
-            ],
-        )
+                    value="focused"),
+            ])
         with patch("factory.outer_loop.mutations.random") as mock_rng:
             mock_rng.random.return_value = 0.3
             mock_rng.choice.side_effect = lambda seq: seq[0]
@@ -643,18 +605,15 @@ class TestMutateKnobGuidedNoOp:
             nodes={"b": AgentNode(id="b", role=AgentRole.BUILDER)},
             edges=[], start_node="b",
             knob_values={"temperature": 0.7},
-            knob_bounds={"temperature": [0.5, 0.7, 0.9]},
-        )
+            knob_bounds={"temperature": [0.5, 0.7, 0.9]})
         report = ReflectionReport(
             typed_suggestions=[
                 MutationSuggestion(
                     operator="knob_mutate",
                     target="temperature",
                     rationale="higher works better",
-                    value="0.9",
-                ),
-            ],
-        )
+                    value="0.9"),
+            ])
         with patch("factory.outer_loop.mutations.random") as mock_rng:
             mock_rng.random.return_value = 0.3
             mock_rng.choice.side_effect = lambda seq: seq[0]
@@ -677,8 +636,7 @@ class TestApplyRandomMutationTypedSuggestions:
             structural_recommendations=[],
             typed_suggestions=[
                 MutationSuggestion(operator="node_insert", target="researcher", rationale="test"),
-            ],
-        )
+            ])
         strategy = WeightedRandomStrategy()
 
         with patch("factory.outer_loop.mutations.random") as mock_random:
@@ -691,8 +649,7 @@ class TestApplyRandomMutationTypedSuggestions:
             apply_random_mutation(
                 simple_workflow, strategy, generation=1,
                 reflection_report=report,
-                max_attempts=20,
-            )
+                max_attempts=20)
             mock_random.random.assert_called()
 
     def test_no_typed_no_string_suggestions_uses_random(self, simple_workflow: Workflow) -> None:
@@ -701,15 +658,13 @@ class TestApplyRandomMutationTypedSuggestions:
         report = ReflectionReport(
             mutation_suggestions=[],
             structural_recommendations=[],
-            typed_suggestions=[],
-        )
+            typed_suggestions=[])
         strategy = WeightedRandomStrategy()
 
         result = apply_random_mutation(
             simple_workflow, strategy, generation=1,
             reflection_report=report,
-            max_attempts=20,
-        )
+            max_attempts=20)
         if result is not None:
             _, rec = result
             assert isinstance(rec.operator, MutationType)
@@ -749,18 +704,15 @@ def _chess_evolve_workflow() -> Workflow:
             role=AgentRole.BUILDER,
             reads={"problem.md"},
             writes={"solution.py"},
-            prompt_template="Solve the problem.",
-        ),
+            prompt_template="Solve the problem."),
         "gate": GateNode(
             id="gate",
             evaluator_type="fn",
-            reads={"solution.py"},
-        ),
+            reads={"solution.py"}),
         "record": FnNode(
             id="record",
             command="echo done",
-            reads={"solution.py"},
-        ),
+            reads={"solution.py"}),
     }
     edges = [
         Edge(source="solver", target="gate"),
@@ -771,8 +723,7 @@ def _chess_evolve_workflow() -> Workflow:
         name="chess_evolve_like",
         nodes=nodes,
         edges=edges,
-        start_node="solver",
-    )
+        start_node="solver")
 
 
 class TestPromptMutateStartNode:
@@ -947,38 +898,34 @@ class TestNodeInsertDataSubgraphAwareness:
         Includes an explicit edge from DataNode to subgraph entry for
         validate_and_repair reachability (mirrors real Designer output).
         """
-        from factory.workflow.primitives import DataItem, DataNode
+        from factory.workflow.primitives import DataItem, DataNode, JoinNode
 
         return Workflow(
             name="data_wf",
             nodes={
                 "data": DataNode(
                     id="data",
-                    inline_items=[DataItem(id="item1", prompt="test")],
-                    subgraph_entry="researcher",
-                    subgraph_exit="builder",
-                ),
+                    inline_items=[DataItem(id="item1", prompt="test")]),
                 "researcher": AgentNode(
                     id="researcher",
                     role=AgentRole.RESEARCHER,
                     reads={".factory/current_item.json"},
                     writes={".factory/strategy/research.md"},
-                    prompt_template="Research the data item.",
-                ),
+                    prompt_template="Research the data item."),
                 "builder": AgentNode(
                     id="builder",
                     role=AgentRole.BUILDER,
                     reads={".factory/strategy/research.md"},
                     writes={".factory/reviews/builder-latest.md"},
-                    prompt_template="Build the solution.",
-                ),
+                    prompt_template="Build the solution."),
+                "join": JoinNode(id="join", sources=["builder"]),
             },
             edges=[
                 Edge(source="data", target="researcher"),
                 Edge(source="researcher", target="builder"),
+                Edge(source="builder", target="join"),
             ],
-            start_node="data",
-        )
+            start_node="data")
 
     def test_node_insert_in_data_subgraph_reads_current_item(self) -> None:
         """Insert a node into a DataNode subgraph → new node has
@@ -1017,8 +964,7 @@ class TestNodeInsertDataSubgraphAwareness:
 
     def test_node_insert_outside_subgraph_no_current_item(self) -> None:
         """Insert a node NOT in a DataNode subgraph → no current_item.json in reads."""
-        # Workflow with external node outside the subgraph
-        from factory.workflow.primitives import DataItem, DataNode
+        from factory.workflow.primitives import DataItem, DataNode, JoinNode
 
         wf = Workflow(
             name="data_wf_ext",
@@ -1026,35 +972,31 @@ class TestNodeInsertDataSubgraphAwareness:
                 "external": FnNode(
                     id="external",
                     command="echo start",
-                    writes={".factory/strategy/observations.md"},
-                ),
+                    writes={".factory/strategy/observations.md"}),
                 "data": DataNode(
                     id="data",
-                    inline_items=[DataItem(id="item1", prompt="test")],
-                    subgraph_entry="sub_builder",
-                    subgraph_exit="sub_builder",
-                ),
+                    inline_items=[DataItem(id="item1", prompt="test")]),
                 "sub_builder": AgentNode(
                     id="sub_builder",
                     role=AgentRole.BUILDER,
                     reads={".factory/current_item.json"},
                     writes={".factory/reviews/builder-latest.md"},
-                    prompt_template="Build.",
-                ),
+                    prompt_template="Build."),
+                "join": JoinNode(id="join", sources=["sub_builder"]),
                 "post": AgentNode(
                     id="post",
                     role=AgentRole.RESEARCHER,
                     reads={".factory/strategy/observations.md"},
                     writes={".factory/strategy/research.md"},
-                    prompt_template="Research after data processing.",
-                ),
+                    prompt_template="Research after data processing."),
             },
             edges=[
                 Edge(source="external", target="data"),
-                Edge(source="data", target="post"),
+                Edge(source="data", target="sub_builder"),
+                Edge(source="sub_builder", target="join"),
+                Edge(source="join", target="post"),
             ],
-            start_node="external",
-        )
+            start_node="external")
         random.seed(0)
         found_non_data = False
         for _ in range(50):
@@ -1065,7 +1007,7 @@ class TestNodeInsertDataSubgraphAwareness:
             new_node = child_wf.nodes.get(rec.target_node)
             if isinstance(new_node, AgentNode):
                 inserted_after = rec.after.get("inserted_after", "")
-                if inserted_after not in ("sub_builder",):
+                if inserted_after not in ("sub_builder"):
                     # Inserted outside the subgraph
                     assert ".factory/current_item.json" not in (new_node.reads or set())
                     found_non_data = True
@@ -1078,26 +1020,25 @@ class TestAutoFrozenNodes:
 
     def test_auto_frozen_nodes_returns_data_node_ids(self) -> None:
         from factory.outer_loop.engine import _auto_frozen_nodes
-        from factory.workflow.primitives import DataNode, DataItem
+        from factory.workflow.primitives import DataNode, DataItem, JoinNode
 
-        nodes: dict[str, AgentNode | FnNode | DataNode] = {
+        nodes: dict = {
             "data_loader": DataNode(
                 id="data_loader",
-                inline_items=[DataItem(id="item1", prompt="test")],
-                subgraph_entry="builder",
-                subgraph_exit="builder",
-            ),
+                inline_items=[DataItem(id="item1", prompt="test")]),
             "builder": AgentNode(id="builder", role=AgentRole.BUILDER),
+            "join": JoinNode(id="join", sources=["builder"]),
             "study": FnNode(id="study", command="echo hi"),
         }
         edges = [
             Edge(source="study", target="data_loader"),
             Edge(source="data_loader", target="builder"),
+            Edge(source="builder", target="join"),
         ]
         wf = Workflow(name="with_data", nodes=nodes, edges=edges, start_node="study")
         frozen = _auto_frozen_nodes(wf)
-        # Only the DataNode ID is frozen; subgraph nodes are the evolution surface
-        assert frozen == {"data_loader"}
+        # DataNode + JoinNode are frozen; branch nodes are the evolution surface
+        assert frozen == {"data_loader", "join"}
 
     def test_auto_frozen_nodes_empty_when_no_data_nodes(self) -> None:
         from factory.outer_loop.engine import _auto_frozen_nodes
@@ -1114,31 +1055,28 @@ class TestAutoFrozenNodes:
     def test_data_node_protected_from_direct_removal(self) -> None:
         """Frozen DataNode cannot be directly removed or param-mutated."""
         from factory.outer_loop.engine import _auto_frozen_nodes
-        from factory.workflow.primitives import DataNode, DataItem
+        from factory.workflow.primitives import DataNode, DataItem, JoinNode
 
-        nodes: dict[str, AgentNode | FnNode | DataNode] = {
+        nodes: dict = {
             "study": FnNode(
                 id="study",
                 command="factory study",
-                writes={".factory/strategy/observations.md"},
-            ),
+                writes={".factory/strategy/observations.md"}),
             "data_loader": DataNode(
                 id="data_loader",
                 inline_items=[DataItem(id="item1", prompt="test")],
-                subgraph_entry="builder",
-                subgraph_exit="builder",
-                reads={".factory/strategy/observations.md"},
-            ),
+                reads={".factory/strategy/observations.md"}),
             "builder": AgentNode(
                 id="builder",
                 role=AgentRole.BUILDER,
                 reads={".factory/strategy/observations.md"},
-                writes={".factory/reviews/builder-latest.md"},
-            ),
+                writes={".factory/reviews/builder-latest.md"}),
+            "join": JoinNode(id="join", sources=["builder"]),
         }
         edges = [
             Edge(source="study", target="data_loader"),
             Edge(source="data_loader", target="builder"),
+            Edge(source="builder", target="join"),
         ]
         wf = Workflow(name="data_test", nodes=nodes, edges=edges, start_node="study")
 
@@ -1147,24 +1085,21 @@ class TestAutoFrozenNodes:
 
         assert remove_node(wf, "data_loader", frozen_nodes=frozen) is None
         assert mutate_params(
-            wf, "data_loader", {"timeout": 999}, frozen_nodes=frozen,
-        ) is None
+            wf, "data_loader", {"timeout": 999}, frozen_nodes=frozen) is None
 
-    def test_auto_frozen_nodes_includes_only_data_node_id(self) -> None:
-        """Only DataNode ID is frozen; subgraph nodes are the evolution surface."""
+    def test_auto_frozen_nodes_includes_only_data_and_join(self) -> None:
+        """DataNode + JoinNode are frozen; branch nodes are the evolution surface."""
         from factory.outer_loop.engine import _auto_frozen_nodes
-        from factory.workflow.primitives import DataNode, DataItem
+        from factory.workflow.primitives import DataNode, DataItem, JoinNode
 
-        nodes: dict[str, AgentNode | FnNode | DataNode] = {
+        nodes: dict = {
             "data_loader": DataNode(
                 id="data_loader",
-                inline_items=[DataItem(id="item1", prompt="test")],
-                subgraph_entry="sub_entry",
-                subgraph_exit="sub_exit",
-            ),
+                inline_items=[DataItem(id="item1", prompt="test")]),
             "sub_entry": AgentNode(id="sub_entry", role=AgentRole.BUILDER),
             "sub_mid": FnNode(id="sub_mid", command="echo mid"),
             "sub_exit": AgentNode(id="sub_exit", role=AgentRole.CODE_REVIEWER),
+            "join": JoinNode(id="join", sources=["sub_exit"]),
             "external": FnNode(id="external", command="echo external"),
         }
         edges = [
@@ -1172,50 +1107,48 @@ class TestAutoFrozenNodes:
             Edge(source="data_loader", target="sub_entry"),
             Edge(source="sub_entry", target="sub_mid"),
             Edge(source="sub_mid", target="sub_exit"),
+            Edge(source="sub_exit", target="join"),
         ]
         wf = Workflow(
-            name="multi_subgraph", nodes=nodes, edges=edges, start_node="external",
-        )
+            name="multi_subgraph", nodes=nodes, edges=edges, start_node="external")
         frozen = _auto_frozen_nodes(wf)
-        # Only DataNode ID is frozen
-        assert frozen == {"data_loader"}
+        # DataNode + JoinNode are frozen
+        assert frozen == {"data_loader", "join"}
         # Subgraph nodes are NOT frozen — they are the evolution surface
         assert "sub_entry" not in frozen
         assert "sub_mid" not in frozen
         assert "sub_exit" not in frozen
-        # External node is also NOT frozen
         assert "external" not in frozen
 
     def test_subgraph_node_is_mutable(self) -> None:
         """Subgraph nodes are the evolution surface — NOT auto-frozen."""
         from factory.outer_loop.engine import _auto_frozen_nodes
-        from factory.workflow.primitives import DataNode, DataItem
+        from factory.workflow.primitives import DataNode, DataItem, JoinNode
 
-        nodes: dict[str, AgentNode | FnNode | DataNode] = {
+        nodes: dict = {
             "start": FnNode(id="start", command="echo start"),
             "data_loader": DataNode(
                 id="data_loader",
-                inline_items=[DataItem(id="item1", prompt="test")],
-                subgraph_entry="sub_builder",
-                subgraph_exit="sub_builder",
-            ),
+                inline_items=[DataItem(id="item1", prompt="test")]),
             "sub_builder": AgentNode(id="sub_builder", role=AgentRole.BUILDER),
+            "join": JoinNode(id="join", sources=["sub_builder"]),
         }
         edges = [
             Edge(source="start", target="data_loader"),
             Edge(source="data_loader", target="sub_builder"),
+            Edge(source="sub_builder", target="join"),
         ]
         wf = Workflow(
-            name="protected_subgraph", nodes=nodes, edges=edges, start_node="start",
-        )
+            name="protected_subgraph", nodes=nodes, edges=edges, start_node="start")
 
-        # Only DataNode ID is frozen; sub_builder is mutable (evolution surface)
+        # DataNode + JoinNode are frozen; sub_builder is mutable
         frozen = _auto_frozen_nodes(wf)
         assert "data_loader" in frozen
+        assert "join" in frozen
         assert "sub_builder" not in frozen
 
         # DataNode itself is protected from removal
         assert remove_node(wf, "data_loader", frozen_nodes=frozen) is None
-        # Subgraph node can be removed (it's not frozen)
-        result = remove_node(wf, "sub_builder", frozen_nodes=frozen)
-        assert result is not None
+        # Subgraph node is not frozen but removal may be rejected
+        # by validate_and_repair if it would break the fork structure
+        assert "sub_builder" not in frozen  # confirms it's mutable

@@ -235,6 +235,7 @@ class SwarmEvaluator:
         project_dir: str,
         instances: list[str],
         individual_id: str | None = None,
+        split: str = 'train',
     ) -> EvalResult:
         """Evaluate a workflow on the given instances, using cache if available."""
         cached = self._cache.get(workflow, instances)
@@ -269,7 +270,7 @@ class SwarmEvaluator:
 
         if self._inner_loop_factory is not None:
             return self._evaluate_via_inner_loop(
-                workflow, project_dir, instances, individual_id
+                workflow, project_dir, instances, individual_id, split=split,
             )
 
         if self._evaluator_fn is not None:
@@ -286,6 +287,8 @@ class SwarmEvaluator:
     @staticmethod
     def _create_worktree(project_dir: str, label: str) -> Path:
         """Create an isolated git worktree from the target project."""
+        if not project_dir or not project_dir.strip():
+            raise ValueError("project_dir must not be empty when creating a worktree")
         src = Path(project_dir)
         wt_base = src.parent / ".eval-worktrees"
         wt_base.mkdir(parents=True, exist_ok=True)
@@ -340,6 +343,7 @@ class SwarmEvaluator:
         project_dir: str,
         instances: list[str],
         individual_id: str | None = None,
+        split: str = 'train',
     ) -> EvalResult:
         """Evaluate using InnerLoop.step() in an isolated worktree.
 
@@ -386,7 +390,7 @@ class SwarmEvaluator:
             if task is not None:
                 from factory.compose import compose
 
-                loop = compose(workflow, task, wt_path, inner_loop_config=inner_loop_config)
+                loop = compose(workflow, task, wt_path, inner_loop_config=inner_loop_config, split=split)
                 loop.mode = mode_name
                 loop.frozen_nodes = frozenset(self._config.frozen_node_ids)
                 loop.test_command = self._config.test_command
@@ -398,6 +402,8 @@ class SwarmEvaluator:
                 if instances:
                     from factory.outer_loop.subset import FixedSubsetSelector
                     loop._subset_selector = FixedSubsetSelector(instances)
+                # Every candidate must run the full workflow — no
+                # verify-only shortcut.
             else:
                 loop = InnerLoop(
                     project_dir=wt_path,
@@ -411,15 +417,14 @@ class SwarmEvaluator:
                         self._config, "execution_strategy", "executor"
                     ),
                     inner_loop_config=inner_loop_config,
+                    split=split,
                 )
             record = loop.step()
 
-            summary_data = self._read_cycle_summary(wt_path, loop.mode)
-            summary_score = float(summary_data.get("score", 0.0)) if summary_data else None
-            score = summary_score if summary_score is not None else (record.score_end or 0.0)
+            score = record.score_end or 0.0
             cost = record.total_cost_usd
 
-            record.split = "train"
+            record.split = split
             self._cycle_cache.put(workflow, record, instances)
             if individual_id:
                 self._cycle_records[individual_id] = record
@@ -437,10 +442,6 @@ class SwarmEvaluator:
                 "reverted": record.reverted,
                 "parsimony_penalty": parsimony,
             }
-            if summary_data:
-                details["scoring_method"] = summary_data.get("scoring_method", "unknown")
-                if "test_details" in summary_data:
-                    details["test_details"] = summary_data["test_details"]
 
             if isinstance(record.instance_results, list) and record.instance_results:
                 from factory.outer_loop.verify_adapter import (
@@ -472,9 +473,15 @@ class SwarmEvaluator:
                 details=details,
             )
         except Exception as exc:
+            # Re-raise UnsupportedStrategyError so ceo-skill failures
+            # propagate loudly instead of being silently scored as 0.
+            from factory.inner_loop import UnsupportedStrategyError
+            if isinstance(exc, UnsupportedStrategyError):
+                raise
             log.error("inner_loop_eval_failed", error=str(exc), exc_info=True)
             return EvalResult(
                 score=0.0,
+                errored=True,
                 details={"error": str(exc), "evaluation_method": "inner_loop"},
             )
         finally:

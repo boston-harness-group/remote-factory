@@ -32,7 +32,6 @@ def _validate_reachability(
     # Add implicit edges for fork/join semantics.
     # ForkNode.targets are reached implicitly (not via explicit edges).
     # JoinNode.sources flow into the join implicitly.
-    # DataNode.subgraph_entry/exit are reached implicitly.
     nodes = workflow.nodes
     for nid, node in nodes.items():
         if type(node).__name__ == "ForkNode":
@@ -43,13 +42,7 @@ def _validate_reachability(
             for s in node.sources:  # type: ignore[union-attr]
                 if s in nodes:
                     g.add_edge(s, nid)
-        if type(node).__name__ == "DataNode":
-            entry = node.subgraph_entry  # type: ignore[union-attr]
-            exit_node = node.subgraph_exit  # type: ignore[union-attr]
-            if entry in nodes:
-                g.add_edge(nid, entry)
-            if exit_node in nodes:
-                g.add_edge(nid, exit_node)
+        # DataNode: edges are explicit now (no subgraph_entry/exit)
 
     reachable = nx.descendants(g, workflow.start_node) | {workflow.start_node}
     unreachable = set(workflow.nodes.keys()) - reachable
@@ -86,18 +79,21 @@ def _validate_cycles(
 def _validate_data_dependencies(
     g: nx.DiGraph, workflow: Workflow, issues: list[str],  # type: ignore[type-arg]
 ) -> None:
+    runtime_provided = set(workflow.runtime_inputs) if workflow.runtime_inputs else set()
+
     for nid, node in workflow.nodes.items():
         if node.reads:
             predecessors = nx.ancestors(g, nid)
             if not predecessors:
-                continue
-            available_writes: set[str] = set()
+                if not runtime_provided:
+                    continue  # ordinary workflow: first node reads are external
+                available_writes: set[str] = set(runtime_provided)
+            else:
+                available_writes = set(runtime_provided)
             for pred_id in predecessors:
                 pred_node = workflow.nodes.get(pred_id)
                 if pred_node:
                     available_writes |= pred_node.writes
-                    # DataNode implicitly writes .factory/current_item.json
-                    # before running its subgraph (executor.py L1012).
                     if type(pred_node).__name__ == 'DataNode':
                         available_writes.add('.factory/current_item.json')
             missing = node.reads - available_writes
@@ -127,75 +123,45 @@ def _validate_fork_join_nodes(workflow: Workflow, issues: list[str]) -> None:
             if exit_node not in workflow.nodes:
                 issues.append(f"subgraph_fork '{nid}' exit '{exit_node}' not in nodes")
 
+        # DataNode: validate it has outgoing edges and a downstream JoinNode
         if type(node).__name__ == "DataNode":
-            entry = node.subgraph_entry  # type: ignore[union-attr]
-            exit_node = node.subgraph_exit  # type: ignore[union-attr]
-            if entry not in workflow.nodes:
-                issues.append(f"data_node '{nid}' entry '{entry}' not in nodes")
-            if exit_node not in workflow.nodes:
-                issues.append(f"data_node '{nid}' exit '{exit_node}' not in nodes")
+            has_outgoing = any(e.source == nid for e in workflow.edges)
+            if not has_outgoing:
+                issues.append(f"DataNode '{nid}' has no outgoing edges")
 
 
-def _validate_datanode_edges(workflow: Workflow, issues: list[str]) -> None:
-    """Reject explicit edges from a DataNode to its own subgraph nodes.
-
-    The executor handles subgraph execution internally — explicit edges
-    would cause double-execution.
-    """
-    for nid, node in workflow.nodes.items():
-        if type(node).__name__ != "DataNode":
-            continue
-        entry = node.subgraph_entry  # type: ignore[union-attr]
-        exit_node = node.subgraph_exit  # type: ignore[union-attr]
-        subgraph_ids = _collect_subgraph_nodes(workflow, entry, exit_node)
-        for edge in workflow.edges:
-            if edge.source == nid and edge.target in subgraph_ids:
-                issues.append(
-                    f"Edge from DataNode {nid} to its own subgraph node {edge.target} "
-                    f"would cause double-execution. Remove explicit edges into DataNode "
-                    f"subgraphs — the executor handles subgraph execution internally."
-                )
-
-
-def _validate_datanode_exit(workflow: Workflow, issues: list[str]) -> None:
-    """Warn when a DataNode's subgraph_exit points to a Loop GateNode.
-
-    When subgraph_exit is a GateNode that participates in a Loop (has
-    outgoing RELOOP edges), _collect_subgraph_nodes stops BFS at the gate,
-    excluding the PROCEED edge target (the real exit node).
-    Workflow.subgraph() then drops the PROCEED edge, causing execution
-    to silently halt after one loop iteration.
-
-    Terminal GateNodes (no RELOOP edges) are fine as subgraph_exit — they
-    don't have a PROCEED edge that would be dropped.
-    """
-    from factory.workflow.primitives import VerdictType
+def _validate_datanode_fork(workflow: Workflow, issues: list[str]) -> None:
+    """Validate DataNode fork/join structure via real edges."""
+    from factory.workflow.primitives import DataNode, JoinNode
 
     for nid, node in workflow.nodes.items():
-        if type(node).__name__ != "DataNode":
+        if not isinstance(node, DataNode):
             continue
-        exit_id = node.subgraph_exit  # type: ignore[union-attr]
-        exit_node = workflow.nodes.get(exit_id)
-        if exit_node is not None and type(exit_node).__name__ == "GateNode":
-            has_reloop = any(
-                e.source == exit_id and e.condition == VerdictType.RELOOP
-                for e in workflow.edges
-            )
-            if not has_reloop:
+        # Check that there's a JoinNode downstream
+        edge_targets = [e.target for e in workflow.edges if e.source == nid]
+        if not edge_targets:
+            continue  # Already reported by _validate_fork_join_nodes
+        # BFS to find JoinNode
+        visited: set[str] = set()
+        queue = list(edge_targets)
+        found_join = False
+        while queue:
+            current = queue.pop(0)
+            if current in visited:
                 continue
+            visited.add(current)
+            target_node = workflow.nodes.get(current)
+            if isinstance(target_node, JoinNode):
+                found_join = True
+                break
+            for e in workflow.edges:
+                if e.source == current:
+                    queue.append(e.target)
+        if not found_join:
             issues.append(
-                f"DataNode '{nid}' has subgraph_exit pointing to GateNode '{exit_id}'. "
-                f"This drops the PROCEED edge. Use the Loop's exit_node instead."
+                f"DataNode '{nid}' has no downstream JoinNode — "
+                f"branches have no convergence point"
             )
-
-
-def _collect_subgraph_nodes(
-    workflow: Workflow,
-    entry: str,
-    exit_node: str,
-) -> set[str]:
-    from factory.workflow.executor import _collect_subgraph_nodes as _exec_collect
-    return _exec_collect(workflow, entry, exit_node)
 
 
 def _validate_agent_prompts(workflow: Workflow, issues: list[str]) -> None:
@@ -240,29 +206,32 @@ def _validate_gate_edges(workflow: Workflow, issues: list[str]) -> None:
 
 
 def _validate_datanode_entry_reads(workflow: Workflow) -> None:
-    """Task-backed DataNode subgraph_entry should read current_item.json (WARNING).
+    """Task-backed DataNode branch entry should read current_item.json (WARNING).
 
-    When a DataNode has a non-empty task_ref, the executor writes
-    .factory/current_item.json before running the subgraph.  The entry
-    node's reads set should include this path so that downstream nodes
-    can rely on it being available.
+    When a DataNode has a non-empty task_ref, the runtime writes
+    .factory/current_item.json before running the branch.  The entry
+    node's reads set should include this path.
 
-    This is a WARNING, not an ERROR — some task-backed DataNodes may
-    inject item data through a different mechanism.
+    This is a WARNING, not an ERROR.
     """
     from factory.workflow.primitives import DataNode
 
     for nid, node in workflow.nodes.items():
         if not isinstance(node, DataNode) or not node.task_ref:
             continue
-        entry = workflow.nodes.get(node.subgraph_entry)
+        # Find entry via edges
+        edge_targets = [e.target for e in workflow.edges if e.source == nid]
+        if not edge_targets:
+            continue
+        entry_id = edge_targets[0]
+        entry = workflow.nodes.get(entry_id)
         if entry is None:
             continue
         if ".factory/current_item.json" not in entry.reads:
             log.warning(
                 "datanode_entry_missing_current_item",
                 data_node=nid,
-                entry_node=node.subgraph_entry,
+                entry_node=entry_id,
                 entry_reads=sorted(entry.reads),
                 hint="task-backed DataNode entry should read .factory/current_item.json",
             )
@@ -285,24 +254,20 @@ def validate_workflow(workflow: Workflow) -> list[str]:
     for edge in workflow.edges:
         g.add_edge(edge.source, edge.target, condition=edge.condition)
 
-    # Add implicit edges for SubgraphForkNode and DataNode: node → subgraph_entry
+    # Add implicit edges for SubgraphForkNode: node → subgraph_entry
     # so subgraph nodes are reachable in the graph
     for nid, node in nodes.items():
         if type(node).__name__ == "SubgraphForkNode":
             entry = node.subgraph_entry  # type: ignore[union-attr]
             if entry in nodes:
                 g.add_edge(nid, entry, condition=None)
-        if type(node).__name__ == "DataNode":
-            entry = node.subgraph_entry  # type: ignore[union-attr]
-            if entry in nodes:
-                g.add_edge(nid, entry, condition=None)
+        # DataNode: edges are explicit now (real edges in graph)
 
     _validate_reachability(g, workflow, issues)
     _validate_cycles(g, workflow, issues)
     _validate_data_dependencies(g, workflow, issues)
     _validate_fork_join_nodes(workflow, issues)
-    _validate_datanode_edges(workflow, issues)
-    _validate_datanode_exit(workflow, issues)
+    _validate_datanode_fork(workflow, issues)
     _validate_agent_prompts(workflow, issues)
     _validate_gate_edges(workflow, issues)
     _validate_datanode_entry_reads(workflow)  # WARNING only — does not add to issues
@@ -315,14 +280,6 @@ def validate_workflow(workflow: Workflow) -> list[str]:
                 if not nx.has_path(g, entry, exit_node):
                     issues.append(
                         f"subgraph_fork '{nid}': no path from entry '{entry}' to exit '{exit_node}'"
-                    )
-        if type(node).__name__ == "DataNode":
-            entry = node.subgraph_entry  # type: ignore[union-attr]
-            exit_node = node.subgraph_exit  # type: ignore[union-attr]
-            if entry in nodes and exit_node in nodes:
-                if not nx.has_path(g, entry, exit_node):
-                    issues.append(
-                        f"data_node '{nid}': no path from entry '{entry}' to exit '{exit_node}'"
                     )
 
     return issues

@@ -675,3 +675,58 @@ class Task:
         except Exception:
             pass
         return None
+
+
+# ── SourceTask — wraps inline_items / source_path into a Task ────
+
+
+class SourceTask(Task):
+    """Task subclass for DataNodes with inline_items or source_path.
+
+    Wraps the items from a DataNode source into proper TaskInstances.
+    ``verify()`` is a no-op pass — scoring comes from the branch workflow.
+    """
+
+    def __init__(
+        self,
+        items: list[TaskInstance],
+        *,
+        name: str = "source-task",
+    ) -> None:
+        super().__init__(
+            definition=TaskDefinition(name=name),
+        )
+        self._items = items
+
+    def _raw_instances(self) -> Iterator[TaskInstance]:
+        yield from self._items
+
+    def setup(self, instance: TaskInstance, workspace: Path) -> None:
+        pass
+
+    def prompt(self, instance: TaskInstance) -> str:
+        meta = instance.metadata or {}
+        return meta.get("prompt", f"Process item {instance.id}")
+
+    def verify(self, instance: TaskInstance, workspace: Path) -> VerifyResult:
+        return VerifyResult(passed=True, score=1.0)
+
+
+# ── DefaultTask — single-instance Task whose verify runs test_command ──
+
+
+class DefaultTask(Task):
+    """Default single-instance Task for the no-task path.
+
+    ``verify()`` runs the configured test_command.
+    """
+
+    def __init__(self, *, test_command: str = "", name: str = "default") -> None:
+        defn = TaskDefinition(
+            name=name,
+            verify_config=VerifyConfig(command=test_command),
+        )
+        super().__init__(definition=defn)
+
+    def _raw_instances(self) -> Iterator[TaskInstance]:
+        yield TaskInstance(id="default")

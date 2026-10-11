@@ -271,6 +271,9 @@ class TestComposeIntegration:
         async def fake_execute(self_exec):
             r = ExecutionResult()
             r.success = True
+            r.item_results = [
+                {"instance_id": "depth1-startpos", "score": 0.5, "status": "passed"},
+            ]
             return r
 
         with patch.object(

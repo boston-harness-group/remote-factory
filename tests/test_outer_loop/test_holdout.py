@@ -36,8 +36,7 @@ from factory.workflow.primitives import (
     AgentRole,
     Edge,
     FnNode,
-    Workflow,
-)
+    Workflow)
 
 
 # ── Fixtures ────────────────────────────────────────────────────
@@ -50,8 +49,7 @@ class DummyTaskWithSplit(Task):
         super().__init__(definition=TaskDefinition(name="dummy-split"))
 
     def instances(
-        self, split: Literal["train", "val", "all"] = "all",
-    ) -> Iterator[TaskInstance]:
+        self, split: Literal["train", "val", "all"] = "all") -> Iterator[TaskInstance]:
         all_instances = [
             TaskInstance(id="s1", split="train"),
             TaskInstance(id="s2", split="train"),
@@ -87,8 +85,7 @@ class TrackingEvaluator:
         self.calls: list[dict] = []
 
     def __call__(
-        self, workflow: Workflow, project_dir: str, instances: list[str],
-    ) -> EvalResult:
+        self, workflow: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
         self.calls.append({
             "instances": list(instances),
             "project_dir": project_dir,
@@ -105,8 +102,7 @@ def _make_workflow() -> Workflow:
             "b": AgentNode(id="b", role=AgentRole.BUILDER, prompt_template="build it"),
         },
         edges=[Edge(source="a", target="b")],
-        start_node="a",
-    )
+        start_node="a")
 
 
 def _make_config(**overrides: object) -> SwarmConfig:
@@ -117,7 +113,6 @@ def _make_config(**overrides: object) -> SwarmConfig:
         "tournament_size": 2,
         "mutation_rate": 0.3,
         "training_instances": ["s1", "s2", "s3"],
-        "holdout_instances": [],
     }
     defaults.update(overrides)
     return SwarmConfig(**defaults)  # type: ignore[arg-type]
@@ -171,12 +166,10 @@ class TestCycleRecordCache:
         cache = CycleRecordCache()
         search_rec = CycleRecord(
             cycle_number=1, mode=None, started_at=None, ended_at=None,
-            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None,
-        )
+            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None)
         holdout_rec = CycleRecord(
             cycle_number=2, mode=None, started_at=None, ended_at=None,
-            duration_s=1.0, score_start=None, score_end=0.6, score_delta=None,
-        )
+            duration_s=1.0, score_start=None, score_end=0.6, score_delta=None)
         cache.put(wf, search_rec, instances=["s1", "s2", "s3"])
         cache.put(wf, holdout_rec, instances=["h1", "h2"])
 
@@ -188,8 +181,7 @@ class TestCycleRecordCache:
         cache = CycleRecordCache()
         rec = CycleRecord(
             cycle_number=1, mode=None, started_at=None, ended_at=None,
-            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None,
-        )
+            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None)
         cache.put(wf, rec, instances=["s2", "s1", "s3"])
         assert cache.get(wf, instances=["s1", "s2", "s3"]) is rec
         assert cache.get(wf, instances=["s3", "s1", "s2"]) is rec
@@ -199,12 +191,10 @@ class TestCycleRecordCache:
         cache = CycleRecordCache()
         legacy_rec = CycleRecord(
             cycle_number=0, mode=None, started_at=None, ended_at=None,
-            duration_s=1.0, score_start=None, score_end=0.5, score_delta=None,
-        )
+            duration_s=1.0, score_start=None, score_end=0.5, score_delta=None)
         instance_rec = CycleRecord(
             cycle_number=1, mode=None, started_at=None, ended_at=None,
-            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None,
-        )
+            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None)
         cache.put(wf, legacy_rec)  # No instances (legacy)
         cache.put(wf, instance_rec, instances=["s1", "s2"])
 
@@ -235,13 +225,10 @@ class TestReflectorFirewall:
         holdout_rec = CycleRecord(
             cycle_number=1, mode=None, started_at=None, ended_at=None,
             duration_s=1.0, score_start=None, score_end=0.8, score_delta=None,
-            split="val",
-        )
+            split="val",)
         train_rec = CycleRecord(
             cycle_number=2, mode=None, started_at=None, ended_at=None,
-            duration_s=1.0, score_start=None, score_end=0.6, score_delta=None,
-            split="train",
-        )
+            duration_s=1.0, score_start=None, score_end=0.6, score_delta=None,)
         records = [
             ("id1", 0.8, holdout_rec),
             ("id2", 0.6, train_rec),
@@ -253,14 +240,10 @@ class TestReflectorFirewall:
         reflector = OuterLoopReflector(k=1)
         rec1 = CycleRecord(
             cycle_number=1, mode=None, started_at=None, ended_at=None,
-            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None,
-            split="train",
-        )
+            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None,)
         rec2 = CycleRecord(
             cycle_number=2, mode=None, started_at=None, ended_at=None,
-            duration_s=1.0, score_start=None, score_end=0.6, score_delta=None,
-            split="train",
-        )
+            duration_s=1.0, score_start=None, score_end=0.6, score_delta=None,)
         records = [("id1", 0.8, rec1), ("id2", 0.6, rec2)]
         report = reflector.reflect(records, generation=0)
         assert report is not None
@@ -269,12 +252,10 @@ class TestReflectorFirewall:
         reflector = OuterLoopReflector(k=1)
         rec1 = CycleRecord(
             cycle_number=1, mode=None, started_at=None, ended_at=None,
-            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None,
-        )
+            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None)
         rec2 = CycleRecord(
             cycle_number=2, mode=None, started_at=None, ended_at=None,
-            duration_s=1.0, score_start=None, score_end=0.6, score_delta=None,
-        )
+            duration_s=1.0, score_start=None, score_end=0.6, score_delta=None)
         records = [("id1", 0.8, rec1), ("id2", 0.6, rec2)]
         report = reflector.reflect(records, generation=0)
         assert report is not None
@@ -289,16 +270,14 @@ class TestCycleRecordSplit:
     def test_cycle_record_split_default_none(self) -> None:
         rec = CycleRecord(
             cycle_number=1, mode=None, started_at=None, ended_at=None,
-            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None,
-        )
+            duration_s=1.0, score_start=None, score_end=0.8, score_delta=None)
         assert rec.split is None
 
     def test_cycle_record_split_train(self) -> None:
         rec = CycleRecord(
             cycle_number=1, mode=None, started_at=None, ended_at=None,
             duration_s=1.0, score_start=None, score_end=0.8, score_delta=None,
-            split="train",
-        )
+            split="train",)
         assert rec.split == "train"
 
 
@@ -322,8 +301,7 @@ class TestOverfitDetectorTrainingScore:
 
         result = detector.audit(
             wf, ["s1", "s2"], ["h1"], evaluator, "/tmp",
-            training_score=0.8,
-        )
+            training_score=0.8)
 
         # Only one evaluate call (holdout), training was skipped
         assert len(call_log) == 1
@@ -366,8 +344,7 @@ class TestRunReport:
             convergence_reason="budget_exhausted",
             generations_completed=8,
             total_evaluations=47,
-            total_candidates_evaluated=47,
-        )
+            total_candidates_evaluated=47)
         save_best(tmp_path, result)
 
         report_path = tmp_path / ".factory" / "outer_loop" / "best" / "run_report.json"
@@ -399,8 +376,7 @@ class TestSplitConfiguration:
     def test_holdout_ids_config(self) -> None:
         defn = TaskDefinition(
             name="test-holdout-ids",
-            instances_config=InstancesConfig(holdout_ids=["default"]),
-        )
+            instances_config=InstancesConfig(holdout_ids=["default"]))
         task = Task(definition=defn)
         all_insts = list(task.instances(split="all"))
         # Default single-instance task: "default" should be val
@@ -449,14 +425,12 @@ class TestIndividualValScore:
 
     def test_default_none(self) -> None:
         ind = Individual(
-            id="test", workflow_data={}, score=0.8,
-        )
+            id="test", workflow_data={}, score=0.8)
         assert ind.val_score is None
 
     def test_can_set_val_score(self) -> None:
         ind = Individual(
-            id="test", workflow_data={}, score=0.8,
-        )
+            id="test", workflow_data={}, score=0.8)
         updated = ind.model_copy(update={"val_score": 0.76})
         assert updated.val_score == 0.76
 
@@ -571,7 +545,7 @@ class TestLegacyTaskBackwardCompat:
         # Verify calls were made (fallback worked)
         assert len(call_log) > 0
 
-    def test_run_with_legacy_task_no_crash(self) -> None:
+    def test_run_with_legacy_task_no_crash(self, tmp_path: Path) -> None:
         """Full run() with LegacyTask doesn't crash."""
         from factory.outer_loop.engine import SwarmEngine
 
@@ -579,16 +553,14 @@ class TestLegacyTaskBackwardCompat:
         config = _make_config(
             budget=4,
             population_size=2,
-            training_instances=["leg1", "leg2"],
-            holdout_instances=["leg3"],
-        )
+            training_instances=["leg1", "leg2"])
         config.set_task(task)
 
         def simple_eval(wf: Workflow, project_dir: str, instances: list[str]) -> EvalResult:
             return EvalResult(score=0.5, benchmark_score=0.5, hygiene_score=0.7)
 
         evaluator = SwarmEvaluator(config, evaluator_fn=simple_eval)
-        engine = SwarmEngine(config, evaluator)
+        engine = SwarmEngine(config, evaluator, project_dir=tmp_path)
 
         # Should NOT raise TypeError
         result = engine.run(_make_workflow())
@@ -611,9 +583,7 @@ class TestLegacyTaskBackwardCompat:
 
         task = LegacyTaskFive()
         config = _make_config(
-            training_instances=[],
-            holdout_instances=[],
-        )
+            training_instances=[])
         config.set_task(task)
 
         call_log: list[list[str]] = []
@@ -643,7 +613,7 @@ class TestLegacyTaskBackwardCompat:
 class TestDataNodeRespectsSubsetSelector:
     """DataNode workflows must respect _subset_selector (train/val firewall).
 
-    Before the fix, InnerLoop._step_with_data_node() ignored _subset_selector
+    Before the fix, InnerLoop._step_with_task() ignored _subset_selector
     and WorkflowExecutor._execute_data() called task.instances() with no split,
     bypassing the train/val firewall.
     """
@@ -654,8 +624,7 @@ class TestDataNodeRespectsSubsetSelector:
         executor = WorkflowExecutor(
             _make_workflow(),
             "/tmp/test",
-            allowed_instance_ids=train_ids,
-        )
+            allowed_instance_ids=train_ids)
         assert executor._allowed_instance_ids == train_ids
 
     def test_allowed_instance_ids_default_none(self) -> None:
@@ -682,17 +651,18 @@ class TestDataNodeRespectsSubsetSelector:
         # DataNode backed by task_ref — triggers the allowed_instance_ids filter
         data_node = DataNode(
             id="data",
-            task_ref="dummy",
-            subgraph_entry="process",
-            subgraph_exit="process",
-        )
+            task_ref="dummy")
+        from factory.workflow.primitives import JoinNode
         process_node = FnNode(id="process", command="echo ok")
+        join_node = JoinNode(id="join", sources=["process"])
         wf = Workflow(
             name="test_datanode_filter",
-            nodes={"data": data_node, "process": process_node},
-            edges=[],
-            start_node="data",
-        )
+            nodes={"data": data_node, "process": process_node, "join": join_node},
+            edges=[
+                Edge(source="data", target="process"),
+                Edge(source="process", target="join"),
+            ],
+            start_node="data")
 
         # Only allow train IDs
         train_ids = {"s1", "s2", "s3"}
@@ -703,8 +673,7 @@ class TestDataNodeRespectsSubsetSelector:
             MockTaskRef.return_value.resolve.return_value = dummy_task
             executor = WorkflowExecutor(
                 wf, "/tmp/test", dry_run=True, allowed_instance_ids=train_ids,
-                validate=False,
-            )
+                validate=False)
             result = asyncio.run(executor.execute())
 
         # The executor should have processed exactly the train items
@@ -724,22 +693,24 @@ class TestDataNodeRespectsSubsetSelector:
         from factory.workflow.executor import WorkflowExecutor
         from factory.workflow.primitives import DataItem, DataNode
 
+        from factory.workflow.primitives import JoinNode
+
         data_node = DataNode(
             id="data",
             inline_items=[
                 DataItem(id="s1", metadata={}),
                 DataItem(id="h1", metadata={}),
-            ],
-            subgraph_entry="process",
-            subgraph_exit="process",
-        )
+            ])
         process_node = FnNode(id="process", command="echo ok")
+        join_node = JoinNode(id="join", sources=["process"])
         wf = Workflow(
             name="test_no_filter",
-            nodes={"data": data_node, "process": process_node},
-            edges=[Edge(source="data", target="process")],
-            start_node="data",
-        )
+            nodes={"data": data_node, "process": process_node, "join": join_node},
+            edges=[
+                Edge(source="data", target="process"),
+                Edge(source="process", target="join"),
+            ],
+            start_node="data")
 
         # No allowed_instance_ids — should process all
         executor = WorkflowExecutor(wf, "/tmp/test", dry_run=True, validate=False)
@@ -753,7 +724,7 @@ class TestDataNodeRespectsSubsetSelector:
             assert executed_ids == {"s1", "h1"}
 
     def test_inner_loop_passes_subset_selector_to_executor(self) -> None:
-        """InnerLoop._step_with_data_node() passes _subset_selector IDs to executor."""
+        """InnerLoop._step_with_task() passes _subset_selector IDs to executor."""
         from unittest.mock import MagicMock, patch
 
         from factory.inner_loop import InnerLoop
@@ -766,10 +737,7 @@ class TestDataNodeRespectsSubsetSelector:
         # Create a workflow with a DataNode
         data_node = DataNode(
             id="data",
-            task_ref="dummy",
-            subgraph_entry="process",
-            subgraph_exit="process",
-        )
+            task_ref="dummy")
         process_node = FnNode(id="process", command="echo ok")
         wf = Workflow(
             name="test_inner_loop_datanode",
@@ -779,8 +747,7 @@ class TestDataNodeRespectsSubsetSelector:
             # validator (_validate_datanode_edges) rejects explicit edges to
             # subgraph nodes to prevent double-execution.
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         loop = InnerLoop.__new__(InnerLoop)
         loop.workflow = wf
@@ -816,9 +783,8 @@ class TestDataNodeRespectsSubsetSelector:
 
         with (
             patch.object(WorkflowExecutor, "__init__", mock_init),
-            patch("asyncio.run", return_value=mock_result),
-        ):
-            loop._step_with_data_node()
+            patch("asyncio.run", return_value=mock_result)):
+            loop._step_with_task()
 
         assert "allowed_instance_ids" in captured_kwargs, (
             "_subset_selector was not passed to WorkflowExecutor"
@@ -846,10 +812,7 @@ class TestDataNodeRespectsSubsetSelector:
         # Create a workflow with a DataNode
         data_node = DataNode(
             id="data",
-            task_ref="dummy",
-            subgraph_entry="process",
-            subgraph_exit="process",
-        )
+            task_ref="dummy")
         process_node = FnNode(id="process", command="echo ok")
         wf = Workflow(
             name="test_empty_selector",
@@ -859,8 +822,7 @@ class TestDataNodeRespectsSubsetSelector:
             # validator (_validate_datanode_edges) rejects explicit edges to
             # subgraph nodes to prevent double-execution.
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
 
         loop = InnerLoop.__new__(InnerLoop)
         loop.workflow = wf
@@ -896,9 +858,8 @@ class TestDataNodeRespectsSubsetSelector:
 
         with (
             patch.object(WorkflowExecutor, "__init__", mock_init),
-            patch("asyncio.run", return_value=mock_result),
-        ):
-            loop._step_with_data_node()
+            patch("asyncio.run", return_value=mock_result)):
+            loop._step_with_task()
 
         # allowed_instance_ids should be None (not an empty set)
         # because the empty selector means "no split configured" → allow all
@@ -906,3 +867,68 @@ class TestDataNodeRespectsSubsetSelector:
             "Empty subset selector should result in allowed_instance_ids=None, "
             f"but got {captured_kwargs.get('allowed_instance_ids')!r}"
         )
+
+
+# ── Fix 3: audit() skips evaluator when both scores provided ────
+
+
+class TestAuditSkipsEvaluatorWithBothScores:
+    """When both training_score and holdout_score are provided,
+    audit() must NOT call the evaluator at all."""
+
+    def test_audit_no_evaluator_call_when_both_scores_given(self) -> None:
+        detector = OverfitDetector()
+        wf = _make_workflow()
+
+        # Pass both scores — evaluator should NOT be needed
+        result = detector.audit(
+            wf, ["s1", "s2"], ["h1"],
+            training_score=0.8,
+            holdout_score=0.75,
+        )
+
+        assert result.training_score == 0.8
+        assert result.holdout_score == 0.75
+        # delta = (0.8 - 0.75) / 0.8 = 0.0625 < 0.15 → no overfit
+        assert not result.overfit_flag
+        assert abs(result.delta - 0.0625) < 1e-6
+
+    def test_audit_overfit_detected_with_both_scores(self) -> None:
+        detector = OverfitDetector(threshold=0.10)
+        wf = _make_workflow()
+
+        result = detector.audit(
+            wf, ["s1"], ["h1"],
+            training_score=1.0,
+            holdout_score=0.5,
+        )
+
+        assert result.overfit_flag is True
+        assert result.delta == 0.5
+
+    def test_audit_no_overfit_with_close_scores(self) -> None:
+        detector = OverfitDetector()
+        wf = _make_workflow()
+
+        result = detector.audit(
+            wf, ["s1"], ["h1"],
+            training_score=0.8,
+            holdout_score=0.75,
+        )
+
+        assert result.overfit_flag is False
+
+    def test_audit_evaluator_none_ok_when_both_scores_given(self) -> None:
+        """evaluator=None is valid when both scores are pre-computed."""
+        detector = OverfitDetector()
+        wf = _make_workflow()
+
+        # Should NOT raise — evaluator is not needed
+        result = detector.audit(
+            wf, ["s1"], ["h1"],
+            evaluator=None,
+            training_score=0.8,
+            holdout_score=0.7,
+        )
+        assert result.training_score == 0.8
+        assert result.holdout_score == 0.7

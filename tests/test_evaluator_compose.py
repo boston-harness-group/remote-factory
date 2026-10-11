@@ -65,7 +65,7 @@ class TestEvaluateViaInnerLoopCompose:
 
             result = evaluator.evaluate(wf, str(tmp_path), ["inst1"])
 
-        mock_compose.assert_called_once_with(wf, mock_task, tmp_path, inner_loop_config=None)
+        mock_compose.assert_called_once_with(wf, mock_task, tmp_path, inner_loop_config=None, split='train')
         assert result.score >= 0.0
 
     def test_compose_path_sets_loop_attributes(self, tmp_path: Path):

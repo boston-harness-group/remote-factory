@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 from factory.outer_loop.mode_registry import EphemeralModeRegistry
+from factory.outer_loop.population import Population
 from factory.workflow.primitives import (
     AgentNode,
     AgentRole,
@@ -353,3 +354,52 @@ class TestPruneStaleModes:
         assert mode_name in pruned
         assert not (target / ".factory" / "workflows" / f"{mode_name}.py").exists()
         assert not (target / ".factory" / "outer_loop" / "modes" / f"{mode_name}.json").exists()
+
+
+# ── Tests moved from test_coverage_gaps.py ─────────────────────────
+
+
+class TestModeRegistryHandlesHashCollision:
+    """Verifies registry detects 12-char prefix collisions."""
+
+    def test_same_id_prefix_different_generations_no_collision(self, tmp_path: Path) -> None:
+        registry = EphemeralModeRegistry(tmp_path)
+        wf = _make_workflow()
+        name0 = registry.register("abcdefgh_extra", 0, wf)
+        name1 = registry.register("abcdefgh_extra", 1, wf)
+        assert name0 != name1
+        assert name0 == "evolve-gen0-abcdefgh"
+        assert name1 == "evolve-gen1-abcdefgh"
+        assert registry.count == 2
+
+    def test_same_prefix_same_generation_overwrites(self, tmp_path: Path) -> None:
+        registry = EphemeralModeRegistry(tmp_path)
+        wf1 = _make_workflow("wf1")
+        wf2 = _make_workflow("wf2")
+        name1 = registry.register("abcdefgh_111", 0, wf1)
+        name2 = registry.register("abcdefgh_222", 0, wf2)
+        assert name1 == name2
+        loaded = registry.load(name2)
+        assert loaded is not None
+        assert loaded.name == name2
+
+    def test_content_hash_detects_tampered_mode_file(self, tmp_path: Path) -> None:
+        import json
+        registry = EphemeralModeRegistry(tmp_path)
+        wf = _make_workflow()
+        mode_name = registry.register("hashtest1", 0, wf)
+        mode_path = tmp_path / ".factory" / "outer_loop" / "modes" / f"{mode_name}.json"
+        data = json.loads(mode_path.read_text())
+        data["name"] = "tampered-name"
+        mode_path.write_text(json.dumps(data, indent=2, sort_keys=True))
+        loaded = registry.load(mode_name)
+        assert loaded is not None
+
+    def test_12_char_uuid_prefix_uniqueness(self) -> None:
+        wf = _make_workflow()
+        ids = set()
+        for _ in range(20):
+            ind = Population.make_individual(wf, generation=0)
+            assert len(ind.id) == 12
+            ids.add(ind.id)
+        assert len(ids) == 20
