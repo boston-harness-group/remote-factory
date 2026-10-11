@@ -402,3 +402,181 @@ def test_fn_node_with_callable_is_valid():
 
     node = FnNode(id="good-fn", callable_name="my_module:my_fn")
     assert node.callable_name == "my_module:my_fn"
+
+
+def test_node_insert_inherits_model_and_timeout():
+    """node_insert copies model and timeout from nearest AgentNode."""
+    import random
+
+    from factory.outer_loop.mutations import MutationType, _try_mutation
+    from factory.workflow.primitives import (
+        AgentNode,
+        AgentRole,
+        DataNode,
+        Edge,
+        JoinNode,
+        Workflow,
+    )
+
+    wf = Workflow(
+        name="model-inherit-test",
+        nodes={
+            "data": DataNode(id="data"),
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                model="claude-haiku-4-5-20251001",
+                timeout=300,
+                prompt_template="build it",
+                writes={"out.txt"},
+                reads=set(),
+            ),
+            "_join_data": JoinNode(id="_join_data", sources=["builder"]),
+        },
+        edges=[
+            Edge(source="data", target="builder"),
+            Edge(source="builder", target="_join_data"),
+        ],
+        start_node="data",
+    )
+
+    # Try multiple seeds to get a successful node_insert
+    result = None
+    for seed in range(100):
+        random.seed(seed)
+        result = _try_mutation(
+            wf, MutationType.NODE_INSERT, frozenset({"data", "_join_data"})
+        )
+        if result is not None:
+            break
+
+    assert result is not None, "node_insert never succeeded"
+    new_wf, _rec = result
+    # Find the inserted node(s)
+    new_node_ids = set(new_wf.nodes.keys()) - set(wf.nodes.keys())
+    assert len(new_node_ids) >= 1
+    for nid in new_node_ids:
+        node = new_wf.nodes[nid]
+        if isinstance(node, AgentNode):
+            assert node.model == "claude-haiku-4-5-20251001", (
+                f"Inserted node {nid} has model={node.model!r}, expected haiku"
+            )
+            assert node.timeout == 300, (
+                f"Inserted node {nid} has timeout={node.timeout}, expected 300"
+            )
+
+
+def test_infer_agent_params_from_target():
+    """_infer_agent_params returns model/timeout from the target node."""
+    from factory.outer_loop.mutations import _infer_agent_params
+    from factory.workflow.primitives import AgentNode, AgentRole, Edge, Workflow
+
+    wf = Workflow(
+        name="infer-test",
+        nodes={
+            "a": AgentNode(
+                id="a",
+                role=AgentRole.BUILDER,
+                model="claude-haiku-4-5-20251001",
+                timeout=300,
+            ),
+            "b": AgentNode(
+                id="b",
+                role=AgentRole.CODE_REVIEWER,
+                model="claude-sonnet-4-20250514",
+                timeout=600,
+            ),
+        },
+        edges=[Edge(source="a", target="b")],
+        start_node="a",
+    )
+
+    # Target is node "a" -> should get a's model and timeout
+    params = _infer_agent_params(wf, "a")
+    assert params["model"] == "claude-haiku-4-5-20251001"
+    assert params["timeout"] == 300
+
+    # Target is node "b" -> should get b's model and timeout
+    params = _infer_agent_params(wf, "b")
+    assert params["model"] == "claude-sonnet-4-20250514"
+    assert params["timeout"] == 600
+
+
+def test_infer_agent_params_fallback():
+    """_infer_agent_params falls back to first AgentNode with model when target is not an AgentNode."""
+    from factory.outer_loop.mutations import _infer_agent_params
+    from factory.workflow.primitives import (
+        AgentNode,
+        AgentRole,
+        DataNode,
+        Edge,
+        JoinNode,
+        Workflow,
+    )
+
+    wf = Workflow(
+        name="fallback-test",
+        nodes={
+            "data": DataNode(id="data"),
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                model="claude-haiku-4-5-20251001",
+                timeout=300,
+            ),
+            "_join": JoinNode(id="_join", sources=["builder"]),
+        },
+        edges=[
+            Edge(source="data", target="builder"),
+            Edge(source="builder", target="_join"),
+        ],
+        start_node="data",
+    )
+
+    # Target is a DataNode -> should fall back to builder's model/timeout
+    params = _infer_agent_params(wf, "data")
+    assert params["model"] == "claude-haiku-4-5-20251001"
+    assert params["timeout"] == 300
+
+
+def test_infer_agent_params_empty_model():
+    """_infer_agent_params returns empty dict when no node has a model set."""
+    from factory.outer_loop.mutations import _infer_agent_params
+    from factory.workflow.primitives import AgentNode, AgentRole, Workflow
+
+    wf = Workflow(
+        name="empty-model-test",
+        nodes={
+            "a": AgentNode(id="a", role=AgentRole.BUILDER, model=""),
+        },
+        edges=[],
+        start_node="a",
+    )
+
+    params = _infer_agent_params(wf, "a")
+    assert "model" not in params
+
+
+def test_infer_agent_params_nonexistent_node():
+    """_infer_agent_params handles a nonexistent near_node_id gracefully."""
+    from factory.outer_loop.mutations import _infer_agent_params
+    from factory.workflow.primitives import AgentNode, AgentRole, Workflow
+
+    wf = Workflow(
+        name="nonexistent-test",
+        nodes={
+            "a": AgentNode(
+                id="a",
+                role=AgentRole.BUILDER,
+                model="claude-haiku-4-5-20251001",
+                timeout=300,
+            ),
+        },
+        edges=[],
+        start_node="a",
+    )
+
+    # Non-existent node -> falls back to scanning
+    params = _infer_agent_params(wf, "does-not-exist")
+    assert params["model"] == "claude-haiku-4-5-20251001"
+    assert params["timeout"] == 300

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import networkx as nx
 import structlog
@@ -24,6 +24,28 @@ from factory.workflow.primitives import (
 from factory.outer_loop.reflector import MutationSuggestion, ReflectionReport
 
 log = structlog.get_logger()
+
+
+def _infer_agent_params(workflow: Workflow, near_node_id: str) -> dict[str, Any]:
+    """Infer model and timeout from the node at *near_node_id*, falling back to
+    the first AgentNode with a model set."""
+    params: dict[str, Any] = {}
+    # Try the target node first
+    target_node = workflow.nodes.get(near_node_id)
+    if isinstance(target_node, AgentNode):
+        if target_node.model:
+            params["model"] = target_node.model
+        if target_node.timeout is not None:
+            params["timeout"] = target_node.timeout
+    # Fallback: scan all nodes for first AgentNode with model set
+    if "model" not in params:
+        for node in workflow.nodes.values():
+            if isinstance(node, AgentNode) and node.model:
+                params.setdefault("model", node.model)
+                if node.timeout is not None:
+                    params.setdefault("timeout", node.timeout)
+                break
+    return params
 
 
 def _is_in_data_subgraph(workflow: Workflow, node_id: str) -> bool:
@@ -1147,12 +1169,15 @@ def _try_mutation(
             new_id = _generate_unique_agent_id(set(workflow.nodes.keys()), complementary_role)
             prompt_tmpl = _ROLE_PROMPT_TEMPLATES.get(complementary_role, "")
 
+            agent_params = _infer_agent_params(workflow, target)
             new_node = AgentNode(
                 id=new_id,
                 role=complementary_role,
                 reads=new_reads,
                 writes=new_writes,
                 prompt_template=prompt_tmpl,
+                model=agent_params.get("model", ""),
+                timeout=agent_params.get("timeout"),
             )
 
             # If inserting into a DataNode subgraph, make the new node data-aware
@@ -1169,12 +1194,20 @@ def _try_mutation(
                     reads=data_reads,
                     writes=new_node.writes,
                     prompt_template=data_prompt,
+                    model=new_node.model,
+                    timeout=new_node.timeout,
                 )
         else:
             # Fallback: no AgentNodes exist at all
             role = random.choice(list(AgentRole))
             new_id = _generate_unique_agent_id(set(workflow.nodes.keys()), role)
-            new_node = AgentNode(id=new_id, role=role)
+            agent_params = _infer_agent_params(workflow, target)
+            new_node = AgentNode(
+                id=new_id,
+                role=role,
+                model=agent_params.get("model", ""),
+                timeout=agent_params.get("timeout"),
+            )
 
         return insert_node(workflow, new_node, target, frozen_nodes=frozen)
 
