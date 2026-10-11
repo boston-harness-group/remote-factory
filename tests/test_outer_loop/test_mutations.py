@@ -489,7 +489,9 @@ class TestSelectGuidedOperatorStringFallback:
             counts[op] = counts.get(op, 0) + 1
         assert MutationType.PROMPT_MUTATE in counts
 
-    def test_string_fallback_knob(self) -> None:
+    def test_string_fallback_knob_removed_from_guided(self) -> None:
+        """KNOB_MUTATE is stripped from guided selection (guard: knob_mutate
+        only applies to _prompt_* knobs which are redirected to prompt_mutate)."""
         from factory.outer_loop.reflector import ReflectionReport
 
         strategy = WeightedRandomStrategy()
@@ -504,7 +506,7 @@ class TestSelectGuidedOperatorStringFallback:
         for _ in range(100):
             op = strategy.select_guided_operator(wf, 0, report)
             counts[op] = counts.get(op, 0) + 1
-        assert MutationType.KNOB_MUTATE in counts
+        assert MutationType.KNOB_MUTATE not in counts
 
     def test_empty_suggestions_falls_back_to_random(self) -> None:
         from factory.outer_loop.reflector import ReflectionReport

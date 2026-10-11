@@ -869,3 +869,83 @@ def test_mutation_applied_logged(caplog):
         assert len(applied) >= 1, f'No mutation_applied log found in {[r.getMessage() for r in caplog.records]}'
     finally:
         structlog.configure(**old_config)
+
+
+# ── Mutation guard tests ─────────────────────────────────────────────
+
+
+def test_knob_mutate_never_selected_randomly():
+    """knob_mutate is never randomly selected."""
+    import random
+    from factory.outer_loop.mutations import WeightedRandomStrategy, MutationType
+
+    random.seed(42)
+    strategy = WeightedRandomStrategy()
+    wf = Workflow(
+        name='t',
+        nodes={'b': AgentNode(id='b', role=AgentRole.BUILDER, prompt_template='x')},
+        edges=[],
+        start_node='b',
+    )
+    ops = set()
+    for _ in range(200):
+        ops.add(strategy.select_operator(wf, 0, {}))
+    assert MutationType.KNOB_MUTATE not in ops
+
+
+def test_param_mutate_never_selected_randomly():
+    """param_mutate is never randomly selected."""
+    import random
+    from factory.outer_loop.mutations import WeightedRandomStrategy, MutationType
+
+    random.seed(42)
+    strategy = WeightedRandomStrategy()
+    wf = Workflow(
+        name='t',
+        nodes={
+            'b': AgentNode(id='b', role=AgentRole.BUILDER, prompt_template='x'),
+            'r': AgentNode(id='r', role=AgentRole.RESEARCHER),
+        },
+        edges=[Edge(source='b', target='r')],
+        start_node='b',
+    )
+    ops = set()
+    for _ in range(200):
+        ops.add(strategy.select_operator(wf, 0, {}))
+    assert MutationType.PARAM_MUTATE not in ops
+
+
+def test_mutation_log_includes_before_after(caplog):
+    """mutation_applied log includes before and after dicts."""
+    import logging
+    import random
+
+    import structlog
+    from factory.outer_loop.mutations import apply_random_mutation, WeightedRandomStrategy
+
+    old_config = structlog.get_config()
+    structlog.configure(
+        processors=[structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+    )
+    try:
+        wf = Workflow(
+            name='log-ba-test',
+            nodes={
+                'b': AgentNode(id='b', role=AgentRole.BUILDER, prompt_template='x', writes={'o.txt'}, reads=set()),
+            },
+            edges=[],
+            start_node='b',
+        )
+        random.seed(0)
+        with caplog.at_level(logging.DEBUG):
+            result = apply_random_mutation(wf, WeightedRandomStrategy(mutation_rate=1.0), generation=0)
+        assert result is not None
+        applied = [r for r in caplog.records if 'mutation_applied' in r.getMessage()]
+        assert len(applied) >= 1, 'No mutation_applied log found'
+        msg = applied[0].getMessage()
+        assert 'before' in msg, f'mutation_applied log missing before: {msg}'
+        assert 'after' in msg, f'mutation_applied log missing after: {msg}'
+    finally:
+        structlog.configure(**old_config)

@@ -124,6 +124,18 @@ class WeightedRandomStrategy:
             for i, t in enumerate(types):
                 if t == MutationType.NODE_INSERT:
                     w[i] = 0.0
+        # knob_mutate only applies to _prompt_* knobs (redirected to prompt_mutate)
+        # Non-prompt knobs aren't applied by the executor, so never mutate them
+        real_knobs = [k for k in parent.knob_values if not k.startswith('_prompt_')]
+        if real_knobs:
+            log.warning('knobs_not_applied', knobs=real_knobs, msg='Non-prompt knobs declared but executor does not apply them; skipping knob_mutate')
+        for i, t in enumerate(types):
+            if t == MutationType.KNOB_MUTATE:
+                w[i] = 0.0
+        # param_mutate only via guided selection when reflector suggests it
+        for i, t in enumerate(types):
+            if t == MutationType.PARAM_MUTATE:
+                w[i] = 0.0
         if sum(w) == 0:
             return MutationType.PROMPT_MUTATE  # fallback
         return random.choices(types, weights=w, k=1)[0]
@@ -177,6 +189,8 @@ class WeightedRandomStrategy:
                 op_counts.pop(t, None)
         if len(parent.nodes) >= MAX_NODES:
             op_counts.pop(MutationType.NODE_INSERT, None)
+        # knob_mutate is handled via prompt_mutate redirect; remove from guided too
+        op_counts.pop(MutationType.KNOB_MUTATE, None)
 
         if not op_counts:
             return self.select_operator(parent, generation, {})
@@ -1100,7 +1114,14 @@ def apply_random_mutation(
             wf, rec = result
             if len(wf.nodes) > MAX_NODES:
                 continue
-            log.info('mutation_applied', operator=rec.operator.value if hasattr(rec.operator, 'value') else str(rec.operator), target=rec.target_node, source='guided' if guided else 'random')
+            log.info(
+                'mutation_applied',
+                operator=rec.operator.value if hasattr(rec.operator, 'value') else str(rec.operator),
+                target=rec.target_node,
+                source='guided' if guided else 'random',
+                before=rec.before,
+                after=rec.after,
+            )
             return result
         log.info('mutation_attempt_failed', operator=op.value, attempt=attempt + 1, reason='_try_mutation returned None')
 
