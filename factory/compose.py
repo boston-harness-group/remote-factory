@@ -249,7 +249,7 @@ def check_mode_task_compat(
 # ── compose() public API ────────────────────────────────────────
 
 
-def compose(workflow: Any, task: Any, project_dir: str | Path, inner_loop_config: Any = None) -> Any:
+def compose(workflow: Any, task: Any, project_dir: str | Path, inner_loop_config: Any = None, split: str = "train") -> Any:
     """Compose a workflow + task into a task-attached InnerLoop.
 
     When the workflow has no DataNode, compose() adds an implicit
@@ -290,4 +290,5 @@ def compose(workflow: Any, task: Any, project_dir: str | Path, inner_loop_config
         workflow=workflow,
         task=task,
         inner_loop_config=inner_loop_config,
+        split=split,
     )

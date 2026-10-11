@@ -390,7 +390,7 @@ class SwarmEvaluator:
             if task is not None:
                 from factory.compose import compose
 
-                loop = compose(workflow, task, wt_path, inner_loop_config=inner_loop_config)
+                loop = compose(workflow, task, wt_path, inner_loop_config=inner_loop_config, split=split)
                 loop.mode = mode_name
                 loop.frozen_nodes = frozenset(self._config.frozen_node_ids)
                 loop.test_command = self._config.test_command
@@ -417,6 +417,7 @@ class SwarmEvaluator:
                         self._config, "execution_strategy", "executor"
                     ),
                     inner_loop_config=inner_loop_config,
+                    split=split,
                 )
             record = loop.step()
 

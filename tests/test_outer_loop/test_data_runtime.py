@@ -378,8 +378,37 @@ class TestBug4SplitFiltering:
             f"Expected train items {{t1, t2, t3}}, got {item_ids}"
         )
 
-    def test_subset_with_invalid_ids_raises(self, tmp_path: Path) -> None:
-        """If subset contains IDs not in the split, raise ValueError."""
+    def test_subset_cross_split_allowed(self, tmp_path: Path) -> None:
+        """Explicit allowed_instance_ids may include IDs from any split.
+
+        When allowed_instance_ids is provided, split filtering is bypassed
+        (effective split="all") so cross-split IDs work without error.
+        """
+        from factory.workflow.data_runtime import run_fork
+
+        project = _bootstrap(tmp_path)
+        wf = _make_test_workflow()
+        task = _SplitTask()
+
+        results = asyncio.run(run_fork(
+            wf,
+            wf.nodes["data"],  # type: ignore[arg-type]
+            "data",
+            project,
+            dry_run=True,
+            task=task,
+            run_id="cross-split",
+            split="train",
+            allowed_instance_ids={"t1", "v1"},  # v1 is val — allowed via explicit IDs
+        ))
+
+        item_ids = {r["item_id"] for r in results}
+        assert item_ids == {"t1", "v1"}, (
+            f"Expected {{t1, v1}} from cross-split subset, got {item_ids}"
+        )
+
+    def test_subset_with_nonexistent_ids_raises(self, tmp_path: Path) -> None:
+        """If subset contains IDs that don't exist at all, raise ValueError."""
         from factory.workflow.data_runtime import run_fork
 
         project = _bootstrap(tmp_path)
@@ -396,7 +425,7 @@ class TestBug4SplitFiltering:
                 task=task,
                 run_id="bad-subset",
                 split="train",
-                allowed_instance_ids={"t1", "v1"},  # v1 is val, not train
+                allowed_instance_ids={"t1", "NONEXISTENT"},  # truly invalid ID
             ))
 
     def test_valid_subset_filters(self, tmp_path: Path) -> None:
@@ -822,22 +851,21 @@ class _NoSplitTask:
 
 
 class TestFix2TypeErrorFallback:
-    """Task.instances() without split support falls back with warning."""
+    """Task.instances() without split support raises TypeError (no silent fallback)."""
 
-    def test_no_split_task_falls_back_with_warning(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    def test_no_split_task_raises_type_error(self, tmp_path: Path) -> None:
         from factory.workflow.data_runtime import _resolve_items
 
         project = _bootstrap(tmp_path)
         node = DataNode(id="data")
 
-        # Should NOT raise — falls back to calling instances() without split
-        items, _ = _resolve_items(
-            node, "data", project,
-            task=_NoSplitTask(),
-            split="train",
-        )
-        # Fallback should still return items
-        assert len(items) > 0
+        # Task whose instances() doesn't accept split → TypeError must propagate
+        with pytest.raises(TypeError):
+            _resolve_items(
+                node, "data", project,
+                task=_NoSplitTask(),
+                split="train",
+            )
 
     def test_split_task_train_excludes_val(self, tmp_path: Path) -> None:
         """Task with split support → train never contains val items."""
@@ -868,11 +896,60 @@ class TestFix2TypeErrorFallback:
 
 
 class TestFix3PerItemSplitLabel:
-    """ItemResult.split should be the item's own split, not hardcoded 'all'."""
+    """ItemResult.split should match the run-level split passed to run_fork."""
 
-    def test_mixed_subset_items_carry_own_split(self, tmp_path: Path) -> None:
-        """run_fork with split='all' and mixed items → each ItemResult has
-        the caller's split label."""
+    def test_train_items_carry_train_split(self, tmp_path: Path) -> None:
+        """run_fork with split='train' → each ItemResult has split='train'."""
+        from factory.workflow.data_runtime import run_fork
+
+        project = _bootstrap(tmp_path)
+        wf = _make_test_workflow()
+        task = _SplitTask()
+
+        results = asyncio.run(run_fork(
+            wf,
+            wf.nodes["data"],  # type: ignore[arg-type]
+            "data",
+            project,
+            dry_run=True,
+            task=task,
+            run_id="fix3-train",
+            split="train",
+        ))
+
+        assert len(results) == 3, f"Expected 3 train items, got {len(results)}"
+        for r in results:
+            assert r["split"] == "train", (
+                f"Item {r['item_id']} has split={r['split']!r}, expected 'train'"
+            )
+
+    def test_val_items_carry_val_split(self, tmp_path: Path) -> None:
+        """run_fork with split='val' → each ItemResult has split='val'."""
+        from factory.workflow.data_runtime import run_fork
+
+        project = _bootstrap(tmp_path)
+        wf = _make_test_workflow()
+        task = _SplitTask()
+
+        results = asyncio.run(run_fork(
+            wf,
+            wf.nodes["data"],  # type: ignore[arg-type]
+            "data",
+            project,
+            dry_run=True,
+            task=task,
+            run_id="fix3-val",
+            split="val",
+        ))
+
+        assert len(results) == 2, f"Expected 2 val items, got {len(results)}"
+        for r in results:
+            assert r["split"] == "val", (
+                f"Item {r['item_id']} has split={r['split']!r}, expected 'val'"
+            )
+
+    def test_all_items_carry_all_split(self, tmp_path: Path) -> None:
+        """run_fork with split='all' → each ItemResult has split='all'."""
         from factory.workflow.data_runtime import run_fork
 
         project = _bootstrap(tmp_path)

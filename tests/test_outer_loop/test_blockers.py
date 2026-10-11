@@ -626,7 +626,7 @@ class TestAggregateConfigReachesInnerLoop:
         # Capture the inner_loop_config that compose() receives
         captured: dict[str, object] = {}
 
-        def mock_compose(workflow, task, project_dir, inner_loop_config=None):
+        def mock_compose(workflow, task, project_dir, inner_loop_config=None, split="train"):
             captured["inner_loop_config"] = inner_loop_config
             # Return a mock loop whose step() returns a minimal CycleRecord
             mock_loop = MagicMock()

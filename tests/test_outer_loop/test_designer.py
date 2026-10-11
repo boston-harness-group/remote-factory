@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from factory.outer_loop.designer import DesignerAgent
+from factory.outer_loop.designer import DesignerAgent, _seed_agent_params
 from factory.outer_loop.models import MutationType
 from factory.workflow.primitives import (
     AgentNode,
@@ -11,6 +11,7 @@ from factory.workflow.primitives import (
     DataNode,
     Edge,
     FnNode,
+    GateNode,
     Workflow)
 
 
@@ -802,3 +803,79 @@ class TestDataNodeEvolutionModel:
         frozen = _auto_frozen_nodes(seed)
         assert frozen == {"positions"}
         assert "solver" not in frozen
+
+
+# ── Fix 8: designer inherits model/timeout from seed ──────────────
+
+
+class TestFix8DesignerInheritsModelTimeout:
+    """AgentNodes in designed workflows inherit model and timeout from seed."""
+
+    def _make_seed_with_model(self, model: str = "claude-haiku-4-5-20251001") -> Workflow:
+        return Workflow(
+            name="seed-with-model",
+            nodes={
+                "builder": AgentNode(
+                    id="builder",
+                    role=AgentRole.BUILDER,
+                    model=model,
+                    timeout=999,
+                ),
+                "gate_qa": GateNode(
+                    id="gate_qa",
+                    evaluator_type="agent",
+                    evaluator_role=AgentRole.HEALTH_CHECKER,
+                ),
+            },
+            edges=[Edge(source="builder", target="gate_qa")],
+            start_node="builder",
+        )
+
+    def test_seed_agent_params_extracts_model(self) -> None:
+        seed = self._make_seed_with_model()
+        params = _seed_agent_params(seed)
+        assert params["model"] == "claude-haiku-4-5-20251001"
+        assert params["timeout"] == 999
+
+    def test_seed_agent_params_none_workflow(self) -> None:
+        assert _seed_agent_params(None) == {}
+
+    def test_minimal_inherits_model(self) -> None:
+        seed = self._make_seed_with_model()
+        designer = DesignerAgent()
+        wf = designer.design_minimal("bench", seed_workflow=seed)
+        for node in wf.nodes.values():
+            if isinstance(node, AgentNode):
+                assert node.model == "claude-haiku-4-5-20251001", (
+                    f"Node {node.id} has model={node.model!r}, expected seed model"
+                )
+
+    def test_thorough_inherits_model(self) -> None:
+        seed = self._make_seed_with_model()
+        designer = DesignerAgent()
+        wf = designer.design_thorough("bench", seed_workflow=seed)
+        for node in wf.nodes.values():
+            if isinstance(node, AgentNode):
+                assert node.model == "claude-haiku-4-5-20251001", (
+                    f"Node {node.id} has model={node.model!r}, expected seed model"
+                )
+
+    def test_custom_inherits_model(self) -> None:
+        seed = self._make_seed_with_model()
+        designer = DesignerAgent()
+        wf = designer.design_custom("bench", {}, seed_workflow=seed)
+        for node in wf.nodes.values():
+            if isinstance(node, AgentNode):
+                assert node.model == "claude-haiku-4-5-20251001", (
+                    f"Node {node.id} has model={node.model!r}, expected seed model"
+                )
+
+    def test_no_seed_model_keeps_defaults(self) -> None:
+        """Without a seed model, designed AgentNodes keep their defaults."""
+        designer = DesignerAgent()
+        wf = designer.design_minimal("bench")
+        for node in wf.nodes.values():
+            if isinstance(node, AgentNode):
+                assert node.model == "", (
+                    f"Node {node.id} should have empty model without seed"
+                )

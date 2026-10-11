@@ -169,13 +169,18 @@ def _resolve_items(
 
     When a Task is available, uses ``task.instances(split)`` to get items
     for the requested split.  If ``allowed_instance_ids`` is provided,
-    validates that all IDs exist in the split and filters to just that subset.
+    uses ``split="all"`` to resolve all instances then filters to the
+    allowed set — the explicit ID list supersedes split-based filtering.
     """
     from factory.task import Task as _Task
     from factory.task import TaskInstance as _TaskInstance
 
     task_instances: list[tuple[DataItem, _TaskInstance | None]] = []
     resolved_task: _Task | None = None
+
+    # When explicit IDs are provided, resolve ALL instances so we can
+    # filter by the ID set regardless of split assignment.
+    _effective_split = "all" if allowed_instance_ids is not None else split
 
     if node.inline_items:
         task_instances = [(item, None) for item in node.inline_items]
@@ -188,15 +193,7 @@ def _resolve_items(
         from factory.task import TaskRef
         task_ref = TaskRef(ref=node.task_ref)
         resolved_task = task_ref.resolve()
-        try:
-            _instances_iter = resolved_task.instances(split=split)
-        except TypeError:
-            log.warning(
-                'task_instances_no_split',
-                task=type(resolved_task).__name__,
-                msg='Task.instances() does not accept split param, falling back to unfiltered',
-            )
-            _instances_iter = resolved_task.instances()
+        _instances_iter = resolved_task.instances(split=_effective_split)
         for _ti in _instances_iter:
             task_instances.append((
                 DataItem(
@@ -239,16 +236,8 @@ def _resolve_items(
     if resolved_task is None and task is not None:
         resolved_task = task
         if not task_instances:
-            # No items from inline/source — get from task using split
-            try:
-                _fallback_iter = resolved_task.instances(split=split)
-            except TypeError:
-                log.warning(
-                    'task_instances_no_split',
-                    task=type(resolved_task).__name__,
-                    msg='Task.instances() does not accept split param, falling back to unfiltered',
-                )
-                _fallback_iter = resolved_task.instances()
+            # No items from inline/source — get from task using effective split
+            _fallback_iter = resolved_task.instances(split=_effective_split)
             for _ti in _fallback_iter:
                 task_instances.append((
                     DataItem(

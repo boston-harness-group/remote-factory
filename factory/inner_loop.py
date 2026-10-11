@@ -151,6 +151,7 @@ class InnerLoop:
         instance: Any | None = None,
         execution_strategy: str = "executor",
         inner_loop_config: Any | None = None,
+        split: str = "train",
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
         self.factory_dir = self.project_dir / ".factory"
@@ -165,6 +166,7 @@ class InnerLoop:
         self.instance = instance
         self.execution_strategy = execution_strategy
         self._inner_loop_config = inner_loop_config
+        self._split = split
         self._step_count = 0
         self._history: list[CycleRecord] = []
         self._ceo_cost_warned = False
@@ -445,42 +447,28 @@ class InnerLoop:
         from factory.models import InnerLoopConfig
 
         # Split is determined by the caller (evaluator passes it).
-        _run_split: str = getattr(self, '_split', 'train')
+        _run_split: str = getattr(self, "_split", "train")
         allowed_instance_ids: set[str] | None = None
         subset_selector = getattr(self, '_subset_selector', None)
 
-        # When holdout_ids are configured and no subset_selector is set,
-        # automatically restrict to train IDs to prevent holdout leakage.
-        _defn = getattr(self.task, '_definition', None) if self.task is not None else None
-        _holdout_ids = (
-            getattr(getattr(_defn, 'instances_config', None), 'holdout_ids', None)
-            if _defn is not None
-            else None
-        )
-        if subset_selector is None and _holdout_ids and self.task is not None:
-            try:
+        # Holdout leakage protection: when no subset_selector is set and we
+        # are on the train split, auto-exclude holdout_ids so the candidate
+        # never sees validation instances.
+        if subset_selector is None and _run_split == 'train' and self.task is not None:
+            _defn = getattr(self.task, '_definition', None)
+            _holdout_ids = (
+                getattr(getattr(_defn, 'instances_config', None), 'holdout_ids', None)
+                if _defn is not None else None
+            )
+            if _holdout_ids:
                 train_ids = [inst.id for inst in self.task.instances(split='train')]
-            except TypeError:
-                log.warning('task_instances_no_split', task=type(self.task).__name__)
-                train_ids = [inst.id for inst in self.task.instances()]
-            allowed_instance_ids = set(train_ids)
+                allowed_instance_ids = set(train_ids)
 
         if subset_selector is not None and self.task is not None:
             all_ids = [inst.id for inst in self.task.instances()]
             selected = subset_selector.select(all_ids)
             if selected:
                 allowed_instance_ids = set(selected)
-                # Detect split from the selected IDs: if all selected IDs are
-                # val items, use split="val"; if all are train, use split="train";
-                # otherwise use "all" to avoid filtering out valid items.
-                if _holdout_ids:
-                    holdout_set = set(_holdout_ids)
-                    if all(sid in holdout_set for sid in selected):
-                        _run_split = 'val'
-                    elif not any(sid in holdout_set for sid in selected):
-                        _run_split = 'train'
-                    else:
-                        _run_split = 'all'
 
         # Full path: WorkflowExecutor runs plan → data → join → summarize
         # Val evaluation runs the full workflow exactly like train — a
@@ -535,6 +523,7 @@ class InnerLoop:
             duration_s=duration_s,
             cycle_number=self._step_count + 1,
             workflow=self.workflow,
+            split=_run_split,
         )
         record.frozen_nodes = sorted(self.frozen_nodes)
         record.mutable_node_ids = sorted(self.mutable_nodes())

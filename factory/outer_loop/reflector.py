@@ -710,9 +710,11 @@ class OuterLoopReflector:
         if rec.eval_details and isinstance(rec.eval_details, dict):
             for k, v in rec.eval_details.items():
                 if k == 'verify':
-                    # Render verify sub-dict keys inline
+                    # Render non-instance_results keys from verify dict
                     if isinstance(v, dict):
                         for vk, vv in v.items():
+                            if vk == 'instance_results':
+                                continue  # Already rendered above
                             lines.append(f"{vk}: {str(vv)[:200]}")
                     continue
                 lines.append(f"{k}: {str(v)[:200]}")
@@ -828,8 +830,7 @@ class OuterLoopReflector:
 
         Public so tests can inspect the prompt text directly.
         """
-        n_individuals = len(top_k) + len(bottom_k)
-        per_individual = int(_LLM_PAYLOAD_BUDGET * 0.85) // max(n_individuals, 1)
+        per_individual = _PER_CANDIDATE_CHAR_BUDGET
 
         wf_by_id = workflow_data_by_id or {}
 
@@ -880,9 +881,6 @@ class OuterLoopReflector:
         if shared_failures:
             payload += "\n\nFAILURES COMMON TO ALL CANDIDATES:\n"
             payload += "\n".join(f"  - {f}" for f in shared_failures)
-
-        if len(payload) > _LLM_PAYLOAD_BUDGET:
-            payload = payload[:_LLM_PAYLOAD_BUDGET] + "\n... (truncated)"
 
         operators_list = ", ".join(sorted(_VALID_LLM_OPERATORS))
         return (
@@ -938,7 +936,7 @@ class OuterLoopReflector:
         from factory.runners.claude import _claude_bin, _claude_model, _cli_error_text
 
         try:
-            cmd = [_claude_bin(), "--model", _claude_model(),
+            cmd = [_claude_bin(), "-p", prompt, "--model", _claude_model(),
                    "--append-system-prompt", "Output only valid JSON.",
                    "--output-format", "text"]
             data: dict[str, object] | None = None

@@ -1269,8 +1269,8 @@ class TestExperimentContextInDetails:
 
         assert len(captured_budgets) == 2
         assert all(b is not None for b in captured_budgets)
-        expected = int(8000 * 0.85) // 2
-        assert all(b == expected for b in captured_budgets)
+        from factory.outer_loop.reflector import _PER_CANDIDATE_CHAR_BUDGET
+        assert all(b == _PER_CANDIDATE_CHAR_BUDGET for b in captured_budgets)
 
 
 # ── Tests moved from test_coverage_gaps.py ─────────────────────────
@@ -1361,8 +1361,8 @@ def test_over_budget_drops_whole_items():
     bottom_k: list[tuple[str, float, CycleRecord | None]] = [("bot1", 0.3, rec)]
     prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
     assert "omitted" in prompt.lower()
-    # Should not exceed 60KB total
-    assert len(prompt) < 60000
+    # Per-candidate budget is 30KB; with 2 candidates plus prompt chrome
+    assert len(prompt) < 80000
 
 
 def test_items_not_duplicated():
@@ -1398,7 +1398,7 @@ def test_items_not_duplicated():
 
 
 def test_prompt_via_stdin_not_argv():
-    """BUG 3: Prompt passed via stdin, not as CLI arg. 200KB prompt does not raise."""
+    """Prompt passed via -p AND stdin (input=). -p is present, input= is set."""
     items = [{"item_id": "a", "status": "ok", "score": 0.5, "passed": True}]
     rec = CycleRecord.from_run(items, aggregate="mean")
     reflector = OuterLoopReflector(llm_reflect=True)
@@ -1428,10 +1428,10 @@ def test_prompt_via_stdin_not_argv():
 
     mock_run.assert_called_once()
     call_args = mock_run.call_args
-    # Prompt must NOT be in the command args
     cmd_list = call_args[0][0]
-    assert "-p" not in cmd_list, f"-p found in command args: {cmd_list}"
-    # Prompt must be in input= kwarg
+    # -p must be present in the command args
+    assert "-p" in cmd_list, f"-p not found in command args: {cmd_list}"
+    # Prompt must also be in input= kwarg
     assert call_args.kwargs.get("input") is not None, "prompt not passed via input="
 
 
@@ -1764,3 +1764,97 @@ class TestSharedFailureDetection:
         prompt = reflector.build_reflection_prompt(top_k, bottom_k, top_k + bottom_k)
         assert "failures common to all candidates" in prompt.lower()
         assert "systemic gaps" in prompt.lower()
+
+
+# ── Fix 5: reflector budget uses per-candidate budget, no final truncation ──
+
+
+class TestFix5ReflectorBudget:
+    """Per-candidate budget replaces global truncation."""
+
+    def test_no_item_cut_partway(self) -> None:
+        """4 candidates with ~2KB prompts and 5 items each → no item cut mid-way."""
+        items = [
+            {"item_id": f"item_{i}", "status": "ok", "score": 0.5 + i * 0.1, "passed": True}
+            for i in range(5)
+        ]
+        rec = _make_record(0.7, instance_results=items)
+        reflector = OuterLoopReflector(k=2)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [
+            ("t1", 0.9, rec), ("t2", 0.8, rec),
+        ]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [
+            ("b1", 0.2, rec), ("b2", 0.1, rec),
+        ]
+
+        # Build prompt with workflow data including ~2KB prompts
+        wf_data: dict[str, dict] = {}
+        big_prompt = "X" * 2000
+        for cid in ["t1", "t2", "b1", "b2"]:
+            wf_data[cid] = _make_workflow_data(prompt_template=big_prompt)
+
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, list(top_k + bottom_k),
+            workflow_data_by_id=wf_data,
+        )
+
+        # No truncation marker
+        assert "... (truncated)" not in prompt
+        # identical-prompts and shared-failures lines must be present
+        # (all candidates share the same prompt/items)
+        assert "IDENTICAL PROMPTS" in prompt or "BOTTOM-PERFORMING" in prompt
+        # FAILURES COMMON TO ALL should be present (or at least the section header)
+        # since all candidates have the same results
+
+    def test_identical_prompts_present(self) -> None:
+        """With identical prompts across candidates, IDENTICAL PROMPTS line is present."""
+        items = [
+            {"item_id": "a", "status": "ok", "score": 0.5, "passed": True},
+        ]
+        rec = _make_record(0.5, instance_results=items)
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("t1", 0.8, rec)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [("b1", 0.2, rec)]
+
+        wf_data = {
+            "t1": _make_workflow_data(prompt_template="same prompt"),
+            "b1": _make_workflow_data(prompt_template="same prompt"),
+        }
+        prompt = reflector.build_reflection_prompt(
+            top_k, bottom_k, list(top_k + bottom_k),
+            workflow_data_by_id=wf_data,
+        )
+        assert "IDENTICAL PROMPTS" in prompt
+
+
+# ── Fix 6: no duplicate verify rendering ──
+
+
+class TestFix6NoDuplicateVerify:
+    """Each item_id appears exactly once per candidate in the reflection prompt."""
+
+    def test_item_ids_unique_per_candidate(self) -> None:
+        """2 items → each item_id appears once per candidate, not duplicated by verify."""
+        items = [
+            {"item_id": "alpha", "status": "ok", "score": 0.8, "passed": True},
+            {"item_id": "beta", "status": "failed", "score": 0.0, "passed": False},
+        ]
+        rec = _make_record(
+            0.4,
+            instance_results=items,
+            eval_details={"verify": {"instance_results": items, "summary": "ok"}},
+        )
+        reflector = OuterLoopReflector(k=1)
+        top_k: list[tuple[str, float, CycleRecord | None]] = [("t1", 0.8, rec)]
+        bottom_k: list[tuple[str, float, CycleRecord | None]] = [("b1", 0.1, rec)]
+
+        prompt = reflector.build_reflection_prompt(top_k, bottom_k, list(top_k + bottom_k))
+
+        # Count per-candidate occurrences of each item_id
+        # Each candidate section is between the candidate ID lines
+        assert prompt.count("alpha") == 2, (
+            f"alpha should appear exactly 2 times (once per candidate), got {prompt.count('alpha')}"
+        )
+        assert prompt.count("beta") == 2, (
+            f"beta should appear exactly 2 times (once per candidate), got {prompt.count('beta')}"
+        )

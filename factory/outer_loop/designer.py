@@ -27,6 +27,34 @@ from factory.workflow.primitives import (
 log = structlog.get_logger()
 
 
+def _seed_agent_params(seed_workflow: Workflow | None) -> dict[str, object]:
+    """Extract model and timeout from the first AgentNode with a model in the seed workflow."""
+    if seed_workflow is None:
+        return {}
+    for node in seed_workflow.nodes.values():
+        if isinstance(node, AgentNode) and node.model:
+            return {'model': node.model, 'timeout': node.timeout}
+    return {}
+
+
+def _apply_seed_params(
+    nodes: dict[str, NodeType],
+    seed_workflow: Workflow | None,
+) -> None:
+    """Copy model and timeout from seed AgentNodes to designed AgentNodes."""
+    params = _seed_agent_params(seed_workflow)
+    if not params:
+        return
+    model = str(params.get('model', ''))
+    timeout = params.get('timeout')
+    for nid, node in list(nodes.items()):
+        if isinstance(node, AgentNode) and not node.model:
+            update: dict[str, object] = {'model': model}
+            if timeout is not None:
+                update['timeout'] = timeout
+            nodes[nid] = node.model_copy(update=update)
+
+
 def _detect_frozen_data_node(
     seed_workflow: Workflow | None,
     frozen_node_ids: set[str] | None,
@@ -89,6 +117,7 @@ class DesignerAgent:
         # Detect if we're creating a subgraph for a DataNode
         is_data_subgraph = _detect_frozen_data_node(seed_workflow, frozen_node_ids) is not None
 
+        _apply_seed_params(nodes, seed_workflow)
         _propagate_prompts_from_seed(nodes, seed_workflow)
         _inject_frozen_nodes(nodes, edges, seed_workflow, frozen_node_ids)
 
@@ -261,6 +290,7 @@ class DesignerAgent:
 
             start_node = "study"
 
+        _apply_seed_params(nodes, seed_workflow)
         _propagate_prompts_from_seed(nodes, seed_workflow)
         _inject_frozen_nodes(nodes, edges, seed_workflow, frozen_node_ids)
 
@@ -353,6 +383,7 @@ class DesignerAgent:
             )
             edges.append(Edge(source=prev_id, target=gate_id))
 
+        _apply_seed_params(nodes, seed_workflow)
         _propagate_prompts_from_seed(nodes, seed_workflow)
         _inject_frozen_nodes(nodes, edges, seed_workflow, frozen_node_ids)
 

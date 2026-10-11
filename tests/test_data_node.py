@@ -766,7 +766,7 @@ class _FakeTask:
         self.prompt_calls: list[str] = []
         self.verify_calls: list[str] = []
 
-    def instances(self):
+    def instances(self, split: str = "train"):
         from factory.task import TaskInstance
         for d in self._instances_data:
             yield TaskInstance(id=d["id"], path=d.get("path"), metadata=d.get("metadata", {}))
@@ -1285,7 +1285,7 @@ class _ComposeTestTask:
         self.scoring = self.definition.scoring
         self.constraints = None
 
-    def instances(self):
+    def instances(self, split: str = "train"):
         from factory.task import TaskInstance
         return [TaskInstance(id="inst-1")]
 
@@ -1519,7 +1519,7 @@ class _SetupWritingTask:
     def __init__(self, setup_file: str) -> None:
         self._setup_file = setup_file
 
-    def instances(self):
+    def instances(self, split: str = "train"):
         from factory.task import TaskInstance
         return [TaskInstance(id="inst1")]
 
