@@ -44,7 +44,10 @@ class Population:
     def best(self) -> Individual | None:
         if not self._individuals:
             return None
-        scored = [i for i in self._individuals.values() if i.score is not None]
+        scored = [
+            i for i in self._individuals.values()
+            if i.score is not None and not i.errored
+        ]
         if not scored:
             return None
         return max(scored, key=lambda i: i.score)  # type: ignore[arg-type,return-value]
@@ -52,7 +55,10 @@ class Population:
     def mean_score(self) -> float:
         if not self._individuals:
             return 0.0
-        scored = [i for i in self._individuals.values() if i.score is not None]
+        scored = [
+            i for i in self._individuals.values()
+            if i.score is not None and not i.errored
+        ]
         if not scored:
             return 0.0
         return sum(i.score for i in scored) / len(scored)  # type: ignore[misc]
@@ -123,9 +129,10 @@ class MAPElitesArchive:
     def add(self, individual: Individual) -> bool:
         """Add an individual to the archive. Returns True if it was inserted or replaced.
 
-        Rejects individuals with ``score is None`` (not yet evaluated).
+        Rejects individuals with ``score is None`` (not yet evaluated)
+        or ``errored=True`` (evaluation failed).
         """
-        if individual.score is None:
+        if individual.score is None or individual.errored:
             return False
         key = individual.features
         existing = self._grid.get(key)
@@ -137,7 +144,10 @@ class MAPElitesArchive:
     def best(self) -> Individual | None:
         if not self._grid:
             return None
-        scored = [i for i in self._grid.values() if i.score is not None]
+        scored = [
+            i for i in self._grid.values()
+            if i.score is not None and not i.errored
+        ]
         if not scored:
             return None
         return max(scored, key=lambda i: i.score)  # type: ignore[arg-type,return-value]

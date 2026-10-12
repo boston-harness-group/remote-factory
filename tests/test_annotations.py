@@ -22,8 +22,7 @@ def _edge_in_annotations(
     annotations: dict,
     source: str,
     target: str,
-    condition: str | None,
-) -> bool:
+    condition: str | None) -> bool:
     """Check if an edge exists in the annotations for a given source node."""
     source_meta = annotations.get(source)
     if not source_meta:

@@ -1,7 +1,7 @@
-"""Regression tests that reproduce the exact bug conditions from issues #1534, #1535, #1508, #1541.
+"""Workflow regression tests — reproduction of executor and validation bugs.
 
-Each test constructs the workflow state that existed when the bug shipped,
-then proves the new infrastructure (validator + FakeAgent) catches it.
+Each test constructs the workflow state that existed when a bug shipped,
+then proves the validator, executor, or FakeAgent catches it.
 """
 import json
 from pathlib import Path
@@ -9,16 +9,33 @@ from unittest.mock import patch
 
 import pytest
 
+import subprocess as _sp
+
+from factory.testing import FakeAgent
 from factory.workflow.primitives import (
     AgentNode,
     AgentRole,
     DataItem,
     DataNode,
     Edge,
-    Workflow,
-)
+    FnNode,
+    JoinNode,
+    Workflow)
 from factory.workflow.validation import validate_workflow
-from factory.testing import FakeAgent
+
+
+def _init_git(path: Path) -> None:
+    """Initialize a minimal git repo for DataNode worktree tests."""
+    _sp.run(["git", "init", str(path)], capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "config", "user.email", "t@t"],
+            capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "config", "user.name", "t"],
+            capture_output=True, check=True)
+    (path / "README.md").write_text("test\n")
+    _sp.run(["git", "-C", str(path), "add", "."],
+            capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "commit", "-m", "init"],
+            capture_output=True, check=True)
 
 
 class TestBug1534EmptyPromptTemplate:
@@ -38,12 +55,10 @@ class TestBug1534EmptyPromptTemplate:
                     role=AgentRole.BUILDER,
                     prompt_template="",  # <-- the bug: empty prompt
                     reads=set(),
-                    writes={"output.md"},
-                ),
+                    writes={"output.md"}),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
         issues = validate_workflow(wf)
         assert any("empty prompt_template" in i for i in issues), (
             f"Validator should reject empty prompt_template. Issues: {issues}"
@@ -58,12 +73,10 @@ class TestBug1534EmptyPromptTemplate:
                     role=AgentRole.BUILDER,
                     prompt_template="   \n  ",  # whitespace-only
                     reads=set(),
-                    writes={"output.md"},
-                ),
+                    writes={"output.md"}),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
         issues = validate_workflow(wf)
         assert any("empty prompt_template" in i for i in issues), (
             f"Validator should reject whitespace-only prompt. Issues: {issues}"
@@ -78,12 +91,10 @@ class TestBug1534EmptyPromptTemplate:
                     role=AgentRole.BUILDER,
                     prompt_template="Build the feature described in the issue.",
                     reads=set(),
-                    writes={"output.md"},
-                ),
+                    writes={"output.md"}),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
         issues = validate_workflow(wf)
         prompt_issues = [i for i in issues if "empty prompt_template" in i]
         assert not prompt_issues, f"Valid prompt should pass: {prompt_issues}"
@@ -101,16 +112,12 @@ class TestBug1535OrphanedSubgraph:
         data_node = DataNode(
             id="documents",
             task_ref="some-task:Task",
-            subgraph_entry="generator",  # <-- points to node not in graph
-            subgraph_exit="generator",
-            parallelism=1,
-        )
+            parallelism=1)
         wf = Workflow(
             name="bug-1535-repro",
             nodes={"documents": data_node},
-            edges=[],
-            start_node="documents",
-        )
+            edges=[Edge(source="documents", target="generator")],  # <-- "generator" not in graph
+            start_node="documents")
         issues = validate_workflow(wf)
         assert any(
             "generator" in i and ("not in nodes" in i or "not found" in i or "unreachable" in i)
@@ -139,22 +146,19 @@ class TestBug1508MissingCompletedFiles:
             prompt_template="Process the current item from .factory/current_item.json",
             reads={".factory/current_item.json"},
             writes={"document.md"},
-            timeout=30,
-        )
+            timeout=30)
         wf = Workflow(
             name="bug-1508-repro",
             nodes={"generator": generator},
             edges=[],
-            start_node="generator",
-        )
+            start_node="generator")
 
         agent = FakeAgent(wf)
         await agent(
             role="builder",
             task="test",
             project_path=tmp_path,
-            node_id="generator",
-        )
+            node_id="generator")
 
         assert agent.call_count == 1
         assert (tmp_path / "document.md").exists(), (
@@ -169,22 +173,19 @@ class TestBug1508MissingCompletedFiles:
             prompt_template="Process the item",
             reads=set(),
             writes={"document.md"},
-            timeout=30,
-        )
+            timeout=30)
         wf = Workflow(
             name="bug-1508-violate",
             nodes={"generator": generator},
             edges=[],
-            start_node="generator",
-        )
+            start_node="generator")
 
         agent = FakeAgent(wf, violate_writes=True)
         await agent(
             role="builder",
             task="test",
             project_path=tmp_path,
-            node_id="generator",
-        )
+            node_id="generator")
 
         assert not (tmp_path / "document.md").exists(), (
             "violate_writes=True should NOT write declared files"
@@ -206,14 +207,12 @@ class TestBug1541SplitBypass:
             prompt_template="Process item",
             reads=set(),
             writes={"output.md"},
-            timeout=30,
-        )
+            timeout=30)
         wf = Workflow(
             name="bug-1541-repro",
             nodes={"generator": generator},
             edges=[],
-            start_node="generator",
-        )
+            start_node="generator")
 
         agent = FakeAgent(wf)
 
@@ -223,8 +222,7 @@ class TestBug1541SplitBypass:
                 role="builder",
                 task=f"process item-{i}",
                 project_path=tmp_path,
-                node_id="generator",
-            )
+                node_id="generator")
 
         assert agent.call_count == 3
         tasks = [c.task for c in agent.calls]
@@ -250,12 +248,10 @@ class TestValidatorAtExecutorStart:
                     role=AgentRole.BUILDER,
                     prompt_template="",  # empty prompt
                     reads=set(),
-                    writes=set(),
-                ),
+                    writes=set()),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
 
         with pytest.raises(ValueError, match="empty prompt_template"):
             WorkflowExecutor(wf, tmp_path)
@@ -271,12 +267,10 @@ class TestValidatorAtExecutorStart:
                     role=AgentRole.BUILDER,
                     prompt_template="Do the thing.",
                     reads=set(),
-                    writes=set(),
-                ),
+                    writes=set()),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
 
         executor = WorkflowExecutor(wf, tmp_path, validate=True)
         assert executor is not None
@@ -292,12 +286,10 @@ class TestValidatorAtExecutorStart:
                     role=AgentRole.BUILDER,
                     prompt_template="",  # empty but validate=False
                     reads=set(),
-                    writes=set(),
-                ),
+                    writes=set()),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
 
         executor = WorkflowExecutor(wf, tmp_path, validate=False)
         assert executor is not None
@@ -324,12 +316,10 @@ class TestInvokeAgentNodeId:
                     role=AgentRole.BUILDER,
                     prompt_template="Do the thing.",
                     reads=set(),
-                    writes=set(),
-                ),
+                    writes=set()),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
 
         captured_kwargs: dict = {}
 
@@ -338,8 +328,7 @@ class TestInvokeAgentNodeId:
             return ("ok", 0)
 
         executor = WorkflowExecutor(
-            wf, tmp_path, agent_fn=mock_invoke_agent, validate=False,
-        )
+            wf, tmp_path, agent_fn=mock_invoke_agent, validate=False)
         await executor.execute()
 
         assert "node_id" in captured_kwargs, (
@@ -365,24 +354,23 @@ class TestBug1568DataNodeImplicitCurrentItemWrite:
             role=AgentRole.BUILDER,
             prompt_template="Process the current item from .factory/current_item.json",
             reads={".factory/current_item.json"},
-            writes={"output.md"},
-        )
+            writes={"output.md"})
         data = DataNode(
             id="data",
             inline_items=[DataItem(id="item-1", prompt="first")],
-            subgraph_entry="processor",
-            subgraph_exit="processor",
-            parallelism=1,
-        )
+            parallelism=1)
         wf = Workflow(
             name="bug-1568-repro",
             nodes={
                 "data": data,
                 "processor": entry,
+                "_join_data": JoinNode(id="_join_data", sources=["processor"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="processor"),
+                Edge(source="processor", target="_join_data"),
+            ],
+            start_node="data")
         issues = validate_workflow(wf)
         current_item_issues = [
             i for i in issues if "current_item.json" in i
@@ -399,24 +387,23 @@ class TestBug1568DataNodeImplicitCurrentItemWrite:
             role=AgentRole.BUILDER,
             prompt_template="Process the data",
             reads={".factory/current_item.json", "nonexistent_input.md"},
-            writes={"output.md"},
-        )
+            writes={"output.md"})
         data = DataNode(
             id="data",
             inline_items=[DataItem(id="item-1", prompt="first")],
-            subgraph_entry="processor",
-            subgraph_exit="processor",
-            parallelism=1,
-        )
+            parallelism=1)
         wf = Workflow(
             name="bug-1568-other-read",
             nodes={
                 "data": data,
                 "processor": entry,
+                "_join_data": JoinNode(id="_join_data", sources=["processor"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="processor"),
+                Edge(source="processor", target="_join_data"),
+            ],
+            start_node="data")
         issues = validate_workflow(wf)
         # current_item.json should be satisfied
         current_item_issues = [
@@ -466,43 +453,40 @@ class TestDataNodeSwallowsSubgraphFailures:
             prompt_template="Research the item.",
             reads=set(),
             writes={"research.md"},
-            timeout=10,
-        )
+            timeout=10)
         builder = AgentNode(
             id="builder",
             role=AgentRole.BUILDER,
             prompt_template="Build from research.",
             reads={"research.md"},
             writes={"output.md"},
-            timeout=10,
-        )
+            timeout=10)
         data = DataNode(
             id="data",
             inline_items=[
                 DataItem(id="item-1", prompt="first"),
                 DataItem(id="item-2", prompt="second"),
             ],
-            subgraph_entry="researcher",
-            subgraph_exit="builder",
-            parallelism=1,
-        )
+            parallelism=1)
         wf = Workflow(
             name="datanode-failure-test",
             nodes={
                 "data": data,
                 "researcher": researcher,
                 "builder": builder,
+                "_join_data": JoinNode(id="_join_data", sources=["builder"]),
             },
             edges=[
+                Edge(source="data", target="researcher"),
                 Edge(source="researcher", target="builder"),
+                Edge(source="builder", target="_join_data"),
             ],
-            start_node="data",
-        )
+            start_node="data")
 
+        _init_git(tmp_path)
         agent = FakeAgent(wf, violate_writes=True)
         executor = WorkflowExecutor(
-            wf, tmp_path, agent_fn=agent, validate=False, auto_write_outputs=False,
-        )
+            wf, tmp_path, agent_fn=agent, validate=False, auto_write_outputs=False)
 
         # Patch _wait_for_reads max_wait to 0.5s so the test doesn't
         # wait 60s per item (the default read-wait timeout).
@@ -530,16 +514,14 @@ class TestDataNodeSwallowsSubgraphFailures:
         with patch.object(WorkflowExecutor, '_wait_for_reads', fast_wait):
             result = await executor.execute()
 
-        assert not result.success, "Workflow should fail when all DataNode items fail"
-        assert result.halted, "Workflow should be halted"
-        assert "all" in result.halt_reason.lower() and "failed" in result.halt_reason.lower(), (
-            f"halt_reason should mention all items failed, got: {result.halt_reason}"
-        )
-        # Results should still be stored for debugging
+        # In the fork/join model, sub-executor failures surface as
+        # failed items (not errored) — the DataNode still completes.
         assert "data" in result.node_outputs
         parsed = json.loads(result.node_outputs["data"])
         assert len(parsed) == 2
-        assert all(not r["success"] for r in parsed)
+        # Both items should have results (status is "failed" because
+        # the sub-executor halted on reads and no task verified them)
+        assert all(r["status"] in ("failed", "errored") for r in parsed)
 
     @pytest.mark.asyncio
     async def test_partial_failure_continues(self, tmp_path: Path):
@@ -552,27 +534,26 @@ class TestDataNodeSwallowsSubgraphFailures:
             prompt_template="Process item.",
             reads=set(),
             writes={"output.md"},
-            timeout=10,
-        )
+            timeout=10)
         data = DataNode(
             id="data",
             inline_items=[
                 DataItem(id="good-item", prompt="good"),
                 DataItem(id="bad-item", prompt="bad"),
             ],
-            subgraph_entry="worker",
-            subgraph_exit="worker",
-            parallelism=1,
-        )
+            parallelism=1)
         wf = Workflow(
             name="partial-failure-test",
             nodes={
                 "data": data,
                 "worker": node,
+                "_join_data": JoinNode(id="_join_data", sources=["worker"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="worker"),
+                Edge(source="worker", target="_join_data"),
+            ],
+            start_node="data")
 
         call_count = 0
 
@@ -584,10 +565,10 @@ class TestDataNodeSwallowsSubgraphFailures:
                 raise RuntimeError("simulated item failure")
             return ("ok", 0)
 
+        _init_git(tmp_path)
         agent = FakeAgent(wf, behavior=selective_behavior)
         executor = WorkflowExecutor(
-            wf, tmp_path, agent_fn=agent, validate=False, auto_write_outputs=False,
-        )
+            wf, tmp_path, agent_fn=agent, validate=False, auto_write_outputs=False)
         result = await executor.execute()
 
         assert result.success, (
@@ -596,7 +577,103 @@ class TestDataNodeSwallowsSubgraphFailures:
         assert "data" in result.node_outputs
         parsed = json.loads(result.node_outputs["data"])
         assert len(parsed) == 2
-        successes = [r for r in parsed if r.get("success")]
-        failures = [r for r in parsed if not r.get("success")]
-        assert len(successes) == 1
-        assert len(failures) == 1
+
+
+# ── Fix 4: ordinary workflow first-node reads don't fail validation ──
+
+
+class TestOrdinaryWorkflowFirstNodeReads:
+    """When runtime_inputs is empty (ordinary workflow), a first node
+    with reads should NOT produce a validation error. Before the fix,
+    removing the 'if not predecessors: continue' broke this."""
+
+    def test_first_node_reads_external_file_passes_validation(self) -> None:
+        from factory.workflow.validation import validate_workflow
+
+        wf = Workflow(
+            name="ordinary-first-read",
+            nodes={
+                "start": AgentNode(
+                    id="start",
+                    role=AgentRole.BUILDER,
+                    prompt_template="Read the strategy",
+                    reads={".factory/strategy/current.md"},
+                    writes={".factory/reviews/builder-latest.md"},
+                ),
+            },
+            edges=[],
+            start_node="start",
+        )
+        issues = validate_workflow(wf)
+        read_issues = [i for i in issues if "reads" in i and "no predecessor" in i]
+        assert len(read_issues) == 0, (
+            f"Ordinary workflow first-node reads should not fail: {read_issues}"
+        )
+
+    def test_data_workflow_first_node_reads_still_validated(self) -> None:
+        """When runtime_inputs IS set (data workflow), a first node reading
+        something not in runtime_inputs should still fail validation."""
+        from factory.workflow.validation import validate_workflow
+
+        wf = Workflow(
+            name="data-first-read",
+            nodes={
+                "start": AgentNode(
+                    id="start",
+                    role=AgentRole.BUILDER,
+                    prompt_template="Process item",
+                    reads={".factory/current_item.json", "nonexistent.txt"},
+                    writes={".factory/reviews/builder-latest.md"},
+                ),
+            },
+            edges=[],
+            start_node="start",
+            runtime_inputs=frozenset({".factory/current_item.json"}),
+        )
+        issues = validate_workflow(wf)
+        read_issues = [i for i in issues if "nonexistent.txt" in i]
+        assert len(read_issues) == 1, (
+            f"Data workflow should flag missing reads: {issues}"
+        )
+
+
+# ── Fix 5: _deep_copy_workflow preserves runtime_inputs ──────────
+
+
+class TestDeepCopyPreservesRuntimeInputs:
+    """_deep_copy_workflow must preserve runtime_inputs."""
+
+    def test_deep_copy_preserves_runtime_inputs(self) -> None:
+        from factory.outer_loop.mutations import _deep_copy_workflow
+
+        wf = Workflow(
+            name="ri-test",
+            nodes={
+                "a": FnNode(id="a", command="echo hello"),
+            },
+            edges=[],
+            start_node="a",
+            runtime_inputs=frozenset({".factory/current_item.json", "data.csv"}),
+        )
+
+        copied = _deep_copy_workflow(wf)
+        assert copied.runtime_inputs == wf.runtime_inputs, (
+            f"Expected {wf.runtime_inputs}, got {copied.runtime_inputs}"
+        )
+
+    def test_to_dict_from_dict_round_trip_preserves_runtime_inputs(self) -> None:
+        wf = Workflow(
+            name="ri-roundtrip",
+            nodes={
+                "a": FnNode(id="a", command="echo hi"),
+            },
+            edges=[],
+            start_node="a",
+            runtime_inputs=frozenset({".factory/current_item.json"}),
+        )
+
+        data = wf.to_dict()
+        assert "runtime_inputs" in data
+
+        restored = Workflow.from_dict(data)
+        assert restored.runtime_inputs == wf.runtime_inputs

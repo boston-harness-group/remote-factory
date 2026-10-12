@@ -203,7 +203,6 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
             population_size=population_size,
             designer_count=designer_count,
             training_instances=getattr(args, "training_instances", []),
-            holdout_instances=getattr(args, "holdout_instances", []),
             target_project=str(Path(target_proj).resolve()) if target_proj else "",
             test_command=resolved_test_command,
             test_format=resolved_test_format,
@@ -525,53 +524,8 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_cycle_summary(project_path: Path, mode_name: str) -> CycleRecord | None:
-    """Load a CycleRecord from a persisted cycle_summary.json."""
-    from factory.cycle_analyzer import CycleRecord as CR
-
-    summary_path = project_path / ".factory" / "outer_loop" / "runs" / mode_name / "cycle_summary.json"
-    if not summary_path.exists():
-        return None
-    try:
-        data = json.loads(summary_path.read_text())
-        duration_ms = data.get("duration_ms", 0)
-
-        instance_results = data.get("instance_results")
-
-        eval_details: dict[str, object] | None = None
-        verify = data.get("verify")
-        test_details = data.get("test_details")
-        if verify is not None or test_details is not None:
-            eval_details = {}
-            if verify is not None:
-                eval_details["verify"] = verify
-            if test_details is not None:
-                eval_details["test_details"] = test_details
-            rejected = data.get("rejected")
-            if rejected is not None:
-                eval_details["rejected"] = rejected
-            error = data.get("error")
-            if isinstance(error, str):
-                eval_details["error"] = error
-
-        return CR(
-            cycle_number=0,
-            mode=mode_name,
-            started_at=None,
-            ended_at=None,
-            duration_s=duration_ms / 1000.0 if duration_ms else 0.0,
-            score_start=None,
-            score_end=data.get("score"),
-            score_delta=None,
-            kept=data.get("kept", 0),
-            reverted=data.get("reverted", 0),
-            errored=data.get("agents_failed", 0),
-            total_cost_usd=data.get("cost_usd", 0.0),
-            instance_results=instance_results,
-            eval_details=eval_details,
-        )
-    except (json.JSONDecodeError, OSError, ValueError, TypeError):
-        return None
+    # _load_cycle_summary removed: cycle_summary.json is not a score channel.
+    # Use CycleRecord.from_run() instead (see spec binding decisions).
 
 
 def _cmd_reflect(args: argparse.Namespace) -> int:
@@ -610,16 +564,26 @@ def _cmd_reflect(args: argparse.Namespace) -> int:
     records: list[tuple[str, float, CycleRecord | None]] = []
     needs_eval: list[tuple[str, Workflow]] = []
 
+    from factory.cycle_analyzer import CycleRecord as _CycleRecord
+
     for mode_name in registry.list_modes():
         saved = saved_results.get(mode_name)
         if saved is not None:
             score = float(saved.get("score", 0.0))
-            cycle_rec = _load_cycle_summary(project_path, mode_name)
-            records.append((mode_name, score, cycle_rec))
-            continue
-        cycle_rec = _load_cycle_summary(project_path, mode_name)
-        if cycle_rec is not None and cycle_rec.score_end is not None:
-            records.append((mode_name, cycle_rec.score_end, cycle_rec))
+            rec = _CycleRecord(
+                cycle_number=0,
+                mode=mode_name,
+                started_at=None,
+                ended_at=None,
+                duration_s=float(saved.get("duration_s", 0.0)),
+                score_start=None,
+                score_end=score,
+                score_delta=None,
+                total_cost_usd=float(saved.get("cost", 0.0)),
+                kept=int(saved.get("kept", 0)),
+                reverted=int(saved.get("reverted", 0)),
+            )
+            records.append((mode_name, score, rec))
             continue
         wf = registry.load(mode_name)
         if wf is not None:
@@ -907,7 +871,6 @@ def add_outer_loop_parser(subparsers: argparse._SubParsersAction) -> None:  # ty
     cal.add_argument("--budget", type=int, default=50)
     cal.add_argument("--population-size", type=int, default=4)
     cal.add_argument("--training-instances", nargs="*", default=[])
-    cal.add_argument("--holdout-instances", nargs="*", default=[])
     cal.add_argument(
         "--project-dir",
         default=None,

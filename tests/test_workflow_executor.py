@@ -17,8 +17,7 @@ from factory.workflow.primitives import (
     JoinNode,
     Verdict,
     VerdictType,
-    Workflow,
-)
+    Workflow)
 
 
 @pytest.fixture
@@ -50,8 +49,7 @@ class TestLinearWorkflow:
                 Edge(source="a", target="b"),
                 Edge(source="b", target="c"),
             ],
-            start_node="a",
-        )
+            start_node="a")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         result = await executor.execute()
@@ -69,8 +67,7 @@ class TestLinearWorkflow:
                 "b": FnNode(id="b", command="echo b", reads={"a.txt"}, writes={"b.txt"}),
             },
             edges=[Edge(source="a", target="b")],
-            start_node="a",
-        )
+            start_node="a")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         result = await executor.execute()
@@ -92,16 +89,14 @@ class TestGateProceed:
                     id="gate",
                     evaluator_type="fn",
                     evaluator_command="echo PROCEED",
-                    reads={"a.txt"},
-                ),
+                    reads={"a.txt"}),
                 "b": FnNode(id="b", command="echo b", writes={"b.txt"}),
             },
             edges=[
                 Edge(source="a", target="gate"),
                 Edge(source="gate", target="b", condition=VerdictType.PROCEED),
             ],
-            start_node="a",
-        )
+            start_node="a")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         result = await executor.execute()
@@ -124,8 +119,7 @@ class TestGateReloop:
                     id="gate",
                     evaluator_type="fn",
                     evaluator_command="echo PROCEED",
-                    reads={"a.txt"},
-                ),
+                    reads={"a.txt"}),
                 "b": FnNode(id="b", command="echo b", writes={"b.txt"}),
             },
             edges=[
@@ -133,8 +127,7 @@ class TestGateReloop:
                 Edge(source="gate", target="b", condition=VerdictType.PROCEED),
                 Edge(source="gate", target="a", condition=VerdictType.RELOOP),
             ],
-            start_node="a",
-        )
+            start_node="a")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         result = await executor.execute()
@@ -155,16 +148,14 @@ class TestGateHalt:
                     id="gate",
                     evaluator_type="fn",
                     evaluator_command="echo FAIL",
-                    reads={"a.txt"},
-                ),
+                    reads={"a.txt"}),
                 "b": FnNode(id="b", command="echo b"),
             },
             edges=[
                 Edge(source="a", target="gate"),
                 Edge(source="gate", target="b", condition=VerdictType.PROCEED),
             ],
-            start_node="a",
-        )
+            start_node="a")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         result = await executor.execute()
@@ -196,8 +187,7 @@ class TestMaxIterations:
                 Edge(source="a", target="gate"),
                 Edge(source="gate", target="a", condition=VerdictType.RELOOP),
             ],
-            start_node="a",
-        )
+            start_node="a")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         executor._evaluate_gate = mock_evaluate_gate  # type: ignore[assignment]
@@ -223,8 +213,7 @@ class TestForkJoin:
                 "join": JoinNode(
                     id="join",
                     sources=["a", "b", "c"],
-                    reads={"a.txt", "b.txt", "c.txt"},
-                ),
+                    reads={"a.txt", "b.txt", "c.txt"}),
                 "final": FnNode(id="final", command="echo done", reads={"a.txt", "b.txt", "c.txt"}),
             },
             edges=[
@@ -236,8 +225,7 @@ class TestForkJoin:
                 Edge(source="c", target="join"),
                 Edge(source="join", target="final"),
             ],
-            start_node="fork",
-        )
+            start_node="fork")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         result = await executor.execute()
@@ -270,8 +258,7 @@ class TestJoinNodeBarrier:
                 Edge(source="b", target="join"),
                 Edge(source="join", target="final"),
             ],
-            start_node="fork",
-        )
+            start_node="fork")
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         result = await executor.execute()
         assert result.success
@@ -290,8 +277,7 @@ class TestJoinNodeBarrier:
                 Edge(source="a", target="join"),
                 Edge(source="join", target="final"),
             ],
-            start_node="a",
-        )
+            start_node="a")
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True, validate=False)
         result = await executor.execute()
         assert result.halted
@@ -311,8 +297,7 @@ class TestJoinNodeBarrier:
                 Edge(source="a", target="join"),
                 Edge(source="join", target="b"),
             ],
-            start_node="a",
-        )
+            start_node="a")
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         result = await executor.execute()
         assert result.success
@@ -327,8 +312,7 @@ class TestJoinNodeBarrier:
                     id="gate",
                     evaluator_type="fn",
                     evaluator_command="echo PROCEED",
-                    reads={"a.txt"},
-                ),
+                    reads={"a.txt"}),
                 "join": JoinNode(id="join", sources=["a", "gate"]),
                 "final": FnNode(id="final", command="echo done"),
             },
@@ -337,8 +321,7 @@ class TestJoinNodeBarrier:
                 Edge(source="gate", target="join", condition=VerdictType.PROCEED),
                 Edge(source="join", target="final"),
             ],
-            start_node="a",
-        )
+            start_node="a")
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         result = await executor.execute()
         assert result.success
@@ -362,8 +345,7 @@ class TestJoinNodeBarrier:
                 Edge(source="b", target="join"),
                 Edge(source="join", target="final"),
             ],
-            start_node="fork",
-        )
+            start_node="fork")
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         result = await executor.execute()
         assert result.success
@@ -382,8 +364,7 @@ class TestJoinNodeBarrier:
                 Edge(source="a", target="join"),
                 Edge(source="join", target="final"),
             ],
-            start_node="a",
-        )
+            start_node="a")
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True, validate=False)
         result = await executor.execute()
         assert result.halted
@@ -403,8 +384,7 @@ class TestJoinNodeBarrier:
             edges=[
                 Edge(source="join", target="final"),
             ],
-            start_node="join",
-        )
+            start_node="join")
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True, validate=False)
         executor.result.node_outputs["a"] = "done"
         await executor._execute_from("join")
@@ -426,16 +406,14 @@ class TestNonBlocking:
                     command="echo async",
                     reads={"a.txt"},
                     writes={"async.txt"},
-                    blocking=False,
-                ),
+                    blocking=False),
                 "b": FnNode(id="b", command="echo b", writes={"b.txt"}),
             },
             edges=[
                 Edge(source="a", target="async_node"),
                 Edge(source="async_node", target="b"),
             ],
-            start_node="a",
-        )
+            start_node="a")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         result = await executor.execute()
@@ -457,8 +435,7 @@ class TestEventEmission:
                 "b": FnNode(id="b", command="echo b", reads={"a.txt"}),
             },
             edges=[Edge(source="a", target="b")],
-            start_node="a",
-        )
+            start_node="a")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         result = await executor.execute()
@@ -478,16 +455,14 @@ class TestEventEmission:
                     id="gate",
                     evaluator_type="fn",
                     evaluator_command="echo PROCEED",
-                    reads={"a.txt"},
-                ),
+                    reads={"a.txt"}),
                 "b": FnNode(id="b", command="echo b"),
             },
             edges=[
                 Edge(source="a", target="gate"),
                 Edge(source="gate", target="b", condition=VerdictType.PROCEED),
             ],
-            start_node="a",
-        )
+            start_node="a")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         result = await executor.execute()
@@ -509,8 +484,7 @@ class TestErrorHandling:
                 "b": FnNode(id="b", command="echo b"),
             },
             edges=[Edge(source="a", target="b")],
-            start_node="a",
-        )
+            start_node="a")
 
         executor = WorkflowExecutor(wf, tmp_project)
         result = await executor.execute()
@@ -536,8 +510,7 @@ class TestAutoApprove:
                 Edge(source="a", target="gate"),
                 Edge(source="gate", target="b", condition=VerdictType.PROCEED),
             ],
-            start_node="a",
-        )
+            start_node="a")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True, auto_approve=True)
         result = await executor.execute()
@@ -560,8 +533,7 @@ class TestAutoApprove:
                 Edge(source="a", target="gate"),
                 Edge(source="gate", target="b", condition=VerdictType.PROCEED),
             ],
-            start_node="a",
-        )
+            start_node="a")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True, auto_approve=False)
         result = await executor.execute()
@@ -586,8 +558,7 @@ class TestAutoApprove:
                 Edge(source="a", target="gate"),
                 Edge(source="gate", target="b", condition=VerdictType.PROCEED),
             ],
-            start_node="a",
-        )
+            start_node="a")
 
         captured: list[dict] = []
 
@@ -624,8 +595,7 @@ class TestAutoApprove:
                 Edge(source="a", target="gate"),
                 Edge(source="gate", target="b", condition=VerdictType.PROCEED),
             ],
-            start_node="a",
-        )
+            start_node="a")
 
         captured: list[dict] = []
 
@@ -638,8 +608,7 @@ class TestAutoApprove:
         try:
             executor = WorkflowExecutor(
                 wf, tmp_project, dry_run=False, auto_approve=False,
-                input_fn=lambda _: "proceed",
-            )
+                input_fn=lambda _: "proceed")
             result = await executor.execute()
         finally:
             structlog.reset_defaults()
@@ -665,8 +634,7 @@ def _user_gate_workflow() -> Workflow:
             Edge(source="gate", target="b", condition=VerdictType.PROCEED),
             Edge(source="gate", target="a", condition=VerdictType.RELOOP),
         ],
-        start_node="a",
-    )
+        start_node="a")
 
 
 class TestUserGateInteractive:
@@ -692,9 +660,27 @@ class TestUserGateInteractive:
         assert verdict.type == VerdictType.HALT
 
     async def test_user_gate_halt_stops_workflow(self, tmp_project: Path) -> None:
-        """User responding 'halt' terminates the full workflow."""
-        wf = _user_gate_workflow()
-        executor = WorkflowExecutor(wf, tmp_project, dry_run=False, input_fn=lambda _: "halt")
+        """User responding 'halt' terminates the full workflow.
+
+        Uses a workflow whose FnNode actually creates a.txt so the gate
+        gets its reads satisfied, then input_fn='halt' stops the workflow.
+        """
+        wf = Workflow(
+            name="user_gate_wf",
+            nodes={
+                "a": FnNode(id="a", command="touch a.txt", writes={"a.txt"}),
+                "gate": GateNode(id="gate", evaluator_type="user", reads={"a.txt"}),
+                "b": FnNode(id="b", command="echo b", writes={"b.txt"}),
+            },
+            edges=[
+                Edge(source="a", target="gate"),
+                Edge(source="gate", target="b", condition=VerdictType.PROCEED),
+                Edge(source="gate", target="a", condition=VerdictType.RELOOP),
+            ],
+            start_node="a")
+        executor = WorkflowExecutor(
+            wf, tmp_project, dry_run=False,
+            input_fn=lambda _: "halt")
         result = await executor.execute()
         assert result.halted
         assert "gate" in result.halt_reason
@@ -708,8 +694,7 @@ class TestUserGateInteractive:
 
         wf = _user_gate_workflow()
         executor = WorkflowExecutor(
-            wf, tmp_project, auto_approve=True, input_fn=should_not_be_called,
-        )
+            wf, tmp_project, auto_approve=True, input_fn=should_not_be_called)
         await executor._evaluate_gate(wf.nodes["gate"])  # type: ignore[arg-type]
         assert not called, "input_fn should not be called when auto_approve=True"
 
@@ -737,8 +722,7 @@ class TestUserGateInteractive:
                 Edge(source="a", target="gate"),
                 Edge(source="gate", target="b", condition=VerdictType.PROCEED),
             ],
-            start_node="a",
-        )
+            start_node="a")
         executor = WorkflowExecutor(wf, tmp_project, input_fn=lambda _: "reloop")
         verdict = await executor._evaluate_gate(wf.nodes["gate"])  # type: ignore[arg-type]
         assert verdict.type == VerdictType.HALT
@@ -797,8 +781,7 @@ def _make_gate_executor() -> WorkflowExecutor:
             Edge(source="gate", target="b", condition=VerdictType.PROCEED),
             Edge(source="gate", target="a", condition=VerdictType.RELOOP),
         ],
-        start_node="a",
-    )
+        start_node="a")
     executor = WorkflowExecutor.__new__(WorkflowExecutor)
     executor.workflow = wf
     executor.project_path = Path("/fake")
@@ -940,8 +923,7 @@ class TestGateVerdictFailClosed:
                 Edge(source="a", target="gate"),
                 Edge(source="gate", target="b", condition=VerdictType.PROCEED),
             ],
-            start_node="a",
-        )
+            start_node="a")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=False)
         result = await executor.execute()
@@ -966,12 +948,10 @@ class TestInitialContextGuard:
                 "fn": FnNode(id="fn", command="echo hi", writes={"out.txt"}),
             },
             edges=[],
-            start_node="fn",
-        )
+            start_node="fn")
 
         executor = WorkflowExecutor(
-            wf, tmp_project, dry_run=True, initial_context="should be ignored",
-        )
+            wf, tmp_project, dry_run=True, initial_context="should be ignored")
         assert "fn" not in executor.node_context
 
     def test_gatenode_start_ignores_initial_context(self, tmp_project: Path) -> None:
@@ -982,12 +962,10 @@ class TestInitialContextGuard:
                 "gate": GateNode(id="gate", evaluator_type="fn", evaluator_command="echo pass"),
             },
             edges=[],
-            start_node="gate",
-        )
+            start_node="gate")
 
         executor = WorkflowExecutor(
-            wf, tmp_project, dry_run=True, initial_context="should be ignored",
-        )
+            wf, tmp_project, dry_run=True, initial_context="should be ignored")
         assert "gate" not in executor.node_context
 
     def test_agentnode_start_receives_initial_context(self, tmp_project: Path) -> None:
@@ -998,16 +976,13 @@ class TestInitialContextGuard:
                 "agent": AgentNode(
                     id="agent",
                     role=AgentRole.BUILDER,
-                    prompt_template="build it",
-                ),
+                    prompt_template="build it"),
             },
             edges=[],
-            start_node="agent",
-        )
+            start_node="agent")
 
         executor = WorkflowExecutor(
-            wf, tmp_project, dry_run=True, initial_context="domain prompt here",
-        )
+            wf, tmp_project, dry_run=True, initial_context="domain prompt here")
         assert executor.node_context["agent"] == "domain prompt here"
 
     def test_no_initial_context_leaves_node_context_empty(self, tmp_project: Path) -> None:
@@ -1018,12 +993,10 @@ class TestInitialContextGuard:
                 "agent": AgentNode(
                     id="agent",
                     role=AgentRole.BUILDER,
-                    prompt_template="build it",
-                ),
+                    prompt_template="build it"),
             },
             edges=[],
-            start_node="agent",
-        )
+            start_node="agent")
 
         executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
         assert executor.node_context == {}
@@ -1043,12 +1016,10 @@ class TestRunAgentPersistsToNodeWrites:
                     id="agent",
                     role=AgentRole.BUILDER,
                     prompt_template="build",
-                    writes={"output.md"},
-                ),
+                    writes={"output.md"}),
             },
             edges=[],
-            start_node="agent",
-        )
+            start_node="agent")
 
         mock_agent_fn = AsyncMock(return_value=("agent output", 0))
         executor = WorkflowExecutor(wf, tmp_project, agent_fn=mock_agent_fn)
@@ -1068,12 +1039,10 @@ class TestRunAgentPersistsToNodeWrites:
                 "agent": AgentNode(
                     id="agent",
                     role=AgentRole.BUILDER,
-                    prompt_template="build",
-                ),
+                    prompt_template="build"),
             },
             edges=[],
-            start_node="agent",
-        )
+            start_node="agent")
 
         files_before = set(tmp_project.rglob("*"))
         mock_agent_fn = AsyncMock(return_value=("agent output", 0))
@@ -1102,12 +1071,10 @@ class TestAgentFnInjection:
                 "agent": AgentNode(
                     id="agent",
                     role=AgentRole.BUILDER,
-                    prompt_template="build",
-                ),
+                    prompt_template="build"),
             },
             edges=[],
-            start_node="agent",
-        )
+            start_node="agent")
 
         executor = WorkflowExecutor(wf, tmp_project, agent_fn=mock_fn)
         await executor.execute()
@@ -1115,12 +1082,29 @@ class TestAgentFnInjection:
         mock_fn.assert_called_once()
 
     async def test_agent_fn_propagates_to_data_node_sub_executor(
-        self, tmp_project: Path,
-    ) -> None:
+        self, tmp_path: Path) -> None:
         """agent_fn propagates to DataNode per-item sub-executors."""
+        import subprocess as _sp
         from unittest.mock import AsyncMock
 
-        from factory.workflow.primitives import DataItem, DataNode
+        from factory.workflow.primitives import DataItem, DataNode, JoinNode
+
+        # Need a real git repo for worktree-based DataNode execution
+        project = tmp_path
+        (project / ".factory").mkdir(parents=True, exist_ok=True)
+        _sp.run(["git", "init"], cwd=project, capture_output=True, check=True)
+        _sp.run(
+            ["git", "commit", "--allow-empty", "-m", "init"],
+            cwd=project, capture_output=True, check=True,
+            env={
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@test.com",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@test.com",
+                "HOME": str(tmp_path),
+                "PATH": "/usr/bin:/bin:/usr/local/bin",
+            },
+        )
 
         mock_fn = AsyncMock(return_value=("sub output", 0))
 
@@ -1129,21 +1113,20 @@ class TestAgentFnInjection:
             nodes={
                 "data": DataNode(
                     id="data",
-                    inline_items=[DataItem(id="item1", prompt="do it")],
-                    subgraph_entry="sub_agent",
-                    subgraph_exit="sub_agent",
-                ),
+                    inline_items=[DataItem(id="item1", prompt="do it")]),
                 "sub_agent": AgentNode(
                     id="sub_agent",
                     role=AgentRole.BUILDER,
-                    prompt_template="build",
-                ),
+                    prompt_template="build"),
+                "join": JoinNode(id="join", sources=["sub_agent"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub_agent"),
+                Edge(source="sub_agent", target="join"),
+            ],
+            start_node="data")
 
-        executor = WorkflowExecutor(wf, tmp_project, agent_fn=mock_fn)
+        executor = WorkflowExecutor(wf, project, agent_fn=mock_fn)
         result = await executor.execute()
 
         assert result.success
@@ -1159,12 +1142,10 @@ class TestAgentFnInjection:
                 "agent": AgentNode(
                     id="agent",
                     role=AgentRole.BUILDER,
-                    prompt_template="build",
-                ),
+                    prompt_template="build"),
             },
             edges=[],
-            start_node="agent",
-        )
+            start_node="agent")
 
         executor = WorkflowExecutor(wf, tmp_project)
         assert executor._agent_fn is invoke_agent
@@ -1181,16 +1162,14 @@ class TestCollectSubgraphNodes:
             name="test",
             nodes={n: FnNode(id=n, command="echo") for n in nodes},
             edges=[Edge(source=s, target=t) for s, t in edges],
-            start_node=nodes[0],
-        )
+            start_node=nodes[0])
 
     def test_linear_chain(self) -> None:
         from factory.workflow.executor import _collect_subgraph_nodes
 
         wf = self._make_workflow(
             nodes=["a", "b", "c"],
-            edges=[("a", "b"), ("b", "c")],
-        )
+            edges=[("a", "b"), ("b", "c")])
         assert _collect_subgraph_nodes(wf, "a", "c") == {"a", "b", "c"}
 
     def test_stray_branch_excluded(self) -> None:
@@ -1201,8 +1180,7 @@ class TestCollectSubgraphNodes:
         # a -> stray (dead end, not connected to c)
         wf = self._make_workflow(
             nodes=["a", "b", "c", "stray"],
-            edges=[("a", "b"), ("b", "c"), ("a", "stray")],
-        )
+            edges=[("a", "b"), ("b", "c"), ("a", "stray")])
         result = _collect_subgraph_nodes(wf, "a", "c")
         assert "stray" not in result
         assert result == {"a", "b", "c"}
@@ -1215,8 +1193,7 @@ class TestCollectSubgraphNodes:
         # entry -> right -> exit
         wf = self._make_workflow(
             nodes=["entry", "left", "right", "exit"],
-            edges=[("entry", "left"), ("entry", "right"), ("left", "exit"), ("right", "exit")],
-        )
+            edges=[("entry", "left"), ("entry", "right"), ("left", "exit"), ("right", "exit")])
         assert _collect_subgraph_nodes(wf, "entry", "exit") == {"entry", "left", "right", "exit"}
 
     def test_entry_equals_exit(self) -> None:
@@ -1225,3 +1202,67 @@ class TestCollectSubgraphNodes:
 
         wf = self._make_workflow(nodes=["a", "b"], edges=[("a", "b")])
         assert _collect_subgraph_nodes(wf, "a", "a") == {"a"}
+
+
+# ── Bug 2 (moved from test_five_bugs): agent stdout overwrite ───
+
+
+async def test_agent_stdout_does_not_overwrite_tool_written_file(tmp_path: Path):
+    """When an agent writes a declared output file via tools, the executor
+    must NOT overwrite it with stdout."""
+    from typing import Any
+
+    wf = Workflow(
+        name="overwrite-test",
+        nodes={
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="Write document.md",
+                writes={"document.md"},
+                reads=set(),
+            ),
+        },
+        edges=[],
+        start_node="builder",
+    )
+
+    agent_written_content = "# Real Document\nWritten by agent tools"
+    stdout_content = "Summary printed to stdout"
+
+    async def tool_writing_agent(
+        role: str,
+        task: str,
+        project_path: Path | str,
+        *,
+        model: str | None = None,
+        timeout: float = 600.0,
+        node_id: str | None = None,
+        **kwargs: Any,
+    ) -> tuple[str, int]:
+        doc_path = Path(project_path) / "document.md"
+        doc_path.parent.mkdir(parents=True, exist_ok=True)
+        doc_path.write_text(agent_written_content)
+        return stdout_content, 0
+
+    factory_dir = tmp_path / ".factory"
+    factory_dir.mkdir()
+    (factory_dir / "reviews").mkdir()
+
+    executor = WorkflowExecutor(
+        wf,
+        tmp_path,
+        agent_fn=tool_writing_agent,
+        validate=False,
+        auto_write_outputs=True,
+    )
+    await executor.execute()
+
+    doc_path = tmp_path / "document.md"
+    assert doc_path.exists()
+    actual = doc_path.read_text()
+    assert actual == agent_written_content, (
+        f"Agent-written content was overwritten by stdout!\n"
+        f"Expected: {agent_written_content!r}\n"
+        f"Got: {actual!r}"
+    )

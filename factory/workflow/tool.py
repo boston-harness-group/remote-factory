@@ -125,9 +125,14 @@ def _rebuild_workflow(cache_data: dict) -> Workflow:
                 focus=info.get("focus"),
             )
         elif ntype == "FnNode":
+            fn_cmd = info.get("command", "")
+            fn_callable = info.get("callable_name")
+            if not fn_cmd and not fn_callable:
+                fn_cmd = "true"
             nodes[nid] = FnNode(
                 **common,  # type: ignore[arg-type]
-                command=info.get("command", ""),
+                command=fn_cmd,
+                callable_name=fn_callable,
                 notes=info.get("notes", ""),
             )
         elif ntype == "ForkNode":
@@ -141,7 +146,7 @@ def _rebuild_workflow(cache_data: dict) -> Workflow:
                 sources=info.get("sources", []),
             )
         else:
-            nodes[nid] = FnNode(**common, command="", notes="")  # type: ignore[arg-type]
+            nodes[nid] = FnNode(**common, command="true", notes="fallback")  # type: ignore[arg-type]
 
     edges = []
     for e in cache_data.get("edges", []):
@@ -189,9 +194,18 @@ def _get_workflow_cached(name: str, project_path: Path) -> Workflow:
 
 def tool_init(workflow_name: str, project_path: Path) -> str:
     """Initialize a tool session. Returns session dir path."""
+    from factory.workflow.primitives import DataNode as _DataNode
+
     wf = WorkflowRegistry.get_workflow(workflow_name, project_path)
     if not wf:
         raise ValueError(f"Unknown workflow: {workflow_name}")
+
+    # Reject DataNode graphs — tool engine cannot handle fork/join
+    if any(isinstance(n, _DataNode) for n in wf.nodes.values()):
+        raise ValueError(
+            "Tool engine does not support DataNode (fork/join) workflows.  "
+            "Use --engine deterministic or execution_strategy='executor'."
+        )
 
     session_dir = project_path / ".factory" / "tool_session"
     session_dir.mkdir(parents=True, exist_ok=True)

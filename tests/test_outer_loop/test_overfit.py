@@ -19,7 +19,7 @@ def _make_config() -> SwarmConfig:
         benchmark="test",
         budget=50,
         training_instances=["t1", "t2"],
-        holdout_instances=["h1"],
+        
     )
 
 

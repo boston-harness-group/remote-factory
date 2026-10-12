@@ -28,23 +28,27 @@ class OverfitDetector:
         best_workflow: Workflow,
         training_instances: list[str],
         holdout_instances: list[str],
-        evaluator: SwarmEvaluator,
+        evaluator: SwarmEvaluator | None = None,
         project_dir: str = "",
         training_score: float | None = None,
+        holdout_score: float | None = None,
     ) -> AuditResult:
         """Run the best workflow on both training and holdout instances.
 
         Flags overfit if (training - holdout) / training > threshold.
 
-        When training_score is provided, skips the training evaluation
-        and uses the provided score directly.
+        When training_score / holdout_score are provided, skips the
+        corresponding evaluation and uses the provided scores directly.
         """
         if training_score is None:
+            assert evaluator is not None, "evaluator required when training_score not provided"
             train_result = evaluator.evaluate(best_workflow, project_dir, training_instances)
             training_score = train_result.score
 
-        holdout_result = evaluator.evaluate(best_workflow, project_dir, holdout_instances)
-        holdout_score = holdout_result.score
+        if holdout_score is None:
+            assert evaluator is not None, "evaluator required when holdout_score not provided"
+            holdout_result = evaluator.evaluate(best_workflow, project_dir, holdout_instances)
+            holdout_score = holdout_result.score
 
         if training_score > 0:
             delta = (training_score - holdout_score) / training_score

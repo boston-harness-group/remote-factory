@@ -1,7 +1,7 @@
 """Integration test: verify data survives the disk round-trip.
 
 Exercises the full pipeline:
-  _write_cycle_summary() → cycle_summary.json → _load_cycle_summary() →
+  _write_cycle_summary() → cycle_summary.json → read-back →
   CycleRecord with eval_details → OuterLoopReflector._extract_eval_patterns()
   → non-empty failure/success patterns.
 
@@ -19,6 +19,49 @@ from factory.cycle_analyzer import CycleRecord
 from factory.inner_loop import InnerLoop
 from factory.outer_loop.evaluator import CycleRecordCache
 from factory.outer_loop.reflector import OuterLoopReflector
+
+
+def _load_cycle_summary_from_disk(project_dir: Path, mode: str) -> CycleRecord | None:
+    """Read cycle_summary.json and reconstruct a CycleRecord.
+
+    Replaces the removed ``_load_cycle_summary`` CLI helper.
+    cycle_summary.json is no longer a score channel; this helper exists
+    only so the round-trip tests can verify the written data.
+    """
+    summary_path = (
+        project_dir / ".factory" / "outer_loop" / "runs" / mode / "cycle_summary.json"
+    )
+    if not summary_path.exists():
+        return None
+    data = json.loads(summary_path.read_text())
+
+    record = CycleRecord(
+        cycle_number=0,
+        mode=mode,
+        started_at=None,
+        ended_at=None,
+        duration_s=data.get("duration_ms", 0) / 1000,
+        score_start=None,
+        score_end=data.get("score"),
+        score_delta=None,
+        kept=data.get("kept", 0),
+        reverted=data.get("reverted", 0),
+    )
+
+    instance_results = data.get("instance_results")
+    if instance_results:
+        record.instance_results = instance_results
+
+    # Build eval_details from verify / test_details if present
+    eval_details: dict = {}
+    if "verify" in data:
+        eval_details["verify"] = data["verify"]
+    if "test_details" in data:
+        eval_details["test_details"] = data["test_details"]
+    if eval_details:
+        record.eval_details = eval_details
+
+    return record
 
 
 @pytest.fixture()
@@ -86,9 +129,7 @@ class TestVerifyDiskRoundtrip:
         assert data["kept"] == 1
         assert data["reverted"] == 2
 
-        from factory.cli.outer_loop import _load_cycle_summary
-
-        record = _load_cycle_summary(project_dir, "evolve-roundtrip")
+        record = _load_cycle_summary_from_disk(project_dir, "evolve-roundtrip")
         assert record is not None
         assert record.kept == 1
         assert record.reverted == 2
@@ -156,9 +197,8 @@ class TestVerifyDiskRoundtrip:
             builder_committed=True,
             experiments=1,
         )
-        from factory.cli.outer_loop import _load_cycle_summary
 
-        record = _load_cycle_summary(project_dir, "evolve-roundtrip")
+        record = _load_cycle_summary_from_disk(project_dir, "evolve-roundtrip")
         assert record is not None
         assert record.instance_results is None
         assert record.eval_details is None
@@ -174,9 +214,8 @@ class TestVerifyDiskRoundtrip:
             experiments=1,
             test_details={"returncode": 1, "failed": 2, "total": 5},
         )
-        from factory.cli.outer_loop import _load_cycle_summary
 
-        record = _load_cycle_summary(project_dir, "evolve-roundtrip")
+        record = _load_cycle_summary_from_disk(project_dir, "evolve-roundtrip")
         assert record is not None
         assert record.eval_details is not None
         assert "test_details" in record.eval_details

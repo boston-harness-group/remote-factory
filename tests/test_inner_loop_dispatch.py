@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -18,12 +20,10 @@ def _make_workflow(name: str = "test") -> Workflow:
             "builder": AgentNode(
                 id="builder",
                 role=AgentRole.BUILDER,
-                prompt_template="build {project_path}",
-            ),
+                prompt_template="build {project_path}"),
         },
         edges=[],
-        start_node="builder",
-    )
+        start_node="builder")
 
 
 def _make_exec_result(success: bool = True) -> MagicMock:
@@ -65,15 +65,19 @@ class TestExecutionStrategyDefault:
         task = _make_task()
         wf = _make_workflow()
 
+        mock_exec_result = _make_exec_result()
+        mock_exec_result.item_results = [
+            {"item_id": "inst-1", "score": 0.8, "status": "ok"},
+        ]
+
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
-            mock_exec.execute = _async_return(_make_exec_result())
+            mock_exec.execute = _async_return(mock_exec_result)
             MockExecutor.return_value = mock_exec
 
             loop = InnerLoop(
                 project_dir=tmp_path, mode="test", task=task, workflow=wf,
-                execution_strategy="executor",
-            )
+                execution_strategy="executor")
             record = loop.step()
 
         MockExecutor.assert_called_once()
@@ -81,71 +85,53 @@ class TestExecutionStrategyDefault:
 
 
 class TestCeoSkillDispatch:
-    """execution_strategy='ceo-skill' dispatches to _run_ceo_subprocess."""
+    """execution_strategy='ceo-skill' raises UnsupportedStrategyError (PR B)."""
 
-    def test_ceo_skill_calls_run_ceo_subprocess(self, tmp_path: Path) -> None:
+    def test_ceo_skill_raises_unsupported(self, tmp_path: Path) -> None:
+        from factory.inner_loop import UnsupportedStrategyError
+
         (tmp_path / ".factory").mkdir()
         task = _make_task()
         wf = _make_workflow()
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
-        mock_result = _SubprocessExecutionResult(success=True, nodes_executed=1, duration_ms=50)
-
-        with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result) as mock_run:
-            record = loop.step()
-
-        mock_run.assert_called_once_with("test prompt", engine="skill")
-        assert record.score_end == 0.8
-
-    def test_ceo_skill_still_calls_setup_and_verify(self, tmp_path: Path) -> None:
-        (tmp_path / ".factory").mkdir()
-        call_order: list[str] = []
-
-        task = MagicMock()
-        task.instances.return_value = [TaskInstance(id="inst-1")]
-        task.definition = TaskDefinition(name="mock", scoring=ScoringContract(method="exit_code"))
-        task.setup.side_effect = lambda i, w: call_order.append("setup")
-        task.prompt.side_effect = lambda i: (call_order.append("prompt"), "prompt")[1]
-        task.verify.side_effect = lambda i, w: (
-            call_order.append("verify"),
-            VerifyResult(passed=True, score=0.9),
-        )[1]
-
-        wf = _make_workflow()
-        loop = InnerLoop(
-            project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
-
-        mock_result = _SubprocessExecutionResult(success=True)
-        with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result):
+        with pytest.raises(UnsupportedStrategyError, match="not supported"):
             loop.step()
 
-        assert call_order == ["setup", "prompt", "verify"]
+    def test_ceo_skill_error_message_mentions_pr_b(self, tmp_path: Path) -> None:
+        from factory.inner_loop import UnsupportedStrategyError
+
+        (tmp_path / ".factory").mkdir()
+        task = _make_task()
+        wf = _make_workflow()
+
+        loop = InnerLoop(
+            project_dir=tmp_path, mode="test", task=task, workflow=wf,
+            execution_strategy="ceo-skill")
+
+        with pytest.raises(UnsupportedStrategyError, match="PR B"):
+            loop.step()
 
 
 class TestCeoToolDispatch:
-    """execution_strategy='ceo-tool' dispatches with engine='tool'."""
+    """execution_strategy='ceo-tool' raises UnsupportedStrategyError (PR B)."""
 
-    def test_ceo_tool_calls_run_ceo_subprocess_with_tool(self, tmp_path: Path) -> None:
+    def test_ceo_tool_raises_unsupported(self, tmp_path: Path) -> None:
+        from factory.inner_loop import UnsupportedStrategyError
+
         (tmp_path / ".factory").mkdir()
         task = _make_task()
         wf = _make_workflow()
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-tool",
-        )
+            execution_strategy="ceo-tool")
 
-        mock_result = _SubprocessExecutionResult(success=True, nodes_executed=1)
-        with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result) as mock_run:
+        with pytest.raises(UnsupportedStrategyError, match="not supported"):
             loop.step()
-
-        mock_run.assert_called_once_with("test prompt", engine="tool")
 
 
 class TestEphemeralModeRegistration:
@@ -159,8 +145,7 @@ class TestEphemeralModeRegistration:
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
         files_existed_during_run: dict[str, int] = {}
 
@@ -190,8 +175,7 @@ class TestEphemeralModeRegistration:
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -215,8 +199,7 @@ class TestEphemeralModeRegistration:
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
         captured_cmd: list[str] = []
 
@@ -261,34 +244,21 @@ class TestSubprocessExecutionResult:
 
 
 class TestCostWarning:
-    """CEO strategies emit a one-time cost warning."""
+    """CEO strategies raise UnsupportedStrategyError (PR B)."""
 
-    def test_cost_warning_fires_once(self, tmp_path: Path) -> None:
+    def test_ceo_skill_raises_unsupported_not_cost_warning(self, tmp_path: Path) -> None:
+        from factory.inner_loop import UnsupportedStrategyError
+
         (tmp_path / ".factory").mkdir()
         task = _make_task()
-        task.instances.return_value = [TaskInstance(id="a"), TaskInstance(id="b")]
-        task.verify.side_effect = [
-            VerifyResult(passed=True, score=0.5),
-            VerifyResult(passed=True, score=0.5),
-        ]
         wf = _make_workflow()
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
-        mock_result = _SubprocessExecutionResult(success=True)
-        with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result):
-            with patch("factory.inner_loop.log") as mock_log:
-                loop.step()
-
-        # Warning should fire exactly once even though there are 2 instances
-        warning_calls = [
-            c for c in mock_log.warning.call_args_list
-            if c.args and c.args[0] == "ceo_subprocess_cost_warning"
-        ]
-        assert len(warning_calls) == 1
+        with pytest.raises(UnsupportedStrategyError):
+            loop.step()
 
 
 class TestLegacyPathUnchanged:
@@ -298,8 +268,7 @@ class TestLegacyPathUnchanged:
         (tmp_path / ".factory").mkdir()
         loop = InnerLoop(
             project_dir=tmp_path, mode="test",
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
         assert loop.task is None
         # step() should route to _step_subprocess, not _step_with_task
         assert hasattr(loop, "_step_subprocess")
@@ -307,98 +276,80 @@ class TestLegacyPathUnchanged:
 
 def _make_data_node_workflow() -> Workflow:
     """Create a workflow with a DataNode for dispatch tests."""
-    from factory.workflow.primitives import DataItem, DataNode
+    from factory.workflow.primitives import DataItem, DataNode, Edge, JoinNode
 
     items = [DataItem(id="item-1", prompt="test")]
     data_node = DataNode(
         id="data",
-        inline_items=items,
-        subgraph_entry="builder",
-        subgraph_exit="builder",
-    )
+        inline_items=items)
     builder = AgentNode(
         id="builder",
         role=AgentRole.BUILDER,
-        prompt_template="build",
-    )
+        prompt_template="build")
+    join = JoinNode(id="join", sources=["builder"])
     return Workflow(
         name="data-test",
-        nodes={"data": data_node, "builder": builder},
-        edges=[],
-        start_node="data",
-    )
+        nodes={"data": data_node, "builder": builder, "join": join},
+        edges=[
+            Edge(source="data", target="builder"),
+            Edge(source="builder", target="join"),
+        ],
+        start_node="data")
 
 
 class TestDataNodeStrategyDispatch:
     """DataNode dispatch respects execution_strategy."""
 
-    def test_datanode_executor_uses_step_with_data_node(self, tmp_path: Path) -> None:
-        """executor + DataNode still routes to _step_with_data_node."""
+    def test_datanode_executor_uses_step_with_task(self, tmp_path: Path) -> None:
+        """executor + DataNode still routes to _step_with_task."""
         (tmp_path / ".factory").mkdir()
         wf = _make_data_node_workflow()
 
         task = MagicMock()
         task.instances.return_value = [TaskInstance(id="inst-1")]
         task.definition = TaskDefinition(
-            name="mock", scoring=ScoringContract(method="exit_code"),
-        )
+            name="mock", scoring=ScoringContract(method="exit_code"))
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="executor",
-        )
+            execution_strategy="executor")
 
-        with patch.object(loop, "_step_with_data_node") as mock_data:
+        with patch.object(loop, "_step_with_task") as mock_data:
             mock_data.return_value = MagicMock(score_end=0.9)
             loop.step()
 
         mock_data.assert_called_once()
 
-    def test_datanode_ceo_skill_uses_subprocess(self, tmp_path: Path) -> None:
-        """ceo-skill + DataNode calls _run_ceo_subprocess inside _step_with_data_node."""
+    def test_datanode_ceo_skill_raises(self, tmp_path: Path) -> None:
+        """ceo-skill + DataNode raises ValueError (not supported until PR B)."""
         (tmp_path / ".factory").mkdir()
         wf = _make_data_node_workflow()
 
         task = MagicMock()
         task.instances.return_value = [TaskInstance(id="inst-1")]
         task.definition = TaskDefinition(
-            name="mock", scoring=ScoringContract(method="exit_code"),
-        )
+            name="mock", scoring=ScoringContract(method="exit_code"))
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
-        mock_result = _SubprocessExecutionResult(success=True, nodes_executed=1, duration_ms=50)
-        with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result) as mock_run:
-            record = loop.step()
+        with pytest.raises(ValueError, match="not supported"):
+            loop.step()
 
-        mock_run.assert_called_once()
-        # Verify it was called with engine='skill'
-        assert mock_run.call_args[1]["engine"] == "skill"
-        assert record.score_end == 1.0
-
-    def test_datanode_ceo_tool_uses_subprocess(self, tmp_path: Path) -> None:
-        """ceo-tool + DataNode calls _run_ceo_subprocess with engine='tool'."""
+    def test_datanode_ceo_tool_raises(self, tmp_path: Path) -> None:
+        """ceo-tool + DataNode raises ValueError (not supported until PR B)."""
         (tmp_path / ".factory").mkdir()
         wf = _make_data_node_workflow()
 
         task = MagicMock()
         task.instances.return_value = [TaskInstance(id="inst-1")]
         task.definition = TaskDefinition(
-            name="mock", scoring=ScoringContract(method="exit_code"),
-        )
+            name="mock", scoring=ScoringContract(method="exit_code"))
 
         loop = InnerLoop(
             project_dir=tmp_path, mode="test", task=task, workflow=wf,
-            execution_strategy="ceo-tool",
-        )
+            execution_strategy="ceo-tool")
 
-        mock_result = _SubprocessExecutionResult(success=True, nodes_executed=1, duration_ms=50)
-        with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result) as mock_run:
-            record = loop.step()
-
-        mock_run.assert_called_once()
-        assert mock_run.call_args[1]["engine"] == "tool"
-        assert record.score_end == 1.0
+        with pytest.raises(ValueError, match="not supported"):
+            loop.step()

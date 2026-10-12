@@ -236,11 +236,14 @@ class TestCompose:
 
         assert isinstance(loop, InnerLoop)
 
-    def test_compose_incompatible_raises(self, tmp_path: Path):
+    def test_compose_wraps_non_datanode_workflow(self, tmp_path: Path):
+        """compose() auto-wraps workflows with DataNode, so research-only workflows succeed."""
+        from factory.workflow.primitives import DataNode
         wf = _make_workflow(researcher=True, name="research-only")
         task = Task(definition=TaskDefinition(name="t", scoring=ScoringContract(method="exit_code")))
-        with pytest.raises(IncompatibleCompositionError):
-            compose(wf, task, tmp_path)
+        loop = compose(wf, task, tmp_path)
+        # Should succeed — DataNode wrapping bypasses build capabilities
+        assert any(isinstance(n, DataNode) for n in loop.workflow.nodes.values())
 
     def test_compose_non_task_raises(self, tmp_path: Path):
         wf = _make_workflow(builder=True)

@@ -318,6 +318,9 @@ class TestComposeIntegration:
         async def fake_execute(self_exec):
             r = ExecutionResult()
             r.success = True
+            r.item_results = [
+                {"item_id": "django__django-16379", "score": 0.5, "status": "ok"},
+            ]
             return r
 
         with patch.object(
@@ -333,7 +336,7 @@ class TestComposeIntegration:
         assert 0.0 <= record.score_end <= 1.0
 
         for ir in record.instance_results:
-            assert "instance_id" in ir
+            assert "item_id" in ir
             assert "score" in ir
 
 

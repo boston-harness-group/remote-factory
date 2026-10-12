@@ -295,7 +295,7 @@ factory adversarial-state /path/to/project --reset   # Reset to defaults
 
 # Outer loop — evolutionary workflow search
 factory outer-loop calibrate /path --benchmark featurebench --budget 50 --population-size 4
-factory outer-loop calibrate /path --training-instances t1 t2 --holdout-instances h1
+factory outer-loop calibrate /path --training-instances t1 t2
 factory outer-loop calibrate /path --project-dir /path/to/target  # Evaluate on a different project
 factory outer-loop evaluate /path --generation 0                  # Evaluate current generation
 factory outer-loop evaluate /path --generation 0 --project-dir /path/to/target

@@ -1,0 +1,1601 @@
+"""Unit tests for DataNode fork/join validation rules (Step 2.6).
+
+Tests:
+- DataNode without JoinNode
+- Tool engine rejects DataNode graphs
+- ceo-skill / ceo-tool DataNode error
+- Split subset error
+- Mutation property test (random mutations → valid or None)
+"""
+
+from __future__ import annotations
+
+import random
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+from factory.workflow.primitives import (
+    AgentNode,
+    AgentRole,
+    DataItem,
+    DataNode,
+    Edge,
+    FnNode,
+    JoinNode,
+    Workflow,
+)
+
+
+# ── Validation rule tests ────────────────────────────────────────────
+
+
+class TestDataNodeValidation:
+    """Validation rules for DataNode fork/join structure."""
+
+    def test_datanode_without_join_fails(self) -> None:
+        """DataNode without a downstream JoinNode is a validation error."""
+        wf = Workflow(
+            name="no-join",
+            nodes={
+                "data": DataNode(id="data", inline_items=[DataItem(id="i1")]),
+                "work": FnNode(id="work", command="echo work"),
+            },
+            edges=[Edge(source="data", target="work")],
+            start_node="data",
+        )
+        issues = wf.validate_graph()
+        assert any("JoinNode" in i for i in issues), (
+            f"Expected JoinNode validation error, got: {issues}"
+        )
+
+    def test_datanode_with_join_passes(self) -> None:
+        """DataNode with a downstream JoinNode passes validation."""
+        wf = Workflow(
+            name="with-join",
+            nodes={
+                "data": DataNode(id="data", inline_items=[DataItem(id="i1")]),
+                "work": FnNode(id="work", command="echo work"),
+                "join": JoinNode(id="join", sources=["work"]),
+            },
+            edges=[
+                Edge(source="data", target="work"),
+                Edge(source="work", target="join"),
+            ],
+            start_node="data",
+        )
+        issues = wf.validate_graph()
+        assert not any("JoinNode" in i for i in issues), (
+            f"Unexpected JoinNode error: {issues}"
+        )
+
+    def test_datanode_no_outgoing_edges(self) -> None:
+        """DataNode with no outgoing edges is a validation error."""
+        wf = Workflow(
+            name="no-edges",
+            nodes={
+                "data": DataNode(id="data", inline_items=[DataItem(id="i1")]),
+            },
+            edges=[],
+            start_node="data",
+        )
+        issues = wf.validate_graph()
+        assert any("outgoing" in i.lower() or "no outgoing" in i.lower() for i in issues), (
+            f"Expected outgoing edge error, got: {issues}"
+        )
+
+
+# ── Tool engine rejection ────────────────────────────────────────────
+
+
+class TestToolEngineRejectsDataNode:
+    """Tool engine must reject DataNode workflows."""
+
+    def test_tool_init_rejects_datanode(self, tmp_path: Path) -> None:
+        """tool_init raises ValueError for DataNode workflows."""
+        from factory.workflow.tool import tool_init
+
+        # Register a workflow with DataNode
+        from factory.workflow.registry import WorkflowRegistry
+
+        wf = Workflow(
+            name="data-tool-test",
+            nodes={
+                "data": DataNode(id="data", inline_items=[DataItem(id="i1")]),
+                "work": FnNode(id="work", command="echo work"),
+                "join": JoinNode(id="join", sources=["work"]),
+            },
+            edges=[
+                Edge(source="data", target="work"),
+                Edge(source="work", target="join"),
+            ],
+            start_node="data",
+        )
+
+        # Mock the registry to return our workflow
+        with pytest.raises(ValueError, match="Tool engine does not support DataNode"):
+            from unittest.mock import patch
+            with patch.object(WorkflowRegistry, "get_workflow", return_value=wf):
+                tool_init("data-tool-test", tmp_path)
+
+
+# ── ceo-skill / ceo-tool DataNode error ──────────────────────────────
+
+
+class TestCeoSkillDataNodeError:
+    """ceo-skill + DataNode raises clear error."""
+
+    def test_ceo_skill_datanode_raises(self, tmp_path: Path) -> None:
+        """ceo-skill execution_strategy + DataNode raises ValueError."""
+        from factory.inner_loop import InnerLoop
+
+        (tmp_path / ".factory").mkdir()
+        wf = Workflow(
+            name="ceo-test",
+            nodes={
+                "data": DataNode(id="data", inline_items=[DataItem(id="i1")]),
+                "work": FnNode(id="work", command="echo work"),
+                "join": JoinNode(id="join", sources=["work"]),
+            },
+            edges=[
+                Edge(source="data", target="work"),
+                Edge(source="work", target="join"),
+            ],
+            start_node="data",
+        )
+        task = MagicMock()
+        task.instances.return_value = []
+        loop = InnerLoop(
+            project_dir=tmp_path,
+            mode="test",
+            task=task,
+            workflow=wf,
+            execution_strategy="ceo-skill",
+        )
+        with pytest.raises(ValueError, match="not supported"):
+            loop.step()
+
+    def test_ceo_tool_datanode_raises(self, tmp_path: Path) -> None:
+        """ceo-tool execution_strategy + DataNode raises ValueError."""
+        from factory.inner_loop import InnerLoop
+
+        (tmp_path / ".factory").mkdir()
+        wf = Workflow(
+            name="ceo-test",
+            nodes={
+                "data": DataNode(id="data", inline_items=[DataItem(id="i1")]),
+                "work": FnNode(id="work", command="echo work"),
+                "join": JoinNode(id="join", sources=["work"]),
+            },
+            edges=[
+                Edge(source="data", target="work"),
+                Edge(source="work", target="join"),
+            ],
+            start_node="data",
+        )
+        task = MagicMock()
+        task.instances.return_value = []
+        loop = InnerLoop(
+            project_dir=tmp_path,
+            mode="test",
+            task=task,
+            workflow=wf,
+            execution_strategy="ceo-tool",
+        )
+        with pytest.raises(ValueError, match="not supported"):
+            loop.step()
+
+
+# ── ceo-skill export raises ──────────────────────────────────────────
+
+
+class TestSkillExportDataNodeError:
+    """Skill export raises for DataNode workflows."""
+
+    def test_data_to_instruction_raises(self) -> None:
+        """_data_to_instruction raises ValueError."""
+        from factory.workflow.skill_export import _data_to_instruction
+
+        dn = DataNode(id="data", inline_items=[DataItem(id="i1")])
+        wf = Workflow(
+            name="t",
+            nodes={"data": dn},
+            edges=[],
+            start_node="data",
+        )
+        with pytest.raises(ValueError, match="not supported"):
+            _data_to_instruction(dn, wf)
+
+
+# ── Split subset error ───────────────────────────────────────────────
+
+
+class TestSplitSubsetError:
+    """Zero items after filtering raises ValueError."""
+
+    def test_zero_items_raises(self) -> None:
+        """run_fork with zero items raises ValueError."""
+        import asyncio
+
+        from factory.workflow.data_runtime import run_fork
+
+        wf = Workflow(
+            name="empty-test",
+            nodes={
+                "data": DataNode(id="data", inline_items=[]),
+                "work": FnNode(id="work", command="echo work"),
+                "join": JoinNode(id="join", sources=["work"]),
+            },
+            edges=[
+                Edge(source="data", target="work"),
+                Edge(source="work", target="join"),
+            ],
+            start_node="data",
+        )
+        dn = wf.nodes["data"]
+        assert isinstance(dn, DataNode)
+        with pytest.raises(ValueError, match="0 items"):
+            asyncio.run(run_fork(
+                wf, dn, "data", Path("/tmp"),
+            ))
+
+
+# ── Mutation property test ───────────────────────────────────────────
+
+
+class TestMutationProperty:
+    """Random mutations of a fork workflow always give a valid graph or None."""
+
+    def test_mutations_always_valid_or_none(self) -> None:
+        """50 random mutations of a DataNode workflow: validate_and_repair
+        returns a valid graph or None."""
+        from factory.outer_loop.mutations import (
+            _try_mutation,
+            MutationType,
+            validate_and_repair,
+        )
+
+        wf = Workflow(
+            name="fork-mut",
+            nodes={
+                "plan": FnNode(id="plan", command="echo plan"),
+                "data": DataNode(
+                    id="data",
+                    inline_items=[DataItem(id="i1", prompt="test")],
+                ),
+                "work": AgentNode(
+                    id="work",
+                    role=AgentRole.BUILDER,
+                    prompt_template="Build.",
+                ),
+                "check": FnNode(id="check", command="echo check"),
+                "join": JoinNode(id="join", sources=["check"]),
+                "summarize": FnNode(id="summarize", command="echo summary"),
+            },
+            edges=[
+                Edge(source="plan", target="data"),
+                Edge(source="data", target="work"),
+                Edge(source="work", target="check"),
+                Edge(source="check", target="join"),
+                Edge(source="join", target="summarize"),
+            ],
+            start_node="plan",
+        )
+        frozen = frozenset({"data", "join"})
+        mutation_types = list(MutationType)
+
+        random.seed(42)
+        valid_count = 0
+        for _ in range(50):
+            mt = random.choice(mutation_types)
+            result = _try_mutation(wf, mt, frozen)
+            if result is None:
+                continue  # Mutation failed gracefully — OK
+            child_wf, _record = result
+            # validate_and_repair should return valid or None
+            repaired = validate_and_repair(child_wf)
+            if repaired is None:
+                continue  # Repair rejected it — OK
+            issues = repaired.validate_graph()
+            real_issues = [
+                i for i in issues
+                if "empty prompt_template" not in i
+            ]
+            assert not real_issues, (
+                f"Mutation {mt} + repair produced invalid workflow: {real_issues}"
+            )
+            valid_count += 1
+        # At least some mutations should succeed
+        assert valid_count > 0, "No mutations succeeded at all"
+
+
+# ── Legacy DataNode load-time conversion ─────────────────────────────
+
+
+class TestLegacyLoadConversion:
+    """Workflow.from_dict strips subgraph_entry/exit and adds edges + JoinNode."""
+
+    def test_node_insert_on_datanode_workflow_validates(self) -> None:
+        """node_insert on a DataNode workflow produces a graph that passes validate_workflow()."""
+        import random as _random
+        from factory.outer_loop.mutations import insert_node
+        from factory.workflow.validation import validate_workflow
+
+        wf = Workflow(
+            name='test-wf',
+            nodes={
+                'data': DataNode(id='data'),
+                'builder': AgentNode(id='builder', role=AgentRole.BUILDER,
+                    prompt_template='do work', writes={'output.txt'}, reads=set()),
+                '_join_data': JoinNode(id='_join_data', sources=['builder']),
+            },
+            edges=[Edge(source='data', target='builder'), Edge(source='builder', target='_join_data')],
+            start_node='data',
+            runtime_inputs=frozenset({'.factory/current_item.json'}),
+        )
+        _random.seed(42)
+        reviewer = AgentNode(
+            id='reviewer_42', role=AgentRole.CODE_REVIEWER,
+            prompt_template='review the work', reads={'.factory/current_item.json'}, writes=set(),
+        )
+        result = insert_node(wf, reviewer, 'builder', frozen_nodes={'data', '_join_data'})
+        assert result is not None, 'insert_node returned None'
+        new_wf, rec = result
+        issues = validate_workflow(new_wf)
+        assert not issues, f'validate_workflow failed after insert_node: {issues}'
+
+    def test_from_dict_converts_legacy(self) -> None:
+        """Legacy DataNode with subgraph_entry/exit is auto-converted."""
+        data = {
+            "name": "legacy",
+            "nodes": {
+                "data": {
+                    "_type": "DataNode",
+                    "id": "data",
+                    "subgraph_entry": "work",
+                    "subgraph_exit": "check",
+                },
+                "work": {"_type": "FnNode", "id": "work", "command": "echo work"},
+                "check": {"_type": "FnNode", "id": "check", "command": "echo check"},
+            },
+            "edges": [
+                {"source": "work", "target": "check"},
+            ],
+            "start_node": "data",
+        }
+        wf = Workflow.from_dict(data)
+        dn = wf.nodes["data"]
+        assert isinstance(dn, DataNode)
+        # subgraph_entry/exit should not be attributes
+        assert not hasattr(dn, "subgraph_entry")
+        # Edge from data → work should exist
+        edge_pairs = {(e.source, e.target) for e in wf.edges}
+        assert ("data", "work") in edge_pairs
+        # JoinNode should be auto-created
+        join_ids = [nid for nid, n in wf.nodes.items() if isinstance(n, JoinNode)]
+        assert len(join_ids) >= 1
+
+
+# ── Bug 5 (moved from test_five_bugs): FnNode validation ────────
+
+
+def test_empty_fn_node_validation_error():
+    """FnNode with no command AND no callable_name must fail validation."""
+    from factory.workflow.primitives import FnNode
+
+    with pytest.raises(ValueError, match="command.*callable_name|callable_name.*command"):
+        FnNode(id="empty-fn", command="", callable_name=None)
+
+
+def test_fn_node_with_command_is_valid():
+    """FnNode with a command should pass validation."""
+    from factory.workflow.primitives import FnNode
+
+    node = FnNode(id="good-fn", command="echo hello")
+    assert node.command == "echo hello"
+
+
+def test_fn_node_with_callable_is_valid():
+    """FnNode with a callable_name should pass validation."""
+    from factory.workflow.primitives import FnNode
+
+    node = FnNode(id="good-fn", callable_name="my_module:my_fn")
+    assert node.callable_name == "my_module:my_fn"
+
+
+def test_node_insert_inherits_model_and_timeout():
+    """node_insert copies model and timeout from nearest AgentNode."""
+    import random
+
+    from factory.outer_loop.mutations import MutationType, _try_mutation
+    from factory.workflow.primitives import (
+        AgentNode,
+        AgentRole,
+        DataNode,
+        Edge,
+        JoinNode,
+        Workflow,
+    )
+
+    wf = Workflow(
+        name="model-inherit-test",
+        nodes={
+            "data": DataNode(id="data"),
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                model="claude-haiku-4-5-20251001",
+                timeout=300,
+                prompt_template="build it",
+                writes={"out.txt"},
+                reads=set(),
+            ),
+            "_join_data": JoinNode(id="_join_data", sources=["builder"]),
+        },
+        edges=[
+            Edge(source="data", target="builder"),
+            Edge(source="builder", target="_join_data"),
+        ],
+        start_node="data",
+    )
+
+    # Try multiple seeds to get a successful node_insert
+    result = None
+    for seed in range(100):
+        random.seed(seed)
+        result = _try_mutation(
+            wf, MutationType.NODE_INSERT, frozenset({"data", "_join_data"})
+        )
+        if result is not None:
+            break
+
+    assert result is not None, "node_insert never succeeded"
+    new_wf, _rec = result
+    # Find the inserted node(s)
+    new_node_ids = set(new_wf.nodes.keys()) - set(wf.nodes.keys())
+    assert len(new_node_ids) >= 1
+    for nid in new_node_ids:
+        node = new_wf.nodes[nid]
+        if isinstance(node, AgentNode):
+            assert node.model == "claude-haiku-4-5-20251001", (
+                f"Inserted node {nid} has model={node.model!r}, expected haiku"
+            )
+            assert node.timeout == 300, (
+                f"Inserted node {nid} has timeout={node.timeout}, expected 300"
+            )
+
+
+def test_infer_agent_params_from_target():
+    """_infer_agent_params returns model/timeout from the target node."""
+    from factory.outer_loop.mutations import _infer_agent_params
+    from factory.workflow.primitives import AgentNode, AgentRole, Edge, Workflow
+
+    wf = Workflow(
+        name="infer-test",
+        nodes={
+            "a": AgentNode(
+                id="a",
+                role=AgentRole.BUILDER,
+                model="claude-haiku-4-5-20251001",
+                timeout=300,
+            ),
+            "b": AgentNode(
+                id="b",
+                role=AgentRole.CODE_REVIEWER,
+                model="claude-sonnet-4-20250514",
+                timeout=600,
+            ),
+        },
+        edges=[Edge(source="a", target="b")],
+        start_node="a",
+    )
+
+    # Target is node "a" -> should get a's model and timeout
+    params = _infer_agent_params(wf, "a")
+    assert params["model"] == "claude-haiku-4-5-20251001"
+    assert params["timeout"] == 300
+
+    # Target is node "b" -> should get b's model and timeout
+    params = _infer_agent_params(wf, "b")
+    assert params["model"] == "claude-sonnet-4-20250514"
+    assert params["timeout"] == 600
+
+
+def test_infer_agent_params_fallback():
+    """_infer_agent_params falls back to first AgentNode with model when target is not an AgentNode."""
+    from factory.outer_loop.mutations import _infer_agent_params
+    from factory.workflow.primitives import (
+        AgentNode,
+        AgentRole,
+        DataNode,
+        Edge,
+        JoinNode,
+        Workflow,
+    )
+
+    wf = Workflow(
+        name="fallback-test",
+        nodes={
+            "data": DataNode(id="data"),
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                model="claude-haiku-4-5-20251001",
+                timeout=300,
+            ),
+            "_join": JoinNode(id="_join", sources=["builder"]),
+        },
+        edges=[
+            Edge(source="data", target="builder"),
+            Edge(source="builder", target="_join"),
+        ],
+        start_node="data",
+    )
+
+    # Target is a DataNode -> should fall back to builder's model/timeout
+    params = _infer_agent_params(wf, "data")
+    assert params["model"] == "claude-haiku-4-5-20251001"
+    assert params["timeout"] == 300
+
+
+def test_infer_agent_params_empty_model():
+    """_infer_agent_params returns empty dict when no node has a model set."""
+    from factory.outer_loop.mutations import _infer_agent_params
+    from factory.workflow.primitives import AgentNode, AgentRole, Workflow
+
+    wf = Workflow(
+        name="empty-model-test",
+        nodes={
+            "a": AgentNode(id="a", role=AgentRole.BUILDER, model=""),
+        },
+        edges=[],
+        start_node="a",
+    )
+
+    params = _infer_agent_params(wf, "a")
+    assert "model" not in params
+
+
+def test_infer_agent_params_nonexistent_node():
+    """_infer_agent_params handles a nonexistent near_node_id gracefully."""
+    from factory.outer_loop.mutations import _infer_agent_params
+    from factory.workflow.primitives import AgentNode, AgentRole, Workflow
+
+    wf = Workflow(
+        name="nonexistent-test",
+        nodes={
+            "a": AgentNode(
+                id="a",
+                role=AgentRole.BUILDER,
+                model="claude-haiku-4-5-20251001",
+                timeout=300,
+            ),
+        },
+        edges=[],
+        start_node="a",
+    )
+
+    # Non-existent node -> falls back to scanning
+    params = _infer_agent_params(wf, "does-not-exist")
+    assert params["model"] == "claude-haiku-4-5-20251001"
+    assert params["timeout"] == 300
+
+
+# ── Bug 1 tests: prompt-knob sync ──────────────────────────────────
+
+
+def test_guided_prompt_knob_becomes_prompt_mutate():
+    """A guided knob suggestion on _prompt_builder → builder.prompt_template
+    changes and operator is prompt_mutate."""
+    from factory.outer_loop.mutations import mutate_knob, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion, ReflectionReport
+
+    wf = Workflow(
+        name="prompt-knob-test",
+        nodes={
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="old prompt",
+            ),
+        },
+        edges=[],
+        start_node="builder",
+        knob_values={"_prompt_builder": "old prompt"},
+        knob_bounds={"_prompt_builder": ["old prompt", "new prompt"]},
+    )
+    report = ReflectionReport(
+        typed_suggestions=[
+            MutationSuggestion(
+                operator="knob_mutate",
+                target="_prompt_builder",
+                rationale="test",
+                value="new prompt",
+            ),
+        ],
+    )
+    # Try multiple seeds to hit the guided path (random.random() < 0.7)
+    result = None
+    for seed in range(20):
+        random.seed(seed)
+        result = mutate_knob(wf, expander=None, reflection_report=report)
+        if result is not None:
+            break
+    assert result is not None, "mutate_knob returned None for all seeds"
+    new_wf, rec = result
+    assert rec.operator == MutationType.PROMPT_MUTATE
+    builder = new_wf.nodes["builder"]
+    assert isinstance(builder, AgentNode)
+    assert builder.prompt_template != "old prompt", (
+        "prompt_template was not changed"
+    )
+
+
+def test_prompt_knob_redirect_respects_frozen():
+    """A guided _prompt_* knob suggestion on a frozen node returns None."""
+    from factory.outer_loop.mutations import mutate_knob
+    from factory.outer_loop.reflector import MutationSuggestion, ReflectionReport
+
+    wf = Workflow(
+        name="frozen-redirect-test",
+        nodes={
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="old prompt",
+            ),
+        },
+        edges=[],
+        start_node="builder",
+        knob_values={"_prompt_builder": "old prompt"},
+        knob_bounds={"_prompt_builder": ["old prompt", "new prompt"]},
+    )
+    report = ReflectionReport(
+        typed_suggestions=[
+            MutationSuggestion(
+                operator="knob_mutate",
+                target="_prompt_builder",
+                rationale="test",
+                value="new prompt",
+            ),
+        ],
+    )
+    # Try many seeds — every guided hit should be blocked by frozen_nodes
+    for seed in range(50):
+        random.seed(seed)
+        result = mutate_knob(
+            wf, expander=None, reflection_report=report,
+            frozen_nodes={"builder"},
+        )
+        # The redirect calls mutate_prompt with frozen builder → returns None.
+        # The fallback random knob path picks _prompt_builder again → same redirect → None.
+        assert result is None, (
+            f"seed={seed}: expected None because 'builder' is frozen, got {result}"
+        )
+
+
+def test_prompt_template_and_knob_never_out_of_sync():
+    """After mutate_prompt, prompt_template and _prompt_<node> knob agree."""
+    from factory.outer_loop.mutations import mutate_prompt
+
+    wf = Workflow(
+        name="sync-test",
+        nodes={
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="original prompt",
+            ),
+        },
+        edges=[],
+        start_node="builder",
+        knob_values={"_prompt_builder": "original prompt"},
+    )
+    result = mutate_prompt(wf, "builder", frozen_nodes=frozenset(), prompt_hint="be better")
+    assert result is not None
+    new_wf, _rec = result
+    builder = new_wf.nodes["builder"]
+    assert isinstance(builder, AgentNode)
+    assert new_wf.knob_values["_prompt_builder"] == builder.prompt_template, (
+        f"knob={new_wf.knob_values['_prompt_builder']!r} != "
+        f"template={builder.prompt_template!r}"
+    )
+
+
+def test_select_guided_prompt_knob_reclassified():
+    """select_guided_operator counts _prompt_* knob_mutate as prompt_mutate."""
+    from factory.outer_loop.mutations import WeightedRandomStrategy, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion, ReflectionReport
+
+    wf = Workflow(
+        name="guided-test",
+        nodes={
+            "builder": AgentNode(id="builder", role=AgentRole.BUILDER),
+            "reviewer": AgentNode(id="reviewer", role=AgentRole.CODE_REVIEWER),
+        },
+        edges=[Edge(source="builder", target="reviewer")],
+        start_node="builder",
+    )
+    report = ReflectionReport(
+        typed_suggestions=[
+            MutationSuggestion(
+                operator="knob_mutate",
+                target="_prompt_builder",
+                rationale="test",
+                value="improve",
+            ),
+        ] * 10,  # Overwhelm: all suggestions are _prompt_* knobs
+    )
+    strategy = WeightedRandomStrategy()
+    # Call many times — should never return KNOB_MUTATE
+    results = set()
+    for seed in range(50):
+        random.seed(seed)
+        op = strategy.select_guided_operator(wf, 1, report)
+        results.add(op)
+    assert MutationType.KNOB_MUTATE not in results, (
+        f"KNOB_MUTATE should never be selected for _prompt_* suggestions, got {results}"
+    )
+    assert MutationType.PROMPT_MUTATE in results
+
+
+# ── Bug 2 tests: node_insert reliability ───────────────────────────
+
+
+def test_node_insert_canary_graph_50_seeds():
+    """node_insert on canary graph succeeds for 50 seeds; every result passes validate_graph()."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+
+    wf = Workflow(
+        name="canary",
+        nodes={
+            "data": DataNode(id="data"),
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="Build.",
+                writes={"output.txt"},
+                reads=set(),
+            ),
+            "_join_data": JoinNode(id="_join_data", sources=["builder"]),
+        },
+        edges=[
+            Edge(source="data", target="builder"),
+            Edge(source="builder", target="_join_data"),
+        ],
+        start_node="data",
+    )
+    frozen = frozenset({"data", "_join_data"})
+    successes = 0
+    for seed in range(50):
+        random.seed(seed)
+        result = _try_mutation(wf, MutationType.NODE_INSERT, frozen)
+        if result is None:
+            continue
+        child_wf, _rec = result
+        issues = child_wf.validate_graph()
+        real_issues = [i for i in issues if "empty prompt_template" not in i]
+        assert not real_issues, (
+            f"seed={seed}: validate_graph failed: {real_issues}"
+        )
+        successes += 1
+    assert successes > 0, "node_insert never succeeded in 50 seeds"
+
+
+def test_node_insert_updates_join_sources():
+    """After node_insert between builder and _join_data, JoinNode.sources
+    includes the inserted node."""
+    from factory.outer_loop.mutations import insert_node
+
+    wf = Workflow(
+        name="join-sources",
+        nodes={
+            "data": DataNode(id="data"),
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="Build.",
+            ),
+            "_join_data": JoinNode(id="_join_data", sources=["builder"]),
+        },
+        edges=[
+            Edge(source="data", target="builder"),
+            Edge(source="builder", target="_join_data"),
+        ],
+        start_node="data",
+    )
+    new_node = AgentNode(
+        id="reviewer_42",
+        role=AgentRole.CODE_REVIEWER,
+        prompt_template="Review.",
+    )
+    result = insert_node(wf, new_node, "builder", frozen_nodes={"data", "_join_data"})
+    assert result is not None, "insert_node returned None"
+    new_wf, _rec = result
+    join_node = new_wf.nodes["_join_data"]
+    assert isinstance(join_node, JoinNode)
+    assert "reviewer_42" in join_node.sources, (
+        f"JoinNode.sources={join_node.sources}, expected reviewer_42"
+    )
+
+
+def test_single_agent_graph_no_remove_parallelize_serialize():
+    """On a single-agent graph, node_remove/parallelize/serialize are never selected."""
+    from factory.outer_loop.mutations import WeightedRandomStrategy, MutationType
+
+    wf = Workflow(
+        name="single-agent",
+        nodes={
+            "builder": AgentNode(
+                id="builder",
+                role=AgentRole.BUILDER,
+                prompt_template="Build.",
+            ),
+        },
+        edges=[],
+        start_node="builder",
+    )
+    strategy = WeightedRandomStrategy()
+    forbidden = {MutationType.NODE_REMOVE, MutationType.PARALLELIZE, MutationType.SERIALIZE}
+    for seed in range(100):
+        random.seed(seed)
+        op = strategy.select_operator(wf, 1, {})
+        assert op not in forbidden, (
+            f"seed={seed}: got forbidden op {op} on single-agent graph"
+        )
+
+
+def test_mutation_applied_logged(caplog):
+    import logging
+    import random
+
+    import structlog
+    from factory.outer_loop.mutations import apply_random_mutation, WeightedRandomStrategy
+    # Configure structlog to route through stdlib logging so caplog captures it
+    old_config = structlog.get_config()
+    structlog.configure(
+        processors=[structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+    )
+    try:
+        wf = Workflow(name='log-test', nodes={'b': AgentNode(id='b', role=AgentRole.BUILDER, prompt_template='x', writes={'o.txt'}, reads=set())}, edges=[], start_node='b')
+        random.seed(0)
+        with caplog.at_level(logging.DEBUG):
+            result = apply_random_mutation(wf, WeightedRandomStrategy(mutation_rate=1.0), generation=0)
+        assert result is not None
+        applied = [r for r in caplog.records if 'mutation_applied' in r.getMessage()]
+        assert len(applied) >= 1, f'No mutation_applied log found in {[r.getMessage() for r in caplog.records]}'
+    finally:
+        structlog.configure(**old_config)
+
+
+# ── Mutation guard tests ─────────────────────────────────────────────
+
+
+def test_knob_mutate_never_selected_randomly():
+    """knob_mutate is never randomly selected."""
+    import random
+    from factory.outer_loop.mutations import WeightedRandomStrategy, MutationType
+
+    random.seed(42)
+    strategy = WeightedRandomStrategy()
+    wf = Workflow(
+        name='t',
+        nodes={'b': AgentNode(id='b', role=AgentRole.BUILDER, prompt_template='x')},
+        edges=[],
+        start_node='b',
+    )
+    ops = set()
+    for _ in range(200):
+        ops.add(strategy.select_operator(wf, 0, {}))
+    assert MutationType.KNOB_MUTATE not in ops
+
+
+def test_param_mutate_never_selected_randomly():
+    """param_mutate is never randomly selected."""
+    import random
+    from factory.outer_loop.mutations import WeightedRandomStrategy, MutationType
+
+    random.seed(42)
+    strategy = WeightedRandomStrategy()
+    wf = Workflow(
+        name='t',
+        nodes={
+            'b': AgentNode(id='b', role=AgentRole.BUILDER, prompt_template='x'),
+            'r': AgentNode(id='r', role=AgentRole.RESEARCHER),
+        },
+        edges=[Edge(source='b', target='r')],
+        start_node='b',
+    )
+    ops = set()
+    for _ in range(200):
+        ops.add(strategy.select_operator(wf, 0, {}))
+    assert MutationType.PARAM_MUTATE not in ops
+
+
+def test_mutation_log_includes_before_after(caplog):
+    """mutation_applied log includes before and after dicts."""
+    import logging
+    import random
+
+    import structlog
+    from factory.outer_loop.mutations import apply_random_mutation, WeightedRandomStrategy
+
+    old_config = structlog.get_config()
+    structlog.configure(
+        processors=[structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+    )
+    try:
+        wf = Workflow(
+            name='log-ba-test',
+            nodes={
+                'b': AgentNode(id='b', role=AgentRole.BUILDER, prompt_template='x', writes={'o.txt'}, reads=set()),
+            },
+            edges=[],
+            start_node='b',
+        )
+        random.seed(0)
+        with caplog.at_level(logging.DEBUG):
+            result = apply_random_mutation(wf, WeightedRandomStrategy(mutation_rate=1.0), generation=0)
+        assert result is not None
+        applied = [r for r in caplog.records if 'mutation_applied' in r.getMessage()]
+        assert len(applied) >= 1, 'No mutation_applied log found'
+        msg = applied[0].getMessage()
+        assert 'before' in msg, f'mutation_applied log missing before: {msg}'
+        assert 'after' in msg, f'mutation_applied log missing after: {msg}'
+    finally:
+        structlog.configure(**old_config)
+
+
+def test_param_mutate_never_from_guided():
+    """With a reflection suggesting only param_mutate, the operator chosen is never PARAM_MUTATE."""
+    from factory.outer_loop.mutations import WeightedRandomStrategy, MutationType
+    from factory.outer_loop.reflector import ReflectionReport, MutationSuggestion
+
+    strategy = WeightedRandomStrategy()
+    wf = Workflow(
+        name='t',
+        nodes={
+            'b': AgentNode(id='b', role=AgentRole.BUILDER, prompt_template='x'),
+            'r': AgentNode(id='r', role=AgentRole.RESEARCHER),
+        },
+        edges=[Edge(source='b', target='r')],
+        start_node='b',
+    )
+    report = ReflectionReport(typed_suggestions=[
+        MutationSuggestion(operator='param_mutate', target='b', rationale='increase timeout'),
+        MutationSuggestion(operator='param_mutate', target='r', rationale='change model'),
+    ])
+    random.seed(42)
+    ops = set()
+    for _ in range(100):
+        ops.add(strategy.select_guided_operator(wf, 0, report))
+    assert MutationType.PARAM_MUTATE not in ops, f'PARAM_MUTATE should never be selected, got {ops}'
+
+
+# ── Guided suggestion tests ─────────────────────────────────────────
+
+
+def _stub_rewriter(node_id: str, current_prompt: str, hint: str | None) -> str | None:
+    """Deterministic prompt rewriter stub for tests."""
+    return f"rewritten:{node_id}:{hint or 'none'}"
+
+
+def _make_two_agent_workflow() -> Workflow:
+    """Two-agent graph: builder → researcher."""
+    return Workflow(
+        name='two-agent',
+        nodes={
+            'builder': AgentNode(
+                id='builder',
+                role=AgentRole.BUILDER,
+                prompt_template='Build things.',
+            ),
+            'researcher': AgentNode(
+                id='researcher',
+                role=AgentRole.RESEARCHER,
+                prompt_template='Research things.',
+            ),
+        },
+        edges=[Edge(source='builder', target='researcher')],
+        start_node='builder',
+    )
+
+
+def test_guided_prompt_mutate_targets_named_node():
+    """Suggestion targeting 'builder' only mutates builder's prompt (50 seeds).
+    Uses suggestion.value so the direct-set path is taken (no rewriter needed)."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+
+    for seed in range(50):
+        random.seed(seed)
+        suggestion = MutationSuggestion(
+            operator='prompt_mutate',
+            target='builder',
+            rationale='improve builder prompt',
+            value=f'Improved prompt seed={seed}',
+        )
+        result = _try_mutation(
+            wf, MutationType.PROMPT_MUTATE, frozenset(),
+            prompt_hint=None,
+            suggestion=suggestion,
+        )
+        assert result is not None, f'seed={seed}: _try_mutation returned None'
+        new_wf, rec = result
+        assert rec.target_node == 'builder', (
+            f'seed={seed}: expected target builder, got {rec.target_node}'
+        )
+        builder = new_wf.nodes['builder']
+        researcher = new_wf.nodes['researcher']
+        assert isinstance(builder, AgentNode)
+        assert isinstance(researcher, AgentNode)
+        assert builder.prompt_template == f'Improved prompt seed={seed}', (
+            f'seed={seed}: builder prompt was not set correctly'
+        )
+        assert researcher.prompt_template == 'Research things.', (
+            f'seed={seed}: researcher prompt was changed unexpectedly'
+        )
+
+
+def test_guided_prompt_with_value():
+    """Suggestion with value='<full prompt>' sets prompt_template exactly."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+    full_prompt = 'You are a master builder. Build with precision and care.'
+    suggestion = MutationSuggestion(
+        operator='prompt_mutate',
+        target='builder',
+        rationale='set exact prompt',
+        value=full_prompt,
+    )
+
+    result = _try_mutation(
+        wf, MutationType.PROMPT_MUTATE, frozenset(),
+        prompt_hint=None,
+        suggestion=suggestion,
+    )
+    assert result is not None, '_try_mutation returned None'
+    new_wf, rec = result
+    builder = new_wf.nodes['builder']
+    assert isinstance(builder, AgentNode)
+    assert builder.prompt_template == full_prompt, (
+        f'Expected exact prompt, got {builder.prompt_template!r}'
+    )
+    assert rec.target_node == 'builder'
+    assert 'Applied suggestion' in rec.rationale
+    # Knob should be in sync
+    assert new_wf.knob_values.get('_prompt_builder') == full_prompt
+
+
+def test_target_any_single_agent():
+    """Single-agent graph, suggestion target='any' → that agent is mutated."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = Workflow(
+        name='single-agent',
+        nodes={
+            'builder': AgentNode(
+                id='builder',
+                role=AgentRole.BUILDER,
+                prompt_template='Build.',
+            ),
+        },
+        edges=[],
+        start_node='builder',
+    )
+    suggestion = MutationSuggestion(
+        operator='prompt_mutate',
+        target='any',
+        rationale='general improvement',
+        value='You are an improved builder.',
+    )
+
+    result = _try_mutation(
+        wf, MutationType.PROMPT_MUTATE, frozenset(),
+        prompt_hint=None,
+        suggestion=suggestion,
+    )
+    assert result is not None, '_try_mutation returned None'
+    new_wf, rec = result
+    assert rec.target_node == 'builder'
+    builder = new_wf.nodes['builder']
+    assert isinstance(builder, AgentNode)
+    assert builder.prompt_template == 'You are an improved builder.'
+
+
+def test_frozen_target_skipped(caplog):
+    """Suggestion targeting a frozen node returns None and logs 'frozen'."""
+    import logging
+
+    import structlog
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+    suggestion = MutationSuggestion(
+        operator='prompt_mutate',
+        target='builder',
+        rationale='improve it',
+    )
+
+    old_config = structlog.get_config()
+    structlog.configure(
+        processors=[structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+    )
+    try:
+        with caplog.at_level(logging.DEBUG):
+            result = _try_mutation(
+                wf, MutationType.PROMPT_MUTATE, frozenset({'builder'}),
+                prompt_hint=None,
+                suggestion=suggestion,
+            )
+        assert result is None, f'Expected None for frozen target, got {result}'
+        frozen_logs = [r for r in caplog.records if 'frozen' in r.getMessage()]
+        assert len(frozen_logs) >= 1, (
+            f'Expected log with "frozen", got: {[r.getMessage() for r in caplog.records]}'
+        )
+    finally:
+        structlog.configure(**old_config)
+
+
+def test_missing_target_skipped(caplog):
+    """Suggestion targeting nonexistent node returns None and logs 'not found'."""
+    import logging
+
+    import structlog
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+    suggestion = MutationSuggestion(
+        operator='prompt_mutate',
+        target='nonexistent_node',
+        rationale='improve it',
+    )
+
+    old_config = structlog.get_config()
+    structlog.configure(
+        processors=[structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+    )
+    try:
+        with caplog.at_level(logging.DEBUG):
+            result = _try_mutation(
+                wf, MutationType.PROMPT_MUTATE, frozenset(),
+                prompt_hint=None,
+                suggestion=suggestion,
+            )
+        assert result is None, f'Expected None for missing target, got {result}'
+        missing_logs = [r for r in caplog.records if 'not found' in r.getMessage()]
+        assert len(missing_logs) >= 1, (
+            f'Expected log with "not found", got: {[r.getMessage() for r in caplog.records]}'
+        )
+    finally:
+        structlog.configure(**old_config)
+
+
+def test_guided_node_insert_with_role():
+    """Suggestion 'node_insert' target='builder', rationale mentions 'code_reviewer'.
+    Assert inserted after builder with code_reviewer role."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+    suggestion = MutationSuggestion(
+        operator='node_insert',
+        target='builder',
+        rationale='add a code_reviewer after builder to validate output quality',
+    )
+
+    result = _try_mutation(
+        wf, MutationType.NODE_INSERT, frozenset(),
+        prompt_hint=None,
+        suggestion=suggestion,
+    )
+    assert result is not None, '_try_mutation returned None for guided node_insert'
+    new_wf, rec = result
+    assert rec.operator == MutationType.NODE_INSERT
+
+    # Find the inserted node
+    new_node_ids = set(new_wf.nodes.keys()) - set(wf.nodes.keys())
+    assert len(new_node_ids) >= 1, 'No new node was inserted'
+
+    inserted_node = new_wf.nodes[list(new_node_ids)[0]]
+    assert isinstance(inserted_node, AgentNode)
+    assert inserted_node.role == AgentRole.CODE_REVIEWER, (
+        f'Expected code_reviewer role, got {inserted_node.role}'
+    )
+    # Inserted node should be after builder
+    assert rec.after.get('inserted_after') == 'builder', (
+        f'Expected inserted_after=builder, got {rec.after}'
+    )
+
+
+# ── Bug fix: guided node_insert with role field ─────────────────────
+
+
+def test_guided_node_insert_with_role_and_value():
+    """Suggestion: target='builder', role='health_checker',
+    value='Check document.md has Overview, Installation, Usage, Errors.'
+    Assert: inserted node has role=health_checker, prompt contains 'Check document.md',
+    inserted after builder."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+    suggestion = MutationSuggestion(
+        operator='node_insert',
+        target='builder',
+        rationale='add health check step',
+        value='Check document.md has Overview, Installation, Usage, Errors.',
+        role='health_checker',
+    )
+
+    result = _try_mutation(
+        wf, MutationType.NODE_INSERT, frozenset(),
+        suggestion=suggestion,
+    )
+    assert result is not None, '_try_mutation returned None for guided node_insert'
+    new_wf, rec = result
+    assert rec.operator == MutationType.NODE_INSERT
+
+    # Find the inserted node
+    new_node_ids = set(new_wf.nodes.keys()) - set(wf.nodes.keys())
+    assert len(new_node_ids) >= 1, 'No new node was inserted'
+
+    inserted_node = new_wf.nodes[list(new_node_ids)[0]]
+    assert isinstance(inserted_node, AgentNode)
+    assert inserted_node.role == AgentRole.HEALTH_CHECKER, (
+        f'Expected health_checker role, got {inserted_node.role}'
+    )
+    assert 'Check document.md' in (inserted_node.prompt_template or ''), (
+        f'Prompt should contain suggestion value, got: {inserted_node.prompt_template!r}'
+    )
+    assert rec.after.get('inserted_after') == 'builder', (
+        f'Expected inserted_after=builder, got {rec.after}'
+    )
+
+
+def test_guided_node_insert_invalid_role_uses_complementary(caplog):
+    """Suggestion: target='builder', role='validator' (not a valid AgentRole).
+    Assert: result is not None (uses complementary role), log contains
+    'suggestion_role_invalid'."""
+    import logging
+
+    import structlog
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = _make_two_agent_workflow()
+    suggestion = MutationSuggestion(
+        operator='node_insert',
+        target='builder',
+        rationale='add validation step',
+        role='validator',  # Not a valid AgentRole
+    )
+
+    old_config = structlog.get_config()
+    structlog.configure(
+        processors=[structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+    )
+    try:
+        with caplog.at_level(logging.DEBUG):
+            result = _try_mutation(
+                wf, MutationType.NODE_INSERT, frozenset(),
+                suggestion=suggestion,
+            )
+        assert result is not None, (
+            'Expected non-None result (complementary role fallback)'
+        )
+        invalid_logs = [
+            r for r in caplog.records
+            if 'suggestion_role_invalid' in r.getMessage()
+        ]
+        assert len(invalid_logs) >= 1, (
+            f'Expected log with "suggestion_role_invalid", got: '
+            f'{[r.getMessage() for r in caplog.records]}'
+        )
+    finally:
+        structlog.configure(**old_config)
+
+
+def test_reflector_prompt_contains_role_list():
+    """Build a reflection prompt and check it contains 'health_checker' and
+    'code_reviewer' in the node_insert guide."""
+    from factory.outer_loop.reflector import OuterLoopReflector
+
+    reflector = OuterLoopReflector()
+    prompt = reflector.build_reflection_prompt(
+        top_k=[('top1', 0.9, None)],
+        bottom_k=[('bot1', 0.1, None)],
+        records=[('top1', 0.9, None), ('bot1', 0.1, None)],
+    )
+    assert 'health_checker' in prompt, (
+        'Reflection prompt should list health_checker as valid role'
+    )
+    assert 'code_reviewer' in prompt, (
+        'Reflection prompt should list code_reviewer as valid role'
+    )
+    assert 'node_insert' in prompt
+
+
+def test_prompt_value_preserves_current_item_json():
+    """DataNode workflow, builder reads .factory/current_item.json.
+    Suggestion with value='Write docs.' (no current_item.json mention).
+    After mutation, builder's prompt still contains 'current_item.json'."""
+    from factory.outer_loop.mutations import _try_mutation, MutationType
+    from factory.outer_loop.reflector import MutationSuggestion
+
+    wf = Workflow(
+        name='data-prompt-test',
+        nodes={
+            'data': DataNode(id='data', inline_items=[DataItem(id='i1')]),
+            'builder': AgentNode(
+                id='builder',
+                role=AgentRole.BUILDER,
+                prompt_template=(
+                    'Read .factory/current_item.json for the current item. Build it.'
+                ),
+                reads={'.factory/current_item.json'},
+                writes={'output.txt'},
+            ),
+            '_join_data': JoinNode(id='_join_data', sources=['builder']),
+        },
+        edges=[
+            Edge(source='data', target='builder'),
+            Edge(source='builder', target='_join_data'),
+        ],
+        start_node='data',
+    )
+    suggestion = MutationSuggestion(
+        operator='prompt_mutate',
+        target='builder',
+        rationale='improve docs',
+        value='Write docs.',
+    )
+    result = _try_mutation(
+        wf, MutationType.PROMPT_MUTATE, frozenset({'data', '_join_data'}),
+        suggestion=suggestion,
+    )
+    assert result is not None, '_try_mutation returned None'
+    new_wf, _rec = result
+    builder = new_wf.nodes['builder']
+    assert isinstance(builder, AgentNode)
+    assert 'current_item.json' in (builder.prompt_template or ''), (
+        f'current_item.json reference was lost: {builder.prompt_template!r}'
+    )
+
+
+# ── Insert-before tests ────────────────────────────────────────────────
+
+
+def _make_data_builder_join_workflow() -> Workflow:
+    """Helper: data → builder → _join_data (data frozen, _join_data frozen)."""
+    return Workflow(
+        name='before-test',
+        nodes={
+            'data': DataNode(id='data'),
+            'builder': AgentNode(
+                id='builder',
+                role=AgentRole.BUILDER,
+                prompt_template='Build.',
+                writes={'output.txt'},
+                reads=set(),
+            ),
+            '_join_data': JoinNode(id='_join_data', sources=['builder']),
+        },
+        edges=[
+            Edge(source='data', target='builder'),
+            Edge(source='builder', target='_join_data'),
+        ],
+        start_node='data',
+    )
+
+
+def test_insert_before_builder_on_datanode_graph() -> None:
+    """Insert researcher BEFORE builder on data → builder → _join_data.
+    Result: data → researcher → builder → _join_data.
+    validate_graph() passes."""
+    from factory.outer_loop.mutations import insert_node
+
+    wf = _make_data_builder_join_workflow()
+    researcher = AgentNode(
+        id='researcher_1',
+        role=AgentRole.RESEARCHER,
+        prompt_template='Research.',
+    )
+    result = insert_node(
+        wf, researcher, ref_node_id='builder',
+        position='before', frozen_nodes={'data', '_join_data'},
+    )
+    assert result is not None, 'insert_node returned None'
+    new_wf, rec = result
+
+    # Check edge topology: data → researcher_1 → builder → _join_data
+    edge_pairs = {(e.source, e.target) for e in new_wf.edges}
+    assert ('data', 'researcher_1') in edge_pairs, f'Missing data→researcher_1: {edge_pairs}'
+    assert ('researcher_1', 'builder') in edge_pairs, f'Missing researcher_1→builder: {edge_pairs}'
+    assert ('builder', '_join_data') in edge_pairs, f'Missing builder→_join_data: {edge_pairs}'
+    # Old direct edge should be gone
+    assert ('data', 'builder') not in edge_pairs, f'data→builder still present: {edge_pairs}'
+
+    # MutationRecord uses 'before' label
+    assert rec.after.get('inserted_before') == 'builder'
+    assert 'before' in rec.rationale
+
+    # validate_graph passes
+    issues = new_wf.validate_graph()
+    real_issues = [i for i in issues if 'empty prompt_template' not in i]
+    assert not real_issues, f'validate_graph failed: {real_issues}'
+
+
+def test_insert_before_with_fake_runner() -> None:
+    """Insert researcher before builder on a simple agent chain.
+    Run with a fake agent_fn that logs call order.
+    Assert researcher executes before builder."""
+    import asyncio
+    import tempfile
+    from pathlib import Path
+
+    from factory.outer_loop.mutations import insert_node
+    from factory.workflow.executor import WorkflowExecutor
+
+    # Simple two-agent chain: strategist → builder
+    wf = Workflow(
+        name='before-runner-test',
+        nodes={
+            'strategist': AgentNode(
+                id='strategist', role=AgentRole.STRATEGIST,
+                prompt_template='Plan.',
+            ),
+            'builder': AgentNode(
+                id='builder', role=AgentRole.BUILDER,
+                prompt_template='Build.',
+            ),
+        },
+        edges=[Edge(source='strategist', target='builder')],
+        start_node='strategist',
+    )
+
+    researcher = AgentNode(
+        id='researcher_1',
+        role=AgentRole.RESEARCHER,
+        prompt_template='Research.',
+    )
+    result = insert_node(
+        wf, researcher, ref_node_id='builder',
+        position='before',
+    )
+    assert result is not None
+    new_wf, _ = result
+
+    call_order: list[str] = []
+
+    async def fake_agent_fn(role, task, project_path, *, model=None,
+                            timeout=600.0, node_id=None, **kwargs):
+        call_order.append(node_id or role)
+        return (f'{node_id} done', 0)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        project_path = Path(tmp)
+        (project_path / '.factory').mkdir()
+        executor = WorkflowExecutor(
+            workflow=new_wf,
+            project_path=project_path,
+            agent_fn=fake_agent_fn,
+            dry_run=False,
+            validate=False,
+        )
+        asyncio.run(executor.execute())
+
+    # researcher_1 must come before builder in call order
+    assert 'researcher_1' in call_order, f'researcher_1 not in call_order: {call_order}'
+    assert 'builder' in call_order, f'builder not in call_order: {call_order}'
+    r_idx = call_order.index('researcher_1')
+    b_idx = call_order.index('builder')
+    assert r_idx < b_idx, (
+        f'researcher_1 did not execute before builder: {call_order}'
+    )
+
+
+def test_insert_after_unchanged() -> None:
+    """insert_node with position='after' (default) works as before."""
+    from factory.outer_loop.mutations import insert_node
+
+    wf = _make_data_builder_join_workflow()
+    reviewer = AgentNode(
+        id='reviewer_1',
+        role=AgentRole.CODE_REVIEWER,
+        prompt_template='Review.',
+    )
+    result = insert_node(
+        wf, reviewer, ref_node_id='builder',
+        frozen_nodes={'data', '_join_data'},
+    )
+    assert result is not None
+    new_wf, rec = result
+
+    # Check edge topology: data → builder → reviewer_1 → _join_data
+    edge_pairs = {(e.source, e.target) for e in new_wf.edges}
+    assert ('data', 'builder') in edge_pairs
+    assert ('builder', 'reviewer_1') in edge_pairs
+    assert ('reviewer_1', '_join_data') in edge_pairs
+
+    assert rec.after.get('inserted_after') == 'builder'
+    assert 'after' in rec.rationale
+
+    issues = new_wf.validate_graph()
+    real_issues = [i for i in issues if 'empty prompt_template' not in i]
+    assert not real_issues, f'validate_graph failed: {real_issues}'
+
+
+def test_reflector_prompt_mentions_position() -> None:
+    """build_reflection_prompt output contains 'position'."""
+    from factory.outer_loop.reflector import OuterLoopReflector
+
+    reflector = OuterLoopReflector()
+    prompt = reflector.build_reflection_prompt(
+        top_k=[('top1', 0.9, None)],
+        bottom_k=[('bot1', 0.1, None)],
+        records=[('top1', 0.9, None), ('bot1', 0.1, None)],
+    )
+    assert 'position' in prompt, (
+        'Reflection prompt should mention position for node_insert'
+    )
+
+
+def test_insert_before_wires_notes_file():
+    '''Insert before builder → researcher writes notes file, builder reads it, prompt references it, graph validates.'''
+    from factory.outer_loop.mutations import insert_node
+    from factory.workflow.validation import validate_workflow
+
+    wf = Workflow(
+        name='wire-test',
+        nodes={
+            'data': DataNode(id='data'),
+            'builder': AgentNode(id='builder', role=AgentRole.BUILDER,
+                prompt_template='Build docs', writes={'document.md'}, reads=set(),
+                model='haiku'),
+            '_join_data': JoinNode(id='_join_data', sources=['builder']),
+        },
+        edges=[Edge(source='data', target='builder'), Edge(source='builder', target='_join_data')],
+        start_node='data',
+        runtime_inputs=frozenset({'.factory/current_item.json'}),
+    )
+
+    researcher = AgentNode(id='researcher_1', role=AgentRole.RESEARCHER,
+        prompt_template='Research the topic', reads=set(), writes=set(),
+        model='haiku')
+
+    result = insert_node(wf, researcher, 'builder', position='before', frozen_nodes={'data', '_join_data'})
+    assert result is not None
+    new_wf, rec = result
+
+    # Researcher writes the notes file
+    r_node = new_wf.nodes['researcher_1']
+    assert any('researcher_1_notes.md' in w for w in r_node.writes), f'researcher writes: {r_node.writes}'
+    assert 'researcher_1_notes.md' in r_node.prompt_template
+
+    # Builder reads the notes file
+    b_node = new_wf.nodes['builder']
+    assert any('researcher_1_notes.md' in r for r in b_node.reads), f'builder reads: {b_node.reads}'
+    assert 'researcher_1_notes.md' in b_node.prompt_template
+
+    # Graph validates
+    issues = validate_workflow(new_wf)
+    assert not issues, f'Validation failed: {issues}'

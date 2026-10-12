@@ -195,7 +195,8 @@ class TestSelectGuidedOperatorTyped:
             op = strategy.select_guided_operator(wf, 0, report)
             counts[op] = counts.get(op, 0) + 1
 
-        assert MutationType.KNOB_MUTATE in counts
+        # knob_mutate is filtered out by the guided-selection guard
+        assert MutationType.KNOB_MUTATE not in counts, "knob_mutate should be filtered out"
         assert MutationType.NODE_INSERT in counts
 
     def test_falls_back_to_string_when_no_typed(self) -> None:
@@ -225,8 +226,11 @@ class TestSelectGuidedOperatorTyped:
             ],
         )
 
+        # knob_mutate is filtered by the guided-selection guard and
+        # invalid_op is dropped as unrecognised, so the result falls
+        # back to random selection from all valid operators.
         op = strategy.select_guided_operator(wf, 0, report)
-        assert op == MutationType.KNOB_MUTATE
+        assert op in MutationType
 
 
 # ── Part B: _parse_knob_suggestion with typed input ──────────

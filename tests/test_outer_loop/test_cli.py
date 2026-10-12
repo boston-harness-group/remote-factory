@@ -350,49 +350,18 @@ class TestReflectReadsCachedData:
 
         cfg = SwarmConfig(benchmark="featurebench", budget=50)
 
-        with patch("factory.outer_loop.filesystem.load_config", return_value=cfg):
+        from unittest.mock import MagicMock as _MagicMock
+        mock_llm = _MagicMock()
+        mock_llm.stdout = '{"failure_patterns": [], "success_patterns": [], "mutation_suggestions": []}'
+        mock_llm.returncode = 0
+
+        with patch("factory.outer_loop.filesystem.load_config", return_value=cfg), \
+             patch("subprocess.run", return_value=mock_llm):
             from factory.cli.outer_loop import _cmd_reflect
 
             ns = argparse.Namespace(project_path=str(project), generation=0)
             rc = _cmd_reflect(ns)
             assert rc == 0
-
-    def test_load_cycle_summary_returns_record(self, tmp_path: object) -> None:
-        import json
-        from pathlib import Path
-
-        from factory.cli.outer_loop import _load_cycle_summary
-
-        project = Path(str(tmp_path))
-        runs_dir = project / ".factory" / "outer_loop" / "runs" / "evolve-gen0-abc"
-        runs_dir.mkdir(parents=True)
-        summary = {
-            "mode": "evolve-gen0-abc",
-            "score": 0.9,
-            "cost_usd": 1.5,
-            "kept": 3,
-            "reverted": 1,
-            "agents_failed": 0,
-            "duration_ms": 5000,
-        }
-        (runs_dir / "cycle_summary.json").write_text(json.dumps(summary))
-
-        rec = _load_cycle_summary(project, "evolve-gen0-abc")
-        assert rec is not None
-        assert rec.score_end == 0.9
-        assert rec.kept == 3
-        assert rec.reverted == 1
-        assert rec.total_cost_usd == 1.5
-        assert rec.duration_s == 5.0
-
-    def test_load_cycle_summary_returns_none_for_missing(self, tmp_path: object) -> None:
-        from pathlib import Path
-
-        from factory.cli.outer_loop import _load_cycle_summary
-
-        project = Path(str(tmp_path))
-        rec = _load_cycle_summary(project, "nonexistent-mode")
-        assert rec is None
 
     def test_evaluate_persists_cycle_summary(self, tmp_path: object) -> None:
         """_cmd_evaluate should write cycle_summary.json for each evaluated mode."""

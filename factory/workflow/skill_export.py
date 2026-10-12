@@ -631,122 +631,14 @@ def _selection_to_instruction(node: SelectionNode, workflow: Workflow) -> str:
 
 
 def _data_to_instruction(node: DataNode, workflow: Workflow) -> str:
-    """Convert a DataNode to concrete data-iteration instructions for the CEO."""
-    out_edges = _outgoing_edges(workflow, node.id)
-    edges_str = _format_edges(out_edges)
+    """Convert a DataNode to concrete data-iteration instructions for the CEO.
 
-    # Source description for annotations
-    source_desc = "inline items"
-    if node.task_ref:
-        source_desc = f"task_ref `{node.task_ref}`"
-    elif node.source_path:
-        source_desc = f"source_path `{node.source_path}` (format: {node.source_format})"
-
-    annotations = [
-        f"<!-- node: DataNode id={node.id} entry={node.subgraph_entry} exit={node.subgraph_exit} -->",
-        f"<!-- source: {source_desc} -->",
-        f"<!-- edges: {edges_str} -->",
-    ]
-
-    lines: list[str] = [*annotations, ""]
-
-    # Step 1: Get items
-    if node.task_ref:
-        lines.extend([
-            "**Step 1 — Get items:**",
-            "",
-            "```bash",
-            f"factory task instances --task-ref {node.task_ref}",
-            "```",
-            "",
-            "Each line is a JSON object with fields: `id`, `path`, `metadata`.",
-            "Parse each line and collect the item IDs.",
-            "",
-        ])
-    elif node.source_path:
-        lines.extend([
-            "**Step 1 — Get items:**",
-            "",
-            f"Read items from `{node.source_path}` (format: {node.source_format}).",
-            "",
-        ])
-        if node.source_format == "jsonl":
-            lines.append("Each line is a JSON object. Parse each line as one item.")
-        elif node.source_format == "directory":
-            lines.append("Each subdirectory is one item. The directory name is the item ID.")
-        elif node.source_format == "csv":
-            lines.append("Each row is one item. The first column is the item ID.")
-        lines.append("")
-    else:
-        # inline_items
-        lines.extend([
-            "**Step 1 — Items are inline:**",
-            "",
-        ])
-        for item in node.inline_items:
-            prompt_preview = item.prompt[:80] if item.prompt else "(no prompt)"
-            lines.append(f"- Item `{item.id}`: {prompt_preview}")
-        lines.append("")
-
-    # Step 2: Per-item processing
-    if node.task_ref:
-        lines.extend([
-            f"**Step 2 — For each item, run the subgraph "
-            f"(`{node.subgraph_entry}` → `{node.subgraph_exit}`):**",
-            "",
-            "For each item ID from Step 1:",
-            "",
-            f"1. **Setup:** `factory task setup --task-ref {node.task_ref}"
-            f" --instance-id <id> --workspace $PROJECT_PATH`",
-            "2. **Write context:** Write the item JSON to"
-            " `.factory/current_item.json` so subgraph agents can read it.",
-            f"3. **Run subgraph:** Execute agents from"
-            f" `{node.subgraph_entry}` through `{node.subgraph_exit}`.",
-            f"4. **Verify:** `factory task verify --task-ref {node.task_ref}"
-            f" --instance-id <id> --workspace $PROJECT_PATH`",
-            '   The verify command prints JSON: `{"score": 0.85, "passed": true, "details": ...}`',
-            "",
-        ])
-    else:
-        lines.extend([
-            f"**Step 2 — For each item, run the subgraph "
-            f"(`{node.subgraph_entry}` → `{node.subgraph_exit}`):**",
-            "",
-            "For each item:",
-            "",
-            "1. **Write context:** Write the item data to `.factory/current_item.json`.",
-            f"2. **Run subgraph:** Execute agents from"
-            f" `{node.subgraph_entry}` through `{node.subgraph_exit}`.",
-            "3. **Check result:** Score 1.0 if subgraph succeeded, 0.0 if it failed.",
-            "",
-        ])
-
-    # Step 3: Aggregate
-    lines.extend([
-        "**Step 3 — Aggregate scores:**",
-        "",
-        "Average all per-item scores to get the final score for this DataNode.",
-        "",
-    ])
-
-    # Configuration
-    lines.extend([
-        "**Configuration:**",
-        "",
-        f"- Parallelism: {node.parallelism} (process this many items concurrently)",
-    ])
-    if node.shuffle:
-        lines.append("- Shuffle: yes (randomize item order)")
-    if node.limit is not None:
-        lines.append(f"- Limit: {node.limit} items")
-    lines.append(f"- Max items (safety ceiling): {node.max_items}")
-    lines.append("")
-    lines.append(
-        "**Fault isolation:** A failing item scores 0.0"
-        " but does not halt the iteration. Continue with remaining items."
+    Raises ValueError because ceo-skill DataNode support is deferred to PR B.
+    """
+    raise ValueError(
+        "DataNode workflows are not supported with ceo-skill / ceo-tool "
+        "until PR B.  Use execution_strategy='executor'."
     )
-
-    return "\n".join(lines)
 
 
 # ── frontmatter builder ────────────────────────────────────────
@@ -816,11 +708,14 @@ def workflow_to_skill_md(workflow: Workflow) -> str:
                 workflow, node.subgraph_entry, node.subgraph_exit
             )
         elif isinstance(node, DataNode):
-            from factory.workflow.executor import _collect_subgraph_nodes
+            # DataNode uses real edges; collect branch nodes via BFS
+            from factory.workflow.data_runtime import _find_branch_and_join
 
-            subgraph_nodes |= _collect_subgraph_nodes(
-                workflow, node.subgraph_entry, node.subgraph_exit
-            )
+            try:
+                _, _, branch_ids = _find_branch_and_join(workflow, nid)
+                subgraph_nodes |= branch_ids
+            except ValueError:
+                pass  # No JoinNode found — will error in _data_to_instruction
 
     sections: list[str] = []
     phase_num = 1

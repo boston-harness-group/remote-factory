@@ -297,7 +297,11 @@ class TestSwarmConfigMultiBenchmark:
         assert restored.instance_format == "question-answer"
 
     def test_checkpoint_migration(self):
-        """Old checkpoint JSON without new fields should still parse."""
+        """Old checkpoint JSON without new fields should still parse.
+
+        Note: holdout_instances was removed from SwarmConfig — holdout is
+        now controlled by the Task (holdout_ids on TaskDefinition).
+        """
         old_data = {
             "benchmark": "featurebench",
             "budget": 50,
@@ -310,7 +314,6 @@ class TestSwarmConfigMultiBenchmark:
             "mutation_strategy": "weighted_random",
             "designer_count": 2,
             "training_instances": [],
-            "holdout_instances": [],
             "plateau_window": 3,
             "plateau_threshold": 0.01,
             "diversity_floor": 0.2,

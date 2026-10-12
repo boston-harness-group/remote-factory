@@ -150,24 +150,18 @@ class TestSwarmConfig:
         restored = SwarmConfig.model_validate(dumped)
         assert restored.target_project == "/tmp/test-project"
 
-    def test_no_overlap(self) -> None:
-        with pytest.raises(ValidationError, match="overlap"):
-            SwarmConfig(
-                benchmark="test",
-                budget=50,
-                training_instances=["p1", "p2", "p3"],
-                holdout_instances=["p3", "p4"],
-            )
-
-    def test_disjoint_ok(self) -> None:
+    def test_training_instances_accepted(self) -> None:
         cfg = SwarmConfig(
             benchmark="test",
             budget=50,
             training_instances=["p1", "p2", "p3"],
-            holdout_instances=["p4", "p5"],
         )
         assert len(cfg.training_instances) == 3
-        assert len(cfg.holdout_instances) == 2
+
+    def test_no_holdout_instances_field(self) -> None:
+        """holdout_instances was removed from SwarmConfig (PR A)."""
+        cfg = SwarmConfig(benchmark="test", budget=50)
+        assert not hasattr(cfg, "holdout_instances")
 
 
 class TestOuterLoopState:

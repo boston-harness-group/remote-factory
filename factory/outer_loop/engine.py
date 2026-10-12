@@ -42,14 +42,14 @@ PLATEAU_WINDOW = 3
 def _auto_frozen_nodes(workflow: Workflow) -> set[str]:
     """Return node IDs that should always be frozen during mutation.
 
-    Includes ONLY DataNode IDs — their subgraphs are the evolution surface
-    and must remain mutable for the outer loop to improve them.
+    DataNode and its paired JoinNode are auto-frozen — the fork/join
+    structure is fixed, while branch nodes remain mutable.
     """
-    from factory.workflow.primitives import DataNode
+    from factory.workflow.primitives import DataNode, JoinNode
 
     frozen: set[str] = set()
     for nid, node in workflow.nodes.items():
-        if isinstance(node, DataNode):
+        if isinstance(node, DataNode) or isinstance(node, JoinNode):
             frozen.add(nid)
     return frozen
 
@@ -277,6 +277,20 @@ class SwarmEngine:
                 if self._mode_registry:
                     self._mode_registry.register(ind.id, 0, wf)
 
+    def _resolve_project_dir(self, project_dir: str = "") -> str:
+        """Return a non-empty project_dir, falling back to constructor value.
+
+        Raises ``ValueError`` when both *project_dir* and ``self._project_dir``
+        are empty/None.
+        """
+        if project_dir:
+            return project_dir
+        if self._project_dir:
+            return str(self._project_dir)
+        raise ValueError(
+            "project_dir must be set either in constructor or run() argument"
+        )
+
     def evolve_generation(
         self,
         population: Population,
@@ -284,6 +298,7 @@ class SwarmEngine:
         project_dir: str = "",
     ) -> GenerationSummary:
         """Run one generation of evolution."""
+        project_dir = self._resolve_project_dir(project_dir)
         # Use Task.instances(split="train") when Task is available (firewall)
         task = self._config.get_task()
         if task is not None:
@@ -330,23 +345,32 @@ class SwarmEngine:
             wf = Workflow.from_dict(ind.workflow_data)  # type: ignore[arg-type]
             ev = self._evaluator.evaluate(wf, project_dir, instances, individual_id=ind.id)
             self._budget.consume(1, cost_usd=ev.cost_usd)
-            updated = ind.model_copy(update={"score": ev.score, "cost_usd": ev.cost_usd})
+            updates: dict[str, object] = {"score": ev.score, "cost_usd": ev.cost_usd}
+            if ev.errored:
+                updates["errored"] = True
+            updated = ind.model_copy(update=updates)
             population.remove(ind.id)
             population.add(updated)
-            self._archive.add(updated)
+            if not ev.errored:
+                self._archive.add(updated)
 
         # Reflect on this generation's results
         if generation > 0 or len(population.individuals) >= 2:
             records = []
             kvbi: dict[str, dict[str, object]] = {}
+            wf_data_by_id: dict[str, dict] = {}
             for ind in population.individuals:
                 cycle_rec = self._evaluator.get_cycle_record(ind.id)
                 records.append((ind.id, ind.score if ind.score is not None else 0.0, cycle_rec))
                 ind_wf = Workflow.from_dict(ind.workflow_data)  # type: ignore[arg-type]
                 if ind_wf.knob_values:
                     kvbi[ind.id] = dict(ind_wf.knob_values)
+                wf_data_by_id[ind.id] = (
+                    ind.workflow_data if isinstance(ind.workflow_data, dict) else {}
+                )
             self._last_reflection = self._reflector.reflect(
                 records, generation, knob_values_by_id=kvbi,
+                workflow_data_by_id=wf_data_by_id,
             )
 
         # Select parents and create offspring
@@ -356,31 +380,32 @@ class SwarmEngine:
         offspring: list[tuple[Workflow, MutationRecord, str]] = []
 
         mutation_rate = self._strategy.get_mutation_rate(generation)
-        for _ in range(self._config.population_size):
-            parent = self._archive.sample_parent(
-                self._config.tournament_size,
-                rank_weighted=self._config.rank_weighted_selection,
-            )
-            if parent is None:
-                continue
-            parent_wf = Workflow.from_dict(parent.workflow_data)  # type: ignore[arg-type]
-            mutation_result = apply_random_mutation(
-                parent_wf,
-                self._strategy,
-                generation,
-                frozen_nodes=set(self._config.frozen_node_ids) | _auto_frozen_nodes(parent_wf),
-                reflection_report=self._last_reflection,
-            )
-            if mutation_result is None:
-                continue
-            child_wf, mutation_rec = mutation_result
-            if self._novelty.is_novel(child_wf):
-                self._novelty.add(child_wf)
-                offspring.append((child_wf, mutation_rec, parent.id))
-                mutations_applied.append(mutation_rec)
-                novel_count += 1
-            else:
-                rejected_dupes += 1
+        if mutation_rate > 0.0:
+            for _ in range(self._config.population_size):
+                parent = self._archive.sample_parent(
+                    self._config.tournament_size,
+                    rank_weighted=self._config.rank_weighted_selection,
+                )
+                if parent is None:
+                    continue
+                parent_wf = Workflow.from_dict(parent.workflow_data)  # type: ignore[arg-type]
+                mutation_result = apply_random_mutation(
+                    parent_wf,
+                    self._strategy,
+                    generation,
+                    frozen_nodes=set(self._config.frozen_node_ids) | _auto_frozen_nodes(parent_wf),
+                    reflection_report=self._last_reflection,
+                )
+                if mutation_result is None:
+                    continue
+                child_wf, mutation_rec = mutation_result
+                if self._novelty.is_novel(child_wf):
+                    self._novelty.add(child_wf)
+                    offspring.append((child_wf, mutation_rec, parent.id))
+                    mutations_applied.append(mutation_rec)
+                    novel_count += 1
+                else:
+                    rejected_dupes += 1
 
         # Evaluate offspring and add to population
         for child_wf, mutation_rec, parent_id in offspring:
@@ -396,9 +421,16 @@ class SwarmEngine:
                 self._mode_registry.register(ind.id, generation, child_wf)
             eval_result = self._evaluator.evaluate(child_wf, project_dir, instances, individual_id=ind.id)
             self._budget.consume(1, cost_usd=eval_result.cost_usd)
-            updated = ind.model_copy(update={"score": eval_result.score, "cost_usd": eval_result.cost_usd})
+            child_updates: dict[str, object] = {
+                "score": eval_result.score,
+                "cost_usd": eval_result.cost_usd,
+            }
+            if eval_result.errored:
+                child_updates["errored"] = True
+            updated = ind.model_copy(update=child_updates)
             population.add(updated)
-            self._archive.add(updated)
+            if not eval_result.errored:
+                self._archive.add(updated)
 
         # Cleanup non-surviving ephemeral mode files
         if self._mode_registry:
@@ -523,6 +555,7 @@ class SwarmEngine:
         project_dir: str = "",
     ) -> OuterLoopResult:
         """Run the full evolutionary search loop."""
+        project_dir = self._resolve_project_dir(project_dir)
         population = self.seed(base_workflow)
         generation = 0
         summaries: list[GenerationSummary] = []
@@ -535,6 +568,19 @@ class SwarmEngine:
             if summary.hyperparameters:
                 hp_history.append(summary.hyperparameters)
 
+            # If every candidate in this generation errored, raise — never
+            # return best_score=0.0 as if the harness were simply bad.
+            evaluated = [
+                ind for ind in population.individuals
+                if ind.score is not None
+            ]
+            if evaluated and all(ind.errored for ind in evaluated):
+                raise RuntimeError(
+                    f"All {len(evaluated)} candidates in generation "
+                    f"{generation} errored during evaluation — aborting. "
+                    f"Check evaluator logs for details."
+                )
+
             # Plateau detection with adaptive response
             if self._detect_plateau():
                 if hasattr(self._strategy, "on_plateau"):
@@ -544,6 +590,11 @@ class SwarmEngine:
                 if hasattr(self._strategy, "on_improvement"):
                     self._strategy.on_improvement()  # type: ignore[union-attr]
 
+            # Persist generation artifacts
+            if self._project_dir:
+                from factory.outer_loop.filesystem import save_generation
+                save_generation(self._project_dir, generation, summary, population)
+
             generation += 1
 
         convergence_reason = self._get_convergence_reason(generation)
@@ -552,7 +603,7 @@ class SwarmEngine:
         # End-of-run holdout evaluation (firewall: only runs after evolution)
         best = self._archive.best()
         audit_result = None
-        holdout_score_val = 0.0
+        holdout_score_val: float | None = None
         task = self._config.get_task()
 
         if best:
@@ -566,9 +617,8 @@ class SwarmEngine:
                     log.warning(
                         "task_instances_no_split",
                         task=type(task).__name__,
-                        msg="Task.instances() does not accept split param, falling back to config (val)",
+                        msg="Task.instances() does not accept split param",
                     )
-                    holdout_instances = list(self._config.holdout_instances)
                 try:
                     train_instances = [inst.id for inst in task.instances(split="train")]
                 except TypeError:
@@ -578,35 +628,36 @@ class SwarmEngine:
                         # No split configured anywhere — use all instances (pre-split behavior)
                         train_instances = [inst.id for inst in task.instances()]
 
-            # Fall back to SwarmConfig holdout_instances if Task has no splits
-            if not holdout_instances and self._config.holdout_instances:
-                holdout_instances = list(self._config.holdout_instances)
-                train_instances = list(self._config.training_instances)
-
             if holdout_instances:
                 best_wf = Workflow.from_dict(best.workflow_data)  # type: ignore[arg-type]
                 # Evaluate WITHOUT individual_id → no CycleRecord stored
                 holdout_result = self._evaluator.evaluate(
-                    best_wf, project_dir, holdout_instances,
+                    best_wf, project_dir, holdout_instances, split='val',
                 )
-                holdout_score_val = holdout_result.score
-                best = best.model_copy(update={"val_score": holdout_score_val})
+                if holdout_result.errored:
+                    holdout_score_val = None
+                    log.warning(
+                        "holdout_eval_errored",
+                        msg="holdout evaluation errored — skipping audit",
+                    )
+                else:
+                    holdout_score_val = holdout_result.score
+                    best = best.model_copy(update={"val_score": holdout_score_val})
 
-                # Audit with pre-computed training score to skip redundant re-eval
-                audit_result = self._overfit.audit(
-                    best_wf,
-                    train_instances,
-                    holdout_instances,
-                    self._evaluator,
-                    project_dir,
-                    training_score=best.score,
-                )
+                    # Audit with pre-computed scores to skip redundant re-eval
+                    audit_result = self._overfit.audit(
+                        best_wf,
+                        train_instances,
+                        holdout_instances,
+                        training_score=best.score,
+                        holdout_score=holdout_score_val,
+                    )
             else:
-                log.info("holdout_no_instances", msg="No holdout instances declared — skipping holdout evaluation")
+                log.warning("holdout_skipped_no_val_instances", msg="Task has no val split — holdout evaluation skipped, val_score stays None")
 
         pareto = self._archive.pareto_front()
 
-        return OuterLoopResult(
+        result = OuterLoopResult(
             best_workflow_data=best.workflow_data if best else {},
             best_score=best.score if best and best.score is not None else 0.0,
             val_score=holdout_score_val,
@@ -621,6 +672,17 @@ class SwarmEngine:
             pareto_front=pareto,
             hyperparameter_history=hp_history,
         )
+
+        # Persist best workflow and run report
+        if self._project_dir:
+            from factory.outer_loop.filesystem import save_best, save_map_elites
+            save_best(self._project_dir, result)
+            save_map_elites(self._project_dir, self._archive)
+
+        # Store for post-run inspection (e.g. canary diagnostics)
+        self._final_population = population
+
+        return result
 
     def _should_terminate(self, generation: int) -> bool:
         if self._budget.exhausted:

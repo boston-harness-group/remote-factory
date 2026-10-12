@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import networkx as nx
 import structlog
@@ -21,25 +21,56 @@ from factory.workflow.primitives import (
     Workflow,
 )
 
-from factory.outer_loop.reflector import MutationSuggestion, ReflectionReport
+from factory.outer_loop.reflector import MutationSuggestion, ReflectionReport, _VALID_LLM_OPERATORS
 
 log = structlog.get_logger()
 
 
+def _infer_agent_params(workflow: Workflow, near_node_id: str) -> dict[str, Any]:
+    """Infer model and timeout from the node at *near_node_id*, falling back to
+    the first AgentNode with a model set."""
+    params: dict[str, Any] = {}
+    # Try the target node first
+    target_node = workflow.nodes.get(near_node_id)
+    if isinstance(target_node, AgentNode):
+        if target_node.model:
+            params["model"] = target_node.model
+        if target_node.timeout is not None:
+            params["timeout"] = target_node.timeout
+    # Fallback: scan all nodes for first AgentNode with model set
+    if "model" not in params:
+        for node in workflow.nodes.values():
+            if isinstance(node, AgentNode) and node.model:
+                params.setdefault("model", node.model)
+                if node.timeout is not None:
+                    params.setdefault("timeout", node.timeout)
+                break
+    return params
+
+
 def _is_in_data_subgraph(workflow: Workflow, node_id: str) -> bool:
-    """Check if node_id is inside any DataNode's subgraph."""
-    from factory.workflow.executor import _collect_subgraph_nodes
-    from factory.workflow.primitives import DataNode
+    """Check if node_id is inside any DataNode's fork branch."""
+    from factory.workflow.primitives import DataNode, JoinNode
 
     for nid, node in workflow.nodes.items():
         if isinstance(node, DataNode):
-            if (node.subgraph_entry in workflow.nodes
-                    and node.subgraph_exit in workflow.nodes):
-                subgraph = _collect_subgraph_nodes(
-                    workflow, node.subgraph_entry, node.subgraph_exit
-                )
-                if node_id in subgraph:
-                    return True
+            # Walk forward from DataNode edges to find branch nodes
+            edge_targets = [e.target for e in workflow.edges if e.source == nid]
+            visited: set[str] = set()
+            queue = list(edge_targets)
+            while queue:
+                current = queue.pop(0)
+                if current in visited:
+                    continue
+                target_node = workflow.nodes.get(current)
+                if isinstance(target_node, JoinNode):
+                    continue  # Don't go past JoinNode
+                visited.add(current)
+                for e in workflow.edges:
+                    if e.source == current:
+                        queue.append(e.target)
+            if node_id in visited:
+                return True
     return False
 
 
@@ -77,12 +108,38 @@ class WeightedRandomStrategy:
         }
         self._mutation_rate = mutation_rate
         self._designer_ratio = designer_ratio
+        self._knobs_warned = False
 
     def select_operator(
         self, parent: Workflow, generation: int, archive_stats: dict[str, object]
     ) -> MutationType:
         types = list(MutationType)
         w = [self.weights.get(t.value, 0.1) for t in types]
+        # Zero out operators that can't apply to this workflow
+        agent_count = sum(1 for n in parent.nodes.values() if isinstance(n, AgentNode))
+        if agent_count <= 1:
+            for i, t in enumerate(types):
+                if t in (MutationType.NODE_REMOVE, MutationType.PARALLELIZE, MutationType.SERIALIZE):
+                    w[i] = 0.0
+        if len(parent.nodes) >= MAX_NODES:
+            for i, t in enumerate(types):
+                if t == MutationType.NODE_INSERT:
+                    w[i] = 0.0
+        # knob_mutate only applies to _prompt_* knobs (redirected to prompt_mutate)
+        # Non-prompt knobs aren't applied by the executor, so never mutate them
+        real_knobs = [k for k in parent.knob_values if not k.startswith('_prompt_')]
+        if real_knobs and not self._knobs_warned:
+            log.warning('knobs_not_applied', knobs=real_knobs, msg='Non-prompt knobs declared but executor does not apply them; skipping knob_mutate')
+            self._knobs_warned = True
+        for i, t in enumerate(types):
+            if t == MutationType.KNOB_MUTATE:
+                w[i] = 0.0
+        # param_mutate only via guided selection when reflector suggests it
+        for i, t in enumerate(types):
+            if t == MutationType.PARAM_MUTATE:
+                w[i] = 0.0
+        if sum(w) == 0:
+            return MutationType.PROMPT_MUTATE  # fallback
         return random.choices(types, weights=w, k=1)[0]
 
     def select_guided_operator(
@@ -104,6 +161,9 @@ class WeightedRandomStrategy:
             for ts in reflection.typed_suggestions:
                 if ts.operator in _VALID_OPS:
                     mt = MutationType(ts.operator)
+                    # A knob_mutate targeting _prompt_* is really a prompt_mutate
+                    if mt == MutationType.KNOB_MUTATE and ts.target.startswith('_prompt_'):
+                        mt = MutationType.PROMPT_MUTATE
                     op_counts[mt] = op_counts.get(mt, 0) + 1
         else:
             for suggestion in reflection.mutation_suggestions + reflection.structural_recommendations:
@@ -120,6 +180,20 @@ class WeightedRandomStrategy:
                     op_counts[MutationType.PROMPT_MUTATE] = op_counts.get(MutationType.PROMPT_MUTATE, 0) + 1
                 elif "KNOB" in upper:
                     op_counts[MutationType.KNOB_MUTATE] = op_counts.get(MutationType.KNOB_MUTATE, 0) + 1
+
+        if not op_counts:
+            return self.select_operator(parent, generation, {})
+
+        # Remove operators that can't apply to this workflow
+        agent_count = sum(1 for n in parent.nodes.values() if isinstance(n, AgentNode))
+        if agent_count <= 1:
+            for t in (MutationType.NODE_REMOVE, MutationType.PARALLELIZE, MutationType.SERIALIZE):
+                op_counts.pop(t, None)
+        if len(parent.nodes) >= MAX_NODES:
+            op_counts.pop(MutationType.NODE_INSERT, None)
+        # knob_mutate is handled via prompt_mutate redirect; remove from guided too
+        op_counts.pop(MutationType.KNOB_MUTATE, None)
+        op_counts.pop(MutationType.PARAM_MUTATE, None)
 
         if not op_counts:
             return self.select_operator(parent, generation, {})
@@ -201,16 +275,46 @@ def validate_and_repair(workflow: Workflow) -> Workflow | None:
         if not has_gated_edge:
             return None
 
+    # Reject JoinNode with dangling sources
+    for _nid, _node in workflow.nodes.items():
+        if isinstance(_node, JoinNode):
+            for src in _node.sources:
+                if src not in workflow.nodes:
+                    return None
+
+    # Reject DataNode workflows with broken fork/join structure
+    for _nid, _node in workflow.nodes.items():
+        if isinstance(_node, _DataNodeType):
+            has_out = any(e.source == _nid for e in workflow.edges)
+            if not has_out:
+                return None
+            # Check that a JoinNode is reachable from the DataNode
+            visited_dn: set[str] = set()
+            queue_dn = [e.target for e in workflow.edges if e.source == _nid]
+            found_join = False
+            while queue_dn:
+                cur = queue_dn.pop(0)
+                if cur in visited_dn:
+                    continue
+                visited_dn.add(cur)
+                if isinstance(workflow.nodes.get(cur), JoinNode):
+                    found_join = True
+                    break
+                for e in workflow.edges:
+                    if e.source == cur:
+                        queue_dn.append(e.target)
+            if not found_join:
+                return None
+
     # Verify reads/writes chain
-    # For nodes inside a DataNode subgraph, .factory/current_item.json is
-    # a system-provided file (written by the executor before subgraph runs).
+    # For nodes inside a DataNode branch, .factory/current_item.json is
+    # a system-provided file (written by the runtime before branch runs).
     _data_subgraph_nodes: set[str] = set()
     for _nid, _node in workflow.nodes.items():
         if isinstance(_node, _DataNodeType):
-            if (_node.subgraph_entry in workflow.nodes
-                    and _node.subgraph_exit in workflow.nodes):
-                from factory.workflow.executor import _collect_subgraph_nodes as _csn
-                _data_subgraph_nodes |= _csn(workflow, _node.subgraph_entry, _node.subgraph_exit)
+            for nid_check in workflow.nodes:
+                if _is_in_data_subgraph(workflow, nid_check):
+                    _data_subgraph_nodes.add(nid_check)
 
     for nid, node in workflow.nodes.items():
         if node.reads:
@@ -253,47 +357,109 @@ def _deep_copy_workflow(workflow: Workflow) -> Workflow:
         knob_expandable=dict(workflow.knob_expandable),
         knob_specs={k: dict(v) for k, v in workflow.knob_specs.items()},
         declared_capabilities=frozenset(workflow.declared_capabilities),
+        runtime_inputs=frozenset(workflow.runtime_inputs),
     )
 
 
 def insert_node(
     workflow: Workflow,
     new_node: NodeType,
-    after_node_id: str,
+    ref_node_id: str,
     *,
+    position: str = 'after',
     frozen_nodes: set[str] | None = None,
 ) -> tuple[Workflow, MutationRecord] | None:
-    """Insert a new node after an existing node, reconnecting edges."""
+    """Insert a new node before or after an existing node, reconnecting edges."""
     frozen = frozen_nodes or set()
-    if _is_frozen(after_node_id, frozen):
+    # The REF node must exist. It must be non-frozen.
+    # But for 'before', the PREDECESSOR can be frozen (e.g. DataNode).
+    if ref_node_id not in workflow.nodes:
+        return None
+    if _is_frozen(ref_node_id, frozen):
         return None
 
     wf = _deep_copy_workflow(workflow)
-    if after_node_id not in wf.nodes:
-        return None
-
     wf.nodes[new_node.id] = new_node
 
-    outgoing = [e for e in wf.edges if e.source == after_node_id]
-    if not outgoing:
-        wf.edges.append(Edge(source=after_node_id, target=new_node.id))
+    if position == 'before':
+        # New node takes over ref_node's incoming edges, then feeds ref_node
+        incoming = [e for e in wf.edges if e.target == ref_node_id]
+        if not incoming:
+            # ref_node is the start node or has no incoming edges
+            # Insert at the start: new_node becomes start, feeds ref_node
+            if wf.start_node == ref_node_id:
+                wf.start_node = new_node.id
+            wf.edges.append(Edge(source=new_node.id, target=ref_node_id))
+        else:
+            # Redirect all incoming edges to point at new_node
+            new_edges = []
+            for e in wf.edges:
+                if e.target == ref_node_id:
+                    new_edges.append(Edge(source=e.source, target=new_node.id, condition=e.condition))
+                else:
+                    new_edges.append(e)
+            new_edges.append(Edge(source=new_node.id, target=ref_node_id))
+            wf.edges = new_edges
+
+        # Wire the new node's output to the target's input
+        notes_file = f'.factory/{new_node.id}_notes.md'
+
+        # Add writes to new node
+        new_n = wf.nodes[new_node.id]
+        if isinstance(new_n, AgentNode):
+            updated_writes = set(new_n.writes or set()) | {notes_file}
+            updated_prompt = (new_n.prompt_template or '') + f'\nWrite your findings to {notes_file}'
+            wf.nodes[new_node.id] = new_n.model_copy(update={
+                'writes': updated_writes,
+                'prompt_template': updated_prompt,
+            })
+
+        # Add reads to the target node
+        ref_n = wf.nodes[ref_node_id]
+        if isinstance(ref_n, AgentNode):
+            updated_reads = set(ref_n.reads or set()) | {notes_file}
+            updated_ref_prompt = f'Read {notes_file} first. ' + (ref_n.prompt_template or '')
+            wf.nodes[ref_node_id] = ref_n.model_copy(update={
+                'reads': updated_reads,
+                'prompt_template': updated_ref_prompt,
+            })
+            # Keep _prompt_ knob in sync
+            prompt_knob = f'_prompt_{ref_node_id}'
+            if prompt_knob in wf.knob_values:
+                wf.knob_values[prompt_knob] = updated_ref_prompt
     else:
-        first_edge = outgoing[0]
-        old_target = first_edge.target
-        wf.edges = [e for e in wf.edges if not (e.source == after_node_id and e.target == old_target and e.condition is None)]
-        wf.edges.append(Edge(source=after_node_id, target=new_node.id))
-        wf.edges.append(Edge(source=new_node.id, target=old_target))
+        # Existing 'after' logic
+        outgoing = [e for e in wf.edges if e.source == ref_node_id]
+        if not outgoing:
+            wf.edges.append(Edge(source=ref_node_id, target=new_node.id))
+        else:
+            first_edge = outgoing[0]
+            old_target = first_edge.target
+            wf.edges = [
+                e for e in wf.edges
+                if not (e.source == ref_node_id and e.target == old_target and e.condition is None)
+            ]
+            wf.edges.append(Edge(source=ref_node_id, target=new_node.id))
+            wf.edges.append(Edge(source=new_node.id, target=old_target))
+
+    # Update JoinNode.sources to match new edges
+    for nid, node in wf.nodes.items():
+        if isinstance(node, JoinNode):
+            incoming_j = [e.source for e in wf.edges if e.target == nid]
+            if set(node.sources) != set(incoming_j):
+                wf.nodes[nid] = node.model_copy(update={'sources': incoming_j})
 
     result = validate_and_repair(wf)
     if result is None:
         return None
 
+    pos_label = 'before' if position == 'before' else 'after'
     record = MutationRecord(
         operator=MutationType.NODE_INSERT,
         target_node=new_node.id,
         before={},
-        after={"inserted_after": after_node_id},
-        rationale=f"Inserted {new_node.id} after {after_node_id}",
+        after={'inserted_' + pos_label: ref_node_id},
+        rationale=f'Inserted {new_node.id} {pos_label} {ref_node_id}',
     )
     return result, record
 
@@ -850,6 +1016,7 @@ def mutate_knob(
     *,
     expander: KnobExpander | None = default_knob_expander,
     reflection_report: ReflectionReport | None = None,
+    frozen_nodes: set[str] | None = None,
 ) -> tuple[Workflow, MutationRecord] | None:
     """Mutate a single knob value within its declared bounds.
 
@@ -886,6 +1053,18 @@ def mutate_knob(
                  for k, v in [parsed] if k in wf.knob_values]
         if valid:
             guided_knob, guided_val = random.choice(valid)
+
+    # A _prompt_* knob suggestion should become a prompt_mutate
+    # so prompt_template stays in sync
+    if guided_knob and guided_knob.startswith('_prompt_'):
+        node_id = guided_knob[len('_prompt_'):]
+        if node_id in workflow.nodes and isinstance(workflow.nodes[node_id], AgentNode):
+            return mutate_prompt(
+                workflow, node_id,
+                frozen_nodes=frozen_nodes or set(),
+                prompt_hint=str(guided_val) if guided_val else None,
+            )
+        guided_knob = None  # fall through to random knob
 
     if guided_knob and guided_val is not None:
         knob_name = guided_knob
@@ -973,25 +1152,55 @@ def apply_random_mutation(
     )
 
     for attempt in range(max_attempts):
-        if use_guided and random.random() < 0.7:
-            op = strategy.select_guided_operator(  # type: ignore[attr-defined]
-                workflow, generation, reflection_report,
-            )
+        suggestion: MutationSuggestion | None = None
+        guided = use_guided and random.random() < 0.7
+        if guided and reflection_report and reflection_report.typed_suggestions:
+            # Filter to applicable operators (exclude knob_mutate, param_mutate)
+            applicable = [
+                ts for ts in reflection_report.typed_suggestions
+                if ts.operator in _VALID_LLM_OPERATORS
+                and ts.operator not in ('knob_mutate', 'param_mutate')
+            ]
+            if applicable:
+                # Weight by frequency (same as select_guided_operator did)
+                suggestion = random.choice(applicable)
+                op = MutationType(suggestion.operator)
+            else:
+                guided = False
+                op = strategy.select_operator(workflow, generation, stats)
+        elif guided:
+            guided = False
+            op = strategy.select_operator(workflow, generation, stats)
         else:
             op = strategy.select_operator(workflow, generation, stats)
 
         if op == MutationType.NODE_INSERT and len(workflow.nodes) >= MAX_NODES:
-            op = MutationType.PARAM_MUTATE
+            op = MutationType.PROMPT_MUTATE
+            suggestion = None  # don't use the node_insert suggestion for prompt_mutate
 
         prompt_hint = _extract_prompt_hint(reflection_report) if reflection_report else None
         result = _try_mutation(workflow, op, frozen, prompt_hint=prompt_hint,
                                expander=knob_expander,
-                               reflection_report=reflection_report)
+                               reflection_report=reflection_report,
+                               suggestion=suggestion)
         if result is not None:
             wf, rec = result
             if len(wf.nodes) > MAX_NODES:
                 continue
-            return result
+            if suggestion and not rec.rationale:
+                rec = rec.model_copy(update={'rationale': f'Guided: {suggestion.rationale[:100]}'})
+            log.info(
+                'mutation_applied',
+                operator=rec.operator.value if hasattr(rec.operator, 'value') else str(rec.operator),
+                target=rec.target_node,
+                source='guided' if guided else 'random',
+                suggestion_target=suggestion.target if suggestion else None,
+                suggestion_rationale=suggestion.rationale[:80] if suggestion and suggestion.rationale else None,
+                before=rec.before,
+                after=rec.after,
+            )
+            return wf, rec
+        log.info('mutation_attempt_failed', operator=op.value, attempt=attempt + 1, reason='_try_mutation returned None')
 
     return None
 
@@ -999,7 +1208,8 @@ def apply_random_mutation(
 def _extract_prompt_hint(report: ReflectionReport) -> str | None:
     """Extract a prompt improvement hint from a ReflectionReport."""
     if report.prompt_improvements:
-        return random.choice(report.prompt_improvements)
+        numbered = [f"{i+1}. {imp}" for i, imp in enumerate(report.prompt_improvements)]
+        return "\n".join(numbered)
     if report.success_patterns:
         return random.choice(report.success_patterns)
     return None
@@ -1040,6 +1250,7 @@ def _try_mutation(
     frozen: set[str],
     *,
     prompt_hint: str | None = None,
+    suggestion: MutationSuggestion | None = None,
     **kwargs: object,
 ) -> tuple[Workflow, MutationRecord] | None:
     """Attempt a single mutation of the given type."""
@@ -1066,34 +1277,78 @@ def _try_mutation(
         return None
 
     if op == MutationType.NODE_INSERT:
-        # Fix 2: contextual complementary node with inherited file wiring
-        target = random.choice(list(workflow.nodes.keys()))
-        target_node = workflow.nodes[target]
-
-        all_agent_nodes = [
-            n for n in workflow.nodes.values() if isinstance(n, AgentNode)
-        ]
-
-        if all_agent_nodes:
-            # Find the nearest upstream AgentNode from the insertion point
-            upstream_agent: AgentNode | None = None
-            if isinstance(target_node, AgentNode):
-                upstream_agent = target_node
+        if suggestion is not None:
+            # Target = existing node to insert after
+            target_id = suggestion.target
+            if target_id in workflow.nodes and target_id not in frozen:
+                target = target_id
             else:
-                upstream_agent = _find_nearest_upstream_agent(workflow, target)
+                # Fallback: insert after the first agent node
+                agent_candidates = [
+                    nid for nid in workflow.nodes
+                    if nid not in frozen and isinstance(workflow.nodes[nid], AgentNode)
+                ]
+                if not agent_candidates:
+                    log.info(
+                        'suggestion_target_fallback_failed',
+                        operator='node_insert', target=target_id,
+                        reason='no non-frozen agent',
+                    )
+                    return None
+                target = agent_candidates[0]
+                log.info(
+                    'suggestion_target_fallback',
+                    operator='node_insert',
+                    original_target=target_id, fallback_target=target,
+                )
 
-            if upstream_agent is not None:
-                base_role = upstream_agent.role
-            else:
-                base_role = random.choice(all_agent_nodes).role
+            # Role from suggestion.role — must be a valid AgentRole
+            complementary_role: AgentRole | None = None
+            if suggestion.role:
+                try:
+                    complementary_role = AgentRole(suggestion.role)
+                except ValueError:
+                    log.info(
+                        'suggestion_role_invalid',
+                        role=suggestion.role,
+                        msg='using complementary role table',
+                    )
+            if complementary_role is None:
+                # Use complementary role table (existing logic)
+                target_node = workflow.nodes[target]
+                upstream_agent: AgentNode | None = (
+                    target_node if isinstance(target_node, AgentNode)
+                    else _find_nearest_upstream_agent(workflow, target)
+                )
+                all_agent_nodes = [
+                    n for n in workflow.nodes.values() if isinstance(n, AgentNode)
+                ]
+                base_role = (
+                    upstream_agent.role if upstream_agent
+                    else (random.choice(all_agent_nodes).role if all_agent_nodes
+                          else random.choice(list(AgentRole)))
+                )
+                complementary_role = _COMPLEMENTARY_ROLES.get(
+                    base_role, random.choice(list(AgentRole)),
+                )
 
-            complementary_role = _COMPLEMENTARY_ROLES.get(base_role, random.choice(list(AgentRole)))
+            # Prompt: suggestion.value if given, else role template.
+            # NEVER rationale as prompt.
+            prompt_tmpl = (
+                suggestion.value if suggestion.value and suggestion.value.strip()
+                else _ROLE_PROMPT_TEMPLATES.get(complementary_role, '')
+            )
 
             # Inherit file wiring from context
-            new_reads = upstream_agent.writes.copy() if (
-                upstream_agent and upstream_agent.writes
-            ) else (upstream_agent.reads.copy() if upstream_agent else set())
-            # Find the downstream node to set writes
+            target_node_wiring = workflow.nodes[target]
+            upstream_agent_for_wiring: AgentNode | None = None
+            if isinstance(target_node_wiring, AgentNode):
+                upstream_agent_for_wiring = target_node_wiring
+            else:
+                upstream_agent_for_wiring = _find_nearest_upstream_agent(workflow, target)
+            new_reads = upstream_agent_for_wiring.writes.copy() if (
+                upstream_agent_for_wiring and upstream_agent_for_wiring.writes
+            ) else (upstream_agent_for_wiring.reads.copy() if upstream_agent_for_wiring else set())
             new_writes: set[str] = set()
             for edge in workflow.edges:
                 if edge.source == target and edge.condition is None:
@@ -1102,16 +1357,16 @@ def _try_mutation(
                         new_writes = downstream.reads.copy()
                         break
 
-            # Fix 5: unique ID generation
             new_id = _generate_unique_agent_id(set(workflow.nodes.keys()), complementary_role)
-            prompt_tmpl = _ROLE_PROMPT_TEMPLATES.get(complementary_role, "")
-
+            agent_params = _infer_agent_params(workflow, target)
             new_node = AgentNode(
                 id=new_id,
                 role=complementary_role,
                 reads=new_reads,
                 writes=new_writes,
                 prompt_template=prompt_tmpl,
+                model=agent_params.get("model", ""),
+                timeout=agent_params.get("timeout"),
             )
 
             # If inserting into a DataNode subgraph, make the new node data-aware
@@ -1128,14 +1383,103 @@ def _try_mutation(
                     reads=data_reads,
                     writes=new_node.writes,
                     prompt_template=data_prompt,
+                    model=new_node.model,
+                    timeout=new_node.timeout,
                 )
-        else:
-            # Fallback: no AgentNodes exist at all
-            role = random.choice(list(AgentRole))
-            new_id = _generate_unique_agent_id(set(workflow.nodes.keys()), role)
-            new_node = AgentNode(id=new_id, role=role)
 
-        return insert_node(workflow, new_node, target, frozen_nodes=frozen)
+            position = getattr(suggestion, 'position', 'after') if suggestion else 'after'
+            return insert_node(workflow, new_node, ref_node_id=target, position=position, frozen_nodes=frozen)
+        else:
+            # Unguided: existing random behavior
+            # Pick target from non-frozen nodes; prefer AgentNodes
+            insert_candidates = [nid for nid in workflow.nodes if nid not in frozen]
+            if not insert_candidates:
+                log.info('mutation_no_target', operator='node_insert', reason='all nodes frozen')
+                return None
+            agent_candidates = [
+                nid for nid in insert_candidates
+                if isinstance(workflow.nodes[nid], AgentNode)
+            ]
+            target = random.choice(agent_candidates if agent_candidates else insert_candidates)
+            target_node = workflow.nodes[target]
+
+            all_agent_nodes = [
+                n for n in workflow.nodes.values() if isinstance(n, AgentNode)
+            ]
+
+            if all_agent_nodes:
+                # Find the nearest upstream AgentNode from the insertion point
+                upstream_agent = None
+                if isinstance(target_node, AgentNode):
+                    upstream_agent = target_node
+                else:
+                    upstream_agent = _find_nearest_upstream_agent(workflow, target)
+
+                if upstream_agent is not None:
+                    base_role = upstream_agent.role
+                else:
+                    base_role = random.choice(all_agent_nodes).role
+
+                complementary_role = _COMPLEMENTARY_ROLES.get(base_role, random.choice(list(AgentRole)))
+
+                # Inherit file wiring from context
+                new_reads = upstream_agent.writes.copy() if (
+                    upstream_agent and upstream_agent.writes
+                ) else (upstream_agent.reads.copy() if upstream_agent else set())
+                # Find the downstream node to set writes
+                new_writes = set()
+                for edge in workflow.edges:
+                    if edge.source == target and edge.condition is None:
+                        downstream = workflow.nodes.get(edge.target)
+                        if downstream and downstream.reads:
+                            new_writes = downstream.reads.copy()
+                            break
+
+                # Fix 5: unique ID generation
+                new_id = _generate_unique_agent_id(set(workflow.nodes.keys()), complementary_role)
+                prompt_tmpl = _ROLE_PROMPT_TEMPLATES.get(complementary_role, "")
+
+                agent_params = _infer_agent_params(workflow, target)
+                new_node = AgentNode(
+                    id=new_id,
+                    role=complementary_role,
+                    reads=new_reads,
+                    writes=new_writes,
+                    prompt_template=prompt_tmpl,
+                    model=agent_params.get("model", ""),
+                    timeout=agent_params.get("timeout"),
+                )
+
+                # If inserting into a DataNode subgraph, make the new node data-aware
+                if _is_in_data_subgraph(workflow, target):
+                    data_reads = set(new_node.reads or set()) | {".factory/current_item.json"}
+                    data_prompt = (
+                        "As a " + new_node.role.value.replace("_", " ") + ", "
+                        + "read .factory/current_item.json for the current item. "
+                        + (new_node.prompt_template or "")
+                    )
+                    new_node = AgentNode(
+                        id=new_node.id,
+                        role=new_node.role,
+                        reads=data_reads,
+                        writes=new_node.writes,
+                        prompt_template=data_prompt,
+                        model=new_node.model,
+                        timeout=new_node.timeout,
+                    )
+            else:
+                # Fallback: no AgentNodes exist at all
+                role = random.choice(list(AgentRole))
+                new_id = _generate_unique_agent_id(set(workflow.nodes.keys()), role)
+                agent_params = _infer_agent_params(workflow, target)
+                new_node = AgentNode(
+                    id=new_id,
+                    role=role,
+                    model=agent_params.get("model", ""),
+                    timeout=agent_params.get("timeout"),
+                )
+
+            return insert_node(workflow, new_node, ref_node_id=target, frozen_nodes=frozen)
 
     elif op == MutationType.NODE_REMOVE:
         target = random.choice(structurally_mutable)
@@ -1207,14 +1551,73 @@ def _try_mutation(
         return mutate_params(workflow, target, changes, frozen_nodes=frozen)
 
     elif op == MutationType.PROMPT_MUTATE:
-        agent_nodes = [
-            nid for nid in content_mutable
-            if isinstance(workflow.nodes[nid], AgentNode)
-        ]
+        agent_nodes = [nid for nid in content_mutable if isinstance(workflow.nodes[nid], AgentNode)]
         if not agent_nodes:
             return None
-        target = random.choice(agent_nodes)
-        return mutate_prompt(workflow, target, frozen_nodes=frozen, prompt_hint=prompt_hint)
+
+        if suggestion is not None:
+            # Use the suggestion's target
+            target_id = suggestion.target
+            if target_id in workflow.nodes and target_id not in frozen and isinstance(workflow.nodes[target_id], AgentNode):
+                target = target_id
+            elif target_id in ('any', '') or target_id not in workflow.nodes:
+                if target_id not in ('any', '') and target_id not in workflow.nodes:
+                    log.info('suggestion_target_missing', operator='prompt_mutate', target=target_id, reason='node not found')
+                    return None
+                if len(agent_nodes) == 1:
+                    target = agent_nodes[0]
+                else:
+                    target = agent_nodes[0]  # first agent in graph
+            elif target_id in frozen:
+                log.info('suggestion_target_frozen', operator='prompt_mutate', target=target_id)
+                return None
+            else:
+                target = agent_nodes[0]
+
+            # If suggestion has a value (full prompt), use it directly
+            if suggestion.value and suggestion.value.strip():
+                new_prompt = suggestion.value.strip()
+                wf = _deep_copy_workflow(workflow)
+                node = wf.nodes[target]
+                old_prompt = node.prompt_template or ''  # type: ignore[union-attr]
+                # Preserve current_item.json reference for DataNode branch nodes
+                if (new_prompt
+                        and 'current_item.json' not in new_prompt
+                        and 'current_item.json' in old_prompt
+                        and _is_in_data_subgraph(wf, target)):
+                    new_prompt = (
+                        'Read .factory/current_item.json for the current item. '
+                        + new_prompt
+                    )
+                try:
+                    updated = type(node)(**{**node.model_dump(), 'prompt_template': new_prompt})
+                    wf.nodes[target] = updated
+                except Exception:
+                    return None
+                # Keep knob in sync
+                prompt_knob = f'_prompt_{target}'
+                wf.knob_values[prompt_knob] = new_prompt
+                wf.knob_expandable[prompt_knob] = f'Prompt for {target}'
+                rec = MutationRecord(
+                    operator=MutationType.PROMPT_MUTATE,
+                    target_node=target,
+                    before={'prompt': old_prompt[:100]},
+                    after={'prompt': new_prompt[:100]},
+                    rationale=(
+                        f'Applied suggestion: {suggestion.rationale[:100]}'
+                        if suggestion.rationale
+                        else f'Set prompt on {target}'
+                    ),
+                )
+                return wf, rec
+            else:
+                # Use suggestion's rationale as the hint
+                hint = suggestion.rationale or prompt_hint
+                return mutate_prompt(workflow, target, frozen_nodes=frozen, prompt_hint=hint)
+        else:
+            # Unguided: random target (existing behavior)
+            target = random.choice(agent_nodes)
+            return mutate_prompt(workflow, target, frozen_nodes=frozen, prompt_hint=prompt_hint)
 
     elif op == MutationType.KNOB_MUTATE:
         exp = kwargs.get("expander")
@@ -1223,6 +1626,7 @@ def _try_mutation(
             workflow,
             expander=exp if callable(exp) else None,
             reflection_report=ref if isinstance(ref, ReflectionReport) else None,
+            frozen_nodes=frozen,
         )
 
     return None

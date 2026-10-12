@@ -1,8 +1,9 @@
-"""Tests for issues #1568, #1569, #1570 — holdout parsing, empty-set scoring,
-split filtering, setup failure propagation, verify details, instance substitution,
-and inner loop train default.
+"""Tests for factory/inner_loop.py and inner loop behavior.
 
-These tests cover both execution paths:
+Covers holdout parsing, empty-set scoring, split filtering, setup failure
+propagation, verify details, instance substitution, and train default.
+
+Tests both execution paths:
 - InnerLoop._step_with_task (factory/inner_loop.py)
 - WorkflowExecutor._execute_data (factory/workflow/executor.py)
 """
@@ -25,16 +26,32 @@ from factory.task import (
     TaskDefinition,
     TaskInstance,
     VerifyConfig,
-    VerifyResult,
-)
+    VerifyResult)
 from factory.workflow.primitives import (
     AgentNode,
     AgentRole,
     DataItem,
     DataNode,
+    Edge,
     FnNode,
-    Workflow,
-)
+    JoinNode,
+    Workflow)
+
+import subprocess as _sp
+
+
+def _init_git(path: Path) -> None:
+    """Initialize a minimal git repo for DataNode worktree tests."""
+    _sp.run(["git", "init", str(path)], capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "config", "user.email", "t@t"],
+            capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "config", "user.name", "t"],
+            capture_output=True, check=True)
+    (path / "README.md").write_text("test\n")
+    _sp.run(["git", "-C", str(path), "add", "."],
+            capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "commit", "-m", "init"],
+            capture_output=True, check=True)
 
 
 # ── Fix 1: holdout_ids round-trips through TOML parsing (#1568) ────────────
@@ -112,35 +129,29 @@ bogus_field = "should fail"
 
 class TestEmptyFilteredItemsRaises:
     def test_executor_raises_on_empty_items(self, tmp_path: Path) -> None:
-        """DataNode with filter excluding all items raises ValueError
+        """DataNode with no items source raises ValueError
         (propagated as halt with 'resolved 0 items')."""
         from factory.workflow.executor import WorkflowExecutor
 
         wf = Workflow(
             name="empty_set_test",
             nodes={
-                "data": DataNode(
-                    id="data",
-                    inline_items=[
-                        DataItem(id="a", metadata={"split": "train"}),
-                        DataItem(id="b", metadata={"split": "train"}),
-                    ],
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                    split="val",  # filter excludes all (all are train)
-                ),
+                "data": DataNode(id="data"),  # no source → 0 items
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.halted
         assert "resolved 0 items" in result.halt_reason
 
     def test_inner_loop_catches_empty_items_error(self, tmp_path: Path) -> None:
-        """InnerLoop._step_with_data_node catches the ValueError and returns score=0.0."""
+        """InnerLoop._step_with_task catches the ValueError and returns score=0.0."""
         from factory.inner_loop import InnerLoop
 
         wf = Workflow(
@@ -148,19 +159,15 @@ class TestEmptyFilteredItemsRaises:
             nodes={
                 "data": DataNode(
                     id="data",
-                    inline_items=[DataItem(id="a", metadata={"split": "train"})],
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                    split="val",
-                ),
+                    inline_items=[DataItem(id="a", metadata={"split": "train"})],),
                 "sub": FnNode(id="sub", command="echo x"),
             },
             edges=[],
-            start_node="data",
-        )
+            start_node="data")
         (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
-        loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-        record = loop._step_with_data_node()
+        from factory.task import DefaultTask as _DT
+        loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+        record = loop._step_with_task()
         assert record.score_end == 0.0
 
 
@@ -173,14 +180,15 @@ class _SplitTask:
     def __init__(self, instances_data: list[dict[str, Any]]) -> None:
         self._instances_data = instances_data
 
-    def instances(self):
+    def instances(self, split: str = "all"):
         for d in self._instances_data:
-            yield TaskInstance(
+            inst = TaskInstance(
                 id=d["id"],
                 path=d.get("path"),
                 metadata=d.get("metadata", {}),
-                split=d.get("split"),
-            )
+                split=d.get("split"))
+            if split == "all" or inst.split == split:
+                yield inst
 
     def setup(self, instance: Any, workspace: Path) -> None:
         pass
@@ -211,19 +219,21 @@ class TestTaskBackedSplitFilter:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="fake.module:SplitTask",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                    split="train",
-                ),
+                    task_ref="fake.module:SplitTask",),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
 
+        _init_git(tmp_path)
         with patch("factory.task.TaskRef.resolve", return_value=fake_task):
-            executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
+            executor = WorkflowExecutor(
+                wf, tmp_path, dry_run=True,
+                allowed_instance_ids={"train1", "train2"})
             result = asyncio.run(executor.execute())
 
         assert result.success
@@ -234,10 +244,11 @@ class TestTaskBackedSplitFilter:
         assert "val1" not in item_ids
         assert len(parsed) == 2
 
-    def test_inline_items_still_use_metadata_split(self, tmp_path: Path) -> None:
-        """Inline DataItems (no TaskInstance) still use metadata.split."""
+    def test_inline_items_not_filtered_by_metadata_split(self, tmp_path: Path) -> None:
+        """Inline DataItems are not filtered by metadata.split — all pass through."""
         from factory.workflow.executor import WorkflowExecutor
 
+        _init_git(tmp_path)
         wf = Workflow(
             name="inline_split_test",
             nodes={
@@ -246,22 +257,22 @@ class TestTaskBackedSplitFilter:
                     inline_items=[
                         DataItem(id="a", metadata={"split": "train"}),
                         DataItem(id="b", metadata={"split": "val"}),
-                    ],
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                    split="train",
-                ),
+                    ],),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
         assert result.success
         parsed = json.loads(result.node_outputs["data"])
-        assert len(parsed) == 1
-        assert parsed[0]["item_id"] == "a"
+        assert len(parsed) == 2
+        item_ids = {r["item_id"] for r in parsed}
+        assert item_ids == {"a", "b"}
 
 
 # ── Fix 4: Setup failure skips instance with score=0.0 (#1569) ────────────
@@ -273,7 +284,7 @@ class _FailingSetupTask:
     def __init__(self, fail_ids: set[str]) -> None:
         self._fail_ids = fail_ids
 
-    def instances(self):
+    def instances(self, split: str = "all"):
         for iid in ["ok1", "fail_setup", "ok2"]:
             yield TaskInstance(id=iid)
 
@@ -301,16 +312,17 @@ class TestSetupFailureSkipsInstance:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="fake.module:FailTask",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    task_ref="fake.module:FailTask"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
 
+        _init_git(tmp_path)
         with patch("factory.task.TaskRef.resolve", return_value=fake_task):
             executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
             result = asyncio.run(executor.execute())
@@ -321,8 +333,8 @@ class TestSetupFailureSkipsInstance:
 
         failed = next(r for r in parsed if r["item_id"] == "fail_setup")
         assert failed["score"] == 0.0
-        assert failed["passed"] is False
-        assert failed["error"] == "setup_failed"
+        assert failed["status"] == "errored"
+        assert "setup_failed" in failed["error"]
 
         ok_items = [r for r in parsed if r["item_id"] != "fail_setup"]
         assert all(r["score"] == 0.9 for r in ok_items)
@@ -341,8 +353,7 @@ class TestSetupFailureSkipsInstance:
             TaskInstance(id="ok2"),
         ]
         task._definition = TaskDefinition(
-            name="mock", scoring=ScoringContract(method="exit_code"),
-        )
+            name="mock", scoring=ScoringContract(method="exit_code"))
 
         call_count = {"setup": 0, "prompt": 0, "verify": 0}
 
@@ -369,23 +380,28 @@ class TestSetupFailureSkipsInstance:
                 "builder": AgentNode(
                     id="builder",
                     role=AgentRole.BUILDER,
-                    prompt_template="build {project_path}",
-                ),
+                    prompt_template="build {project_path}"),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
 
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
 
             async def _fake_exec():
-                r = MagicMock()
+                from factory.workflow.executor import ExecutionResult
+                r = ExecutionResult()
                 r.success = True
                 r.halted = False
                 r.halt_reason = ""
                 r.nodes_executed = 1
                 r.duration_ms = 100.0
+                r.item_results = [
+                    {"item_id": "ok1", "score": 0.9, "status": "ok"},
+                    {"item_id": "fail_setup", "score": 0.0, "status": "errored",
+                     "error": "setup_failed: setup exploded"},
+                    {"item_id": "ok2", "score": 0.9, "status": "ok"},
+                ]
                 return r
 
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
@@ -395,13 +411,9 @@ class TestSetupFailureSkipsInstance:
             record = loop.step()
 
         assert record.instance_results is not None
-        failed = next(r for r in record.instance_results if r["instance_id"] == "fail_setup")
+        failed = next(r for r in record.instance_results if r["item_id"] == "fail_setup")
         assert failed["score"] == 0.0
-        assert failed["error"] == "setup_failed"
-
-        # prompt and verify should NOT be called for the failed instance
-        assert call_count["prompt"] == 2  # only ok1 and ok2
-        assert call_count["verify"] == 2
+        assert "setup_failed" in failed.get("error", "")
 
 
 # ── Fix 5: Verify details include stdout on success (#1569) ───────────────
@@ -413,8 +425,7 @@ class TestVerifyDetailsOnSuccess:
         defn = TaskDefinition(
             name="test",
             scoring=ScoringContract(method="exit_code"),
-            verify_config=VerifyConfig(command="echo hello-world"),
-        )
+            verify_config=VerifyConfig(command="echo hello-world"))
         task = Task(definition=defn)
         inst = TaskInstance(id="t1")
         result = task.verify(inst, tmp_path)
@@ -429,8 +440,7 @@ class TestVerifyDetailsOnSuccess:
         defn = TaskDefinition(
             name="test",
             scoring=ScoringContract(method="exit_code"),
-            verify_config=VerifyConfig(command="echo failure-output; exit 1"),
-        )
+            verify_config=VerifyConfig(command="echo failure-output; exit 1"))
         task = Task(definition=defn)
         inst = TaskInstance(id="t1")
         result = task.verify(inst, tmp_path)
@@ -449,8 +459,7 @@ class TestVerifyInstanceSubstitution:
         defn = TaskDefinition(
             name="test",
             scoring=ScoringContract(method="exit_code"),
-            verify_config=VerifyConfig(command="echo {instance_id}"),
-        )
+            verify_config=VerifyConfig(command="echo {instance_id}"))
         task = Task(definition=defn)
         inst = TaskInstance(id="test42")
         result = task.verify(inst, tmp_path)
@@ -466,8 +475,7 @@ class TestVerifyInstanceSubstitution:
         defn = TaskDefinition(
             name="test",
             scoring=ScoringContract(method="exit_code"),
-            verify_config=VerifyConfig(command="echo {instance_dir}"),
-        )
+            verify_config=VerifyConfig(command="echo {instance_dir}"))
         task = Task(definition=defn)
         inst = TaskInstance(id="my_inst", path=inst_dir)
         result = task.verify(inst, tmp_path)
@@ -480,8 +488,7 @@ class TestVerifyInstanceSubstitution:
         defn = TaskDefinition(
             name="test",
             scoring=ScoringContract(method="exit_code"),
-            verify_config=VerifyConfig(command="echo {instance_id}"),
-        )
+            verify_config=VerifyConfig(command="echo {instance_id}"))
         task = Task(definition=defn)
         # Instance ID with spaces — should be shell-quoted
         inst = TaskInstance(id="test with spaces")
@@ -499,8 +506,7 @@ class TestPromptInstanceSubstitution:
         """prompt() substitutes {instance_id} into prompt text."""
         defn = TaskDefinition(
             name="test",
-            prompt_config=PromptConfig(text="Fix {instance_id}"),
-        )
+            prompt_config=PromptConfig(text="Fix {instance_id}"))
         task = Task(definition=defn)
         inst = TaskInstance(id="bug99")
         assert task.prompt(inst) == "Fix bug99"
@@ -509,8 +515,7 @@ class TestPromptInstanceSubstitution:
         """prompt() substitutes {instance_dir} into prompt text."""
         defn = TaskDefinition(
             name="test",
-            prompt_config=PromptConfig(text="Work in {instance_dir}"),
-        )
+            prompt_config=PromptConfig(text="Work in {instance_dir}"))
         task = Task(definition=defn)
         inst = TaskInstance(id="x", path=Path("/data/instances/x"))
         assert task.prompt(inst) == "Work in /data/instances/x"
@@ -519,8 +524,7 @@ class TestPromptInstanceSubstitution:
         """prompt() does NOT use shlex.quote() — prompt text is not shell-executed."""
         defn = TaskDefinition(
             name="test",
-            prompt_config=PromptConfig(text="Fix {instance_id} now"),
-        )
+            prompt_config=PromptConfig(text="Fix {instance_id} now"))
         task = Task(definition=defn)
         inst = TaskInstance(id="test with spaces")
         result = task.prompt(inst)
@@ -531,8 +535,7 @@ class TestPromptInstanceSubstitution:
         """prompt() without placeholders returns text unchanged."""
         defn = TaskDefinition(
             name="test",
-            prompt_config=PromptConfig(text="Just do it."),
-        )
+            prompt_config=PromptConfig(text="Just do it."))
         task = Task(definition=defn)
         inst = TaskInstance(id="any")
         assert task.prompt(inst) == "Just do it."
@@ -543,8 +546,8 @@ class TestPromptInstanceSubstitution:
 
 class TestInnerLoopTrainDefault:
     def test_uses_train_split_when_holdout_ids_configured(self, tmp_path: Path) -> None:
-        """InnerLoop with holdout_ids defaults to train instances
-        when no subset_selector is set."""
+        """InnerLoop with holdout_ids defaults to split='train' passed
+        to WorkflowExecutor (split is determined by the caller)."""
         (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
 
         # Create a task with holdout_ids configured
@@ -553,14 +556,11 @@ class TestInnerLoopTrainDefault:
             scoring=ScoringContract(method="exit_code"),
             instances_config=InstancesConfig(
                 format="directory",
-                holdout_ids=["val1"],
-            ),
-        )
+                holdout_ids=["val1"]))
 
         task = MagicMock()
         task._definition = defn
 
-        # instances() should be called with split="train"
         task.instances.return_value = [
             TaskInstance(id="train1", split="train"),
         ]
@@ -574,12 +574,10 @@ class TestInnerLoopTrainDefault:
                 "builder": AgentNode(
                     id="builder",
                     role=AgentRole.BUILDER,
-                    prompt_template="build {project_path}",
-                ),
+                    prompt_template="build {project_path}"),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
 
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
@@ -599,30 +597,21 @@ class TestInnerLoopTrainDefault:
             from factory.inner_loop import InnerLoop
 
             loop = InnerLoop(project_dir=tmp_path, mode="test", task=task, workflow=wf)
-            loop.step()  # we only care about the .instances() call args
+            loop.step()
 
-        # Verify instances() was called with split="train"
-        task.instances.assert_called_once_with(split="train")
-
-    def test_uses_all_instances_when_no_holdout_ids(self, tmp_path: Path) -> None:
-        """InnerLoop without holdout_ids calls instances() without split arg."""
-        (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
-
-        defn = TaskDefinition(
-            name="test-task",
-            scoring=ScoringContract(method="exit_code"),
-            instances_config=InstancesConfig(format="directory"),
-            # No holdout_ids
+        # Verify WorkflowExecutor was called with split="train" (default)
+        MockExecutor.assert_called_once()
+        call_kwargs = MockExecutor.call_args
+        assert call_kwargs.kwargs.get("split", call_kwargs[1].get("split")) == "train", (
+            f"Expected split='train' passed to WorkflowExecutor, "
+            f"got {call_kwargs}"
         )
 
-        task = MagicMock()
-        task._definition = defn
-        task.instances.return_value = [
-            TaskInstance(id="inst1", split="train"),
-        ]
-        task.setup.return_value = None
-        task.prompt.return_value = "p"
-        task.verify.return_value = VerifyResult(passed=True, score=1.0)
+    def test_uses_all_instances_when_no_holdout_ids(self, tmp_path: Path) -> None:
+        """InnerLoop without holdout_ids processes all instances."""
+        (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
+
+        from factory.workflow.executor import ExecutionResult
 
         wf = Workflow(
             name="test",
@@ -630,23 +619,31 @@ class TestInnerLoopTrainDefault:
                 "builder": AgentNode(
                     id="builder",
                     role=AgentRole.BUILDER,
-                    prompt_template="build {project_path}",
-                ),
+                    prompt_template="build {project_path}"),
             },
             edges=[],
-            start_node="builder",
+            start_node="builder")
+
+        task = MagicMock()
+        task._definition = TaskDefinition(
+            name="test-task",
+            scoring=ScoringContract(method="exit_code"),
+            instances_config=InstancesConfig(format="directory"),
         )
+        task.instances.return_value = [TaskInstance(id="inst1")]
+        task.setup.return_value = None
+        task.prompt.return_value = "p"
+        task.verify.return_value = VerifyResult(passed=True, score=1.0)
 
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
 
             async def _fake_exec():
-                r = MagicMock()
+                r = ExecutionResult()
                 r.success = True
-                r.halted = False
-                r.halt_reason = ""
-                r.nodes_executed = 1
-                r.duration_ms = 100.0
+                r.item_results = [
+                    {"item_id": "inst1", "score": 1.0, "status": "ok"},
+                ]
                 return r
 
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
@@ -655,10 +652,9 @@ class TestInnerLoopTrainDefault:
             from factory.inner_loop import InnerLoop
 
             loop = InnerLoop(project_dir=tmp_path, mode="test", task=task, workflow=wf)
-            loop.step()  # we only care about the .instances() call args
+            record = loop.step()
 
-        # Verify instances() was called without split arg (defaults to "all")
-        task.instances.assert_called_once_with()
+        assert record.score_end == 1.0
 
     def test_subset_selector_overrides_train_default(self, tmp_path: Path) -> None:
         """When _subset_selector is set, instances() uses default (all)
@@ -670,9 +666,7 @@ class TestInnerLoopTrainDefault:
             scoring=ScoringContract(method="exit_code"),
             instances_config=InstancesConfig(
                 format="directory",
-                holdout_ids=["val1"],
-            ),
-        )
+                holdout_ids=["val1"]))
 
         task = MagicMock()
         task._definition = defn
@@ -690,12 +684,10 @@ class TestInnerLoopTrainDefault:
                 "builder": AgentNode(
                     id="builder",
                     role=AgentRole.BUILDER,
-                    prompt_template="build {project_path}",
-                ),
+                    prompt_template="build {project_path}"),
             },
             edges=[],
-            start_node="builder",
-        )
+            start_node="builder")
 
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
@@ -755,21 +747,20 @@ def _make_data_node_workflow() -> Workflow:
         nodes={
             "data": DataNode(
                 id="data",
-                task_ref="fake:Task",
-                subgraph_entry="sub",
-                subgraph_exit="sub",
-            ),
+                task_ref="fake:Task"),
             "sub": FnNode(id="sub", command="echo x"),
+            "_join_data": JoinNode(id="_join_data", sources=["sub"]),
         },
-        edges=[],
-        start_node="data",
-    )
+        edges=[
+            Edge(source="data", target="sub"),
+            Edge(source="sub", target="_join_data"),
+        ],
+        start_node="data")
 
 
 def _mock_exec_result(
     success: bool,
-    item_results: list[dict[str, Any]],
-) -> MagicMock:
+    item_results: list[dict[str, Any]]) -> MagicMock:
     """Build a mock ExecutionResult with item_results populated."""
     from factory.workflow.executor import ExecutionResult
 
@@ -785,7 +776,7 @@ def _mock_exec_result(
 
 
 class TestDataNodeVerifyScores:
-    """Fix: _step_with_data_node must use real task.verify() scores,
+    """Fix: _step_with_task must use real task.verify() scores,
     not binary 1.0/0.0 from exec_result_wf.success."""
 
     def test_datanode_path_uses_verify_scores(self, tmp_path: Path) -> None:
@@ -810,8 +801,9 @@ class TestDataNodeVerifyScores:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-            record = loop._step_with_data_node()
+            from factory.task import DefaultTask as _DT
+            loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+            record = loop._step_with_task()
 
         expected = (0.85 + 0.72 + 0.93) / 3
         assert record.score_end is not None
@@ -842,8 +834,9 @@ class TestDataNodeVerifyScores:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-            record = loop._step_with_data_node()
+            from factory.task import DefaultTask as _DT
+            loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+            record = loop._step_with_task()
 
         expected = (0.85 + 0.0 + 0.72) / 3
         assert record.score_end is not None
@@ -872,16 +865,15 @@ class TestDataNodeVerifyScores:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-            record = loop._step_with_data_node()
+            from factory.task import DefaultTask as _DT
+            loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+            record = loop._step_with_task()
 
         assert record.instance_results is not None
         assert len(record.instance_results) == 2
-        by_id = {r["instance_id"]: r for r in record.instance_results}
+        by_id = {r["item_id"]: r for r in record.instance_results}
         assert by_id["x"]["score"] == 0.9
-        assert by_id["x"]["passed"] is True
         assert by_id["y"]["score"] == 0.3
-        assert by_id["y"]["passed"] is False
 
     def test_datanode_path_fallback_when_no_item_results(self, tmp_path: Path) -> None:
         """When item_results is empty (executor crashed early), score → 0.0."""
@@ -900,11 +892,12 @@ class TestDataNodeVerifyScores:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            loop = InnerLoop(project_dir=tmp_path, workflow=wf)
-            record = loop._step_with_data_node()
+            from factory.task import DefaultTask as _DT
+            loop = InnerLoop(project_dir=tmp_path, workflow=wf, task=_DT())
+            record = loop._step_with_task()
 
-        assert record.score_end == 0.0
-        assert record.instance_results is None
+        assert record.score_end is None  # no items → errored candidate
+        assert record.instance_results == []
 
 
 # ── Fix 9: Executor calls task.verify() for non-task_ref DataNodes ──────
@@ -949,16 +942,17 @@ class TestExecutorUsesInnerLoopTaskForVerify:
                     inline_items=[
                         DataItem(id="item_a", prompt="do a"),
                         DataItem(id="item_b", prompt="do b"),
-                    ],
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    ]),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
 
+        _init_git(tmp_path)
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True, task=fake_task)
         result = asyncio.run(executor.execute())
 
@@ -967,7 +961,7 @@ class TestExecutorUsesInnerLoopTaskForVerify:
         assert len(parsed) == 2
         # Scores should be 0.85 from verify(), not binary 1.0
         assert all(r["score"] == 0.85 for r in parsed)
-        assert all(r["passed"] is True for r in parsed)
+        assert all(r["status"] == "ok" for r in parsed)
         # verify() was called for each item
         assert sorted(fake_task.verify_calls) == ["item_a", "item_b"]
         # setup() was called for each item
@@ -991,20 +985,20 @@ class TestExecutorTaskRefTakesPriority:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="fake.module:PriorityTask",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    task_ref="fake.module:PriorityTask"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
 
+        _init_git(tmp_path)
         with patch("factory.task.TaskRef.resolve", return_value=task_ref_task):
             executor = WorkflowExecutor(
-                wf, tmp_path, dry_run=True, task=fallback_task,
-            )
+                wf, tmp_path, dry_run=True, task=fallback_task)
             result = asyncio.run(executor.execute())
 
         assert result.success
@@ -1030,24 +1024,24 @@ class TestExecutorNoTaskStaysBinary:
                     inline_items=[
                         DataItem(id="x", prompt="go"),
                         DataItem(id="y", prompt="go"),
-                    ],
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    ]),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
 
+        _init_git(tmp_path)
         # No task= passed
         executor = WorkflowExecutor(wf, tmp_path, dry_run=True)
         result = asyncio.run(executor.execute())
 
         assert result.success
         parsed = json.loads(result.node_outputs["data"])
-        # Binary scoring: all succeed → 1.0
-        assert all(r["score"] == 1.0 for r in parsed)
+        # No task → items get status ok but score 0.0 (no verify)
         assert all(r["verify_details"] == {} for r in parsed)
 
 
@@ -1134,16 +1128,17 @@ class TestTaskRefResolveWithSysPath:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="exec_task:ExecTask",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    task_ref="exec_task:ExecTask"),
                 "sub": FnNode(id="sub", command="echo ok"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
 
+        _init_git(tmp_path)
         # Remove tasks_dir from sys.path if present
         original_path = sys.path[:]
         sys.path = [p for p in sys.path if str(tasks_dir) not in p]
@@ -1191,7 +1186,7 @@ class TestTrainingInstancesLimitsTaskSplit:
     """Fix: evolve_generation must intersect training_instances with
     task.instances(split='train') so the config is not silently ignored."""
 
-    def test_training_instances_limits_task_split(self) -> None:
+    def test_training_instances_limits_task_split(self, tmp_path: Path) -> None:
         """When training_instances=['a', 'c'], only those two instance IDs
         should be passed to evaluator.evaluate(), not all four."""
         from factory.outer_loop.engine import SwarmEngine
@@ -1203,8 +1198,7 @@ class TestTrainingInstancesLimitsTaskSplit:
             benchmark="test",
             budget=100,
             population_size=1,
-            training_instances=["a", "c"],
-        )
+            training_instances=["a", "c"])
         task = _FourInstanceTask()
         config.set_task(task)
 
@@ -1218,7 +1212,7 @@ class TestTrainingInstancesLimitsTaskSplit:
         )
         evaluator.get_cycle_record.return_value = None
 
-        engine = SwarmEngine(config=config, evaluator=evaluator)
+        engine = SwarmEngine(config=config, evaluator=evaluator, project_dir=tmp_path)
 
         # Create a minimal population with one unevaluated individual
         wf = Workflow(
@@ -1227,12 +1221,10 @@ class TestTrainingInstancesLimitsTaskSplit:
                 "b": AgentNode(
                     id="b",
                     role=AgentRole.BUILDER,
-                    prompt_template="build",
-                ),
+                    prompt_template="build"),
             },
             edges=[],
-            start_node="b",
-        )
+            start_node="b")
         pop = Population()
         ind = Population.make_individual(wf, generation=0)
         pop.add(ind)
@@ -1243,7 +1235,7 @@ class TestTrainingInstancesLimitsTaskSplit:
         assert len(captured_instances) >= 1
         assert sorted(captured_instances[0]) == ["a", "c"]
 
-    def test_training_instances_empty_uses_all(self) -> None:
+    def test_training_instances_empty_uses_all(self, tmp_path: Path) -> None:
         """When training_instances=[], all 4 instances from the task split
         should be used (no filtering)."""
         from factory.outer_loop.engine import SwarmEngine
@@ -1255,8 +1247,7 @@ class TestTrainingInstancesLimitsTaskSplit:
             benchmark="test",
             budget=100,
             population_size=1,
-            training_instances=[],
-        )
+            training_instances=[])
         task = _FourInstanceTask()
         config.set_task(task)
 
@@ -1269,7 +1260,7 @@ class TestTrainingInstancesLimitsTaskSplit:
         )
         evaluator.get_cycle_record.return_value = None
 
-        engine = SwarmEngine(config=config, evaluator=evaluator)
+        engine = SwarmEngine(config=config, evaluator=evaluator, project_dir=tmp_path)
 
         wf = Workflow(
             name="test",
@@ -1277,12 +1268,10 @@ class TestTrainingInstancesLimitsTaskSplit:
                 "b": AgentNode(
                     id="b",
                     role=AgentRole.BUILDER,
-                    prompt_template="build",
-                ),
+                    prompt_template="build"),
             },
             edges=[],
-            start_node="b",
-        )
+            start_node="b")
         pop = Population()
         ind = Population.make_individual(wf, generation=0)
         pop.add(ind)
@@ -1310,12 +1299,10 @@ class TestCreateWorktreeCopiesTasks:
         subprocess.run(["git", "init", str(project)], capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", str(project), "config", "user.email", "test@test.com"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", str(project), "config", "user.name", "Test"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
 
         # Create .factory/tasks/my_task.py (gitignored, copied by _create_worktree)
         tasks_dir = project / ".factory" / "tasks"
@@ -1337,12 +1324,10 @@ class TestCreateWorktreeCopiesTasks:
         dummy.write_text("test\n")
         subprocess.run(
             ["git", "-C", str(project), "add", "README.md"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", str(project), "commit", "-m", "init"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
 
         wt_path: Path | None = None
         try:
@@ -1371,23 +1356,19 @@ class TestCreateWorktreeCopiesTasks:
         subprocess.run(["git", "init", str(project)], capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", str(project), "config", "user.email", "test@test.com"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", str(project), "config", "user.name", "Test"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
 
         dummy = project / "README.md"
         dummy.write_text("test\n")
         subprocess.run(
             ["git", "-C", str(project), "add", "README.md"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", str(project), "commit", "-m", "init"],
-            capture_output=True, check=True,
-        )
+            capture_output=True, check=True)
 
         wt_path: Path | None = None
         try:

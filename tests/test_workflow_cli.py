@@ -149,7 +149,7 @@ class TestCmdRun:
 def _build_simple_workflow() -> Workflow:
     """Build a small workflow with various node types for testing."""
     nodes: dict[str, AgentNode | FnNode | GateNode | ForkNode | JoinNode | Study] = {
-        "study": Study(id="study", reads=set(), writes={"observations"}, focus="code"),
+        "study": Study(id="study", command="factory study {project_path}", reads=set(), writes={"observations"}, focus="code"),
         "research": AgentNode(
             id="research", role=AgentRole.RESEARCHER, reads={"observations"}, writes={"findings"}
         ),
@@ -158,7 +158,7 @@ def _build_simple_workflow() -> Workflow:
         ),
         "fork": ForkNode(id="fork", targets=["build_a", "build_b"], reads=set(), writes=set()),
         "join": JoinNode(id="join", sources=["build_a", "build_b"], reads=set(), writes=set()),
-        "build_fn": FnNode(id="build_fn", reads=set(), writes={"artifact"}),
+        "build_fn": FnNode(id="build_fn", command="echo build", reads=set(), writes={"artifact"}),
     }
     edges = [
         Edge(source="study", target="research"),
@@ -314,7 +314,7 @@ class TestCmdShow:
         """Verify reads/writes longer than 28 chars are truncated."""
         long_reads = {f"very_long_read_name_{i}" for i in range(5)}
         nodes: dict[str, FnNode] = {
-            "fn": FnNode(id="fn", reads=long_reads, writes=long_reads),
+            "fn": FnNode(id="fn", command="echo x", reads=long_reads, writes=long_reads),
         }
         wf = Workflow(
             name="long_wf",

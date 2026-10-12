@@ -54,6 +54,7 @@ class Individual(BaseModel):
     parent_id: str | None = None
     mutation_record: MutationRecord | None = None
     cost_usd: float = 0.0
+    errored: bool = False
 
     @field_validator("features", mode="before")
     @classmethod
@@ -100,7 +101,6 @@ class SwarmConfig(BaseModel):
     mutation_strategy: str = "weighted_random"
     designer_count: int = 2
     training_instances: list[str] = Field(default_factory=list)
-    holdout_instances: list[str] = Field(default_factory=list)
     plateau_window: int = 3
     plateau_threshold: float = 0.01
     diversity_floor: float = 0.2
@@ -115,18 +115,6 @@ class SwarmConfig(BaseModel):
     task_module: str = ""
     seed_workflow_module: str = ""
     execution_strategy: Literal["executor", "ceo-skill", "ceo-tool"] = "executor"
-
-    @field_validator("holdout_instances")
-    @classmethod
-    def _no_overlap_with_training(cls, v: list[str], info: object) -> list[str]:
-        data = getattr(info, "data", {})
-        training = data.get("training_instances", [])
-        overlap = set(v) & set(training)
-        if overlap:
-            raise ValueError(
-                f"holdout_instances must not overlap with training_instances: {overlap}"
-            )
-        return v
 
     # ── Task integration (not serialised — set at runtime) ───────
 
@@ -206,6 +194,7 @@ class EvalResult(BaseModel):
     hygiene_score: float = 0.0
     cost_usd: float = 0.0
     complexity: float = 0.0
+    errored: bool = False
     details: dict[str, object] = Field(default_factory=dict)
 
 
@@ -228,7 +217,7 @@ class OuterLoopResult(BaseModel):
 
     best_workflow_data: dict[str, object] = Field(default_factory=dict)
     best_score: float = 0.0
-    val_score: float = 0.0
+    val_score: float | None = None
     overfit_flag: bool = False
     trajectory: list[GenerationSummary] = Field(default_factory=list)
     total_cost_usd: float = 0.0

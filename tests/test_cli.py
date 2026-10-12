@@ -3059,12 +3059,10 @@ class TestDataNodeTaskFlags:
         # Example code block is present
         assert "```python" in task
         assert "DataNode(" in task
-        assert "subgraph_entry" in task
-        assert "subgraph_exit" in task
+        assert "JoinNode" in task
+        assert "Edge" in task
         # current_item.json documentation is present
         assert "current_item.json" in task
-        # Template variables warning is present
-        assert "template variables" in task
         # JSON structure example is present
         assert '"id"' in task
         assert '"prompt"' in task

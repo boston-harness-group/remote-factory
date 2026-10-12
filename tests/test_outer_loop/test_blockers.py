@@ -1,13 +1,8 @@
-"""Tests for PR #1571 code review blockers.
+"""Tests for outer-loop data pipeline integrity.
 
-Bug 1: holdout leakage in _step_with_data_node
-Bug 2: empty training set intersection silently becomes 'all'
-Bug 3: _validate_and_fix breaks RELOOP-only gates
-Bug 4: aggregation hardcoded to mean
-Bug 5: CEO-strategy DataNode path has no firewall
-Bug 6: halt_reason never reaches CycleRecord
-Bug 7: allowed_instance_ids filter drops all inline/source_path items
-Bug 8: aggregate config from source project reaches inner loop via compose()
+Covers holdout leakage, empty training set intersection, RELOOP gate
+validation, aggregation methods, CEO-strategy DataNode path, halt_reason
+propagation, inline items filtering, and aggregate config propagation.
 """
 
 from __future__ import annotations
@@ -16,13 +11,14 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 from factory.task import (
     InstancesConfig,
     ScoringContract,
     TaskDefinition,
-    TaskInstance,
-)
+    TaskInstance)
 from factory.workflow.primitives import (
     AgentNode,
     AgentRole,
@@ -31,17 +27,33 @@ from factory.workflow.primitives import (
     Edge,
     FnNode,
     GateNode,
+    JoinNode,
     VerdictType,
-    Workflow,
-)
+    Workflow)
+
+import subprocess as _sp
 
 
-# ── Bug 1: holdout leakage in _step_with_data_node ──────────────────────────
+def _init_git(path: Path) -> None:
+    """Initialize a minimal git repo for DataNode worktree tests."""
+    _sp.run(["git", "init", str(path)], capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "config", "user.email", "t@t"],
+            capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "config", "user.name", "t"],
+            capture_output=True, check=True)
+    (path / "README.md").write_text("test\n")
+    _sp.run(["git", "-C", str(path), "add", "."],
+            capture_output=True, check=True)
+    _sp.run(["git", "-C", str(path), "commit", "-m", "init"],
+            capture_output=True, check=True)
+
+
+# ── Bug 1: holdout leakage in _step_with_task ──────────────────────────
 
 
 class TestDataNodeHoldoutLeakage:
     """When holdout_ids are configured and no subset_selector is set,
-    _step_with_data_node must restrict allowed_instance_ids to train-only IDs."""
+    _step_with_task must restrict allowed_instance_ids to train-only IDs."""
 
     def test_data_node_holdout_leakage(self, tmp_path: Path) -> None:
         (tmp_path / ".factory").mkdir(parents=True, exist_ok=True)
@@ -51,9 +63,7 @@ class TestDataNodeHoldoutLeakage:
             scoring=ScoringContract(method="exit_code"),
             instances_config=InstancesConfig(
                 format="directory",
-                holdout_ids=["val1", "val2"],
-            ),
-        )
+                holdout_ids=["val1", "val2"]))
 
         task = MagicMock()
         task._definition = defn
@@ -76,15 +86,15 @@ class TestDataNodeHoldoutLeakage:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="fake:Task",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    task_ref="fake:Task"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
 
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
@@ -110,7 +120,7 @@ class TestDataNodeHoldoutLeakage:
             loop = InnerLoop(project_dir=tmp_path, mode="test", task=task, workflow=wf)
             # No _subset_selector set — holdout_ids should trigger train filtering
             assert not hasattr(loop, '_subset_selector') or getattr(loop, '_subset_selector', None) is None
-            loop._step_with_data_node()
+            loop._step_with_task()
 
             # Verify WorkflowExecutor was constructed with allowed_instance_ids
             call_kwargs = MockExecutor.call_args
@@ -130,7 +140,7 @@ class TestEmptyTrainingIntersectionWarns:
     """When training_instances has no overlap with task train split,
     evolve_generation must warn and fall back to the full train split."""
 
-    def test_empty_training_intersection_warns(self) -> None:
+    def test_empty_training_intersection_warns(self, tmp_path) -> None:
         from factory.outer_loop.engine import SwarmEngine
         from factory.outer_loop.evaluator import SwarmEvaluator
         from factory.outer_loop.models import SwarmConfig
@@ -155,7 +165,7 @@ class TestEmptyTrainingIntersectionWarns:
         from factory.outer_loop.models import EvalResult
         evaluator.evaluate.return_value = EvalResult(score=0.5, cost_usd=0.01, benchmark_score=0.5)
         evaluator.get_cycle_record.return_value = None
-        engine = SwarmEngine(config=config, evaluator=evaluator)
+        engine = SwarmEngine(config=config, evaluator=evaluator, project_dir=tmp_path)
 
         wf = Workflow(
             name="test",
@@ -163,12 +173,10 @@ class TestEmptyTrainingIntersectionWarns:
                 "b": AgentNode(
                     id="b",
                     role=AgentRole.BUILDER,
-                    prompt_template="build",
-                ),
+                    prompt_template="build"),
             },
             edges=[],
-            start_node="b",
-        )
+            start_node="b")
         pop = Population()
         ind = Population.make_individual(wf, generation=0)
         pop.add(ind)
@@ -209,16 +217,14 @@ class TestReloopOnlyGateNotModified:
                 "builder": AgentNode(
                     id="builder",
                     role=AgentRole.BUILDER,
-                    prompt_template="build {project_path}",
-                ),
+                    prompt_template="build {project_path}"),
                 "gate": GateNode(id="gate"),
             },
             edges=[
                 Edge(source="builder", target="gate"),
                 Edge(source="gate", target="builder", condition=VerdictType.RELOOP),
             ],
-            start_node="builder",
-        )
+            start_node="builder")
 
         fixed = _validate_and_fix(wf, seed_workflow=None)
 
@@ -254,13 +260,11 @@ class TestValidateAndFixDeterministicTarget:
                 "builder_a": AgentNode(
                     id="builder_a",
                     role=AgentRole.BUILDER,
-                    prompt_template="build {project_path}",
-                ),
+                    prompt_template="build {project_path}"),
                 "builder_z": AgentNode(
                     id="builder_z",
                     role=AgentRole.BUILDER,
-                    prompt_template="build {project_path}",
-                ),
+                    prompt_template="build {project_path}"),
                 "gate": GateNode(id="gate"),
             },
             edges=[
@@ -268,8 +272,7 @@ class TestValidateAndFixDeterministicTarget:
                 Edge(source="gate", target="builder_z", condition=VerdictType.HALT),
                 Edge(source="gate", target="builder_a", condition=VerdictType.HALT),
             ],
-            start_node="builder_a",
-        )
+            start_node="builder_a")
 
         # Run multiple times — result must always be the same
         results = []
@@ -309,21 +312,20 @@ class TestAggregateMethodRespected:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="fake:Task",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    task_ref="fake:Task"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
 
         task = MagicMock()
         task._definition = TaskDefinition(
             name="agg-task",
-            scoring=ScoringContract(method="exit_code"),
-        )
+            scoring=ScoringContract(method="exit_code"))
         task.instances.return_value = [
             TaskInstance(id="i1"),
             TaskInstance(id="i2"),
@@ -334,8 +336,7 @@ class TestAggregateMethodRespected:
             mode="test",
             task=task,
             workflow=wf,
-            inner_loop_config=config,
-        )
+            inner_loop_config=config)
 
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
@@ -356,7 +357,7 @@ class TestAggregateMethodRespected:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            record = loop._step_with_data_node()
+            record = loop._step_with_task()
 
         # With max aggregation: score should be 0.9, not mean 0.7
         assert record.score_end == 0.9, (
@@ -382,21 +383,20 @@ class TestCeoPathUsesInstanceResultsScores:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="fake:Task",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    task_ref="fake:Task"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
 
         task = MagicMock()
         task._definition = TaskDefinition(
             name="ceo-task",
-            scoring=ScoringContract(method="exit_code"),
-        )
+            scoring=ScoringContract(method="exit_code"))
         task.instances.return_value = [TaskInstance(id="i1")]
 
         loop = InnerLoop(
@@ -404,8 +404,7 @@ class TestCeoPathUsesInstanceResultsScores:
             mode="test",
             task=task,
             workflow=wf,
-            execution_strategy="ceo-skill",
-        )
+            execution_strategy="ceo-skill")
 
         # Write a cycle_summary.json with instance_results containing real scores
         summary_dir = tmp_path / ".factory" / "outer_loop" / "runs" / "test"
@@ -419,21 +418,9 @@ class TestCeoPathUsesInstanceResultsScores:
         }
         (summary_dir / "cycle_summary.json").write_text(json.dumps(summary))
 
-        # Mock _run_ceo_subprocess to return success
-        from factory.inner_loop import _SubprocessExecutionResult
-
-        mock_result = _SubprocessExecutionResult(
-            success=True, halted=False, halt_reason="",
-            nodes_executed=1, duration_ms=100,
-        )
-
-        with patch.object(loop, "_run_ceo_subprocess", return_value=mock_result):
-            record = loop._step_with_data_node()
-
-        # Score should be mean of real scores (0.75, 0.85) = 0.8, not binary 1.0
-        assert abs(record.score_end - 0.8) < 0.01, (
-            f"Expected mean of instance scores ~0.8, got {record.score_end}"
-        )
+        # ceo-skill DataNode is rejected (deferred to PR B)
+        with pytest.raises(ValueError, match="not supported"):
+            loop._step_with_task()
 
 
 # ── Bug 6: halt_reason in CycleRecord ────────────────────────────────────
@@ -452,29 +439,27 @@ class TestHaltReasonInCycleRecord:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="fake:Task",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    task_ref="fake:Task"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
 
         task = MagicMock()
         task._definition = TaskDefinition(
             name="halt-task",
-            scoring=ScoringContract(method="exit_code"),
-        )
+            scoring=ScoringContract(method="exit_code"))
         task.instances.return_value = [TaskInstance(id="i1")]
 
         loop = InnerLoop(
             project_dir=tmp_path,
             mode="test",
             task=task,
-            workflow=wf,
-        )
+            workflow=wf)
 
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             mock_exec = MagicMock()
@@ -492,7 +477,7 @@ class TestHaltReasonInCycleRecord:
             mock_exec.execute = MagicMock(side_effect=_fake_exec)
             MockExecutor.return_value = mock_exec
 
-            record = loop._step_with_data_node()
+            record = loop._step_with_task()
 
         assert record.eval_details is not None, "eval_details should be set on halt"
         assert record.eval_details.get("halt_reason") == "node 'builder' failed: timeout"
@@ -508,34 +493,32 @@ class TestHaltReasonInCycleRecord:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="fake:Task",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    task_ref="fake:Task"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
 
         task = MagicMock()
         task._definition = TaskDefinition(
             name="val-err-task",
-            scoring=ScoringContract(method="exit_code"),
-        )
+            scoring=ScoringContract(method="exit_code"))
         task.instances.return_value = [TaskInstance(id="i1")]
 
         loop = InnerLoop(
             project_dir=tmp_path,
             mode="test",
             task=task,
-            workflow=wf,
-        )
+            workflow=wf)
 
         with patch("factory.workflow.executor.WorkflowExecutor") as MockExecutor:
             MockExecutor.side_effect = ValueError("empty prompt_template")
 
-            record = loop._step_with_data_node()
+            record = loop._step_with_task()
 
         assert record.score_end == 0.0
         assert record.eval_details is not None
@@ -560,20 +543,20 @@ class TestInlineItemsSkipAllowedFilter:
                     inline_items=[
                         DataItem(id="0", metadata={"text": "hello"}),
                         DataItem(id="1", metadata={"text": "world"}),
-                    ],
-                    subgraph_entry="builder",
-                    subgraph_exit="builder",
-                ),
+                    ]),
                 "builder": AgentNode(
                     id="builder",
                     role=AgentRole.BUILDER,
-                    prompt_template="build",
-                ),
+                    prompt_template="build"),
+                "_join_data": JoinNode(id="_join_data", sources=["builder"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="builder"),
+                Edge(source="builder", target="_join_data"),
+            ],
+            start_node="data")
 
+        _init_git(tmp_path)
         agent = FakeAgent(wf)
         executor = WorkflowExecutor(
             wf,
@@ -582,8 +565,7 @@ class TestInlineItemsSkipAllowedFilter:
             validate=False,
             auto_write_outputs=False,
             # Set allowed_instance_ids that DON'T match inline IDs '0','1'
-            allowed_instance_ids={"t1", "t2"},
-        )
+            allowed_instance_ids={"t1", "t2"})
         result = await executor.execute()
 
         # Inline items should NOT be filtered out — both should execute
@@ -618,22 +600,21 @@ class TestAggregateConfigReachesInnerLoop:
             nodes={
                 "data": DataNode(
                     id="data",
-                    task_ref="fake:Task",
-                    subgraph_entry="sub",
-                    subgraph_exit="sub",
-                ),
+                    task_ref="fake:Task"),
                 "sub": FnNode(id="sub", command="echo x"),
+                "_join_data": JoinNode(id="_join_data", sources=["sub"]),
             },
-            edges=[],
-            start_node="data",
-        )
+            edges=[
+                Edge(source="data", target="sub"),
+                Edge(source="sub", target="_join_data"),
+            ],
+            start_node="data")
 
         # Create a mock task for config.set_task()
         task = MagicMock()
         task._definition = TaskDefinition(
             name="agg-reach-task",
-            scoring=ScoringContract(method="exit_code"),
-        )
+            scoring=ScoringContract(method="exit_code"))
         task.instances.return_value = [TaskInstance(id="i1")]
         task.get_evaluator.return_value = MagicMock()
 
@@ -645,7 +626,7 @@ class TestAggregateConfigReachesInnerLoop:
         # Capture the inner_loop_config that compose() receives
         captured: dict[str, object] = {}
 
-        def mock_compose(workflow, task, project_dir, inner_loop_config=None):
+        def mock_compose(workflow, task, project_dir, inner_loop_config=None, split="train"):
             captured["inner_loop_config"] = inner_loop_config
             # Return a mock loop whose step() returns a minimal CycleRecord
             mock_loop = MagicMock()
@@ -658,8 +639,7 @@ class TestAggregateConfigReachesInnerLoop:
                 duration_s=0.1,
                 score_start=0.0,
                 score_end=1.0,
-                score_delta=1.0,
-            )
+                score_delta=1.0)
             return mock_loop
 
         with (
@@ -667,14 +647,12 @@ class TestAggregateConfigReachesInnerLoop:
             patch.object(
                 SwarmEvaluator, "_create_worktree", return_value=tmp_path
             ),
-            patch.object(SwarmEvaluator, "_cleanup_worktree"),
-        ):
+            patch.object(SwarmEvaluator, "_cleanup_worktree")):
             evaluator._evaluate_via_inner_loop(
                 workflow=wf,
                 project_dir=str(tmp_path),
                 instances=["i1"],
-                individual_id="test-id-12345678",
-            )
+                individual_id="test-id-12345678")
 
         ilc = captured.get("inner_loop_config")
         assert ilc is not None, "inner_loop_config should be passed to compose()"

@@ -53,7 +53,7 @@ _NODE_FIELDS: tuple[str, ...] = (
     # ForkNode / JoinNode
     "targets",
     "sources",
-    # SubgraphForkNode
+    # SubgraphForkNode (subgraph_entry/exit also used by SubgraphForkNode)
     "subgraph_entry",
     "subgraph_exit",
     "parallelism",
