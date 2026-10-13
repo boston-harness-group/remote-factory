@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 from collections import deque
+from datetime import datetime, timezone
 import json
 import re
 import shlex
@@ -172,6 +173,7 @@ class WorkflowExecutor:
     async def execute(self) -> ExecutionResult:
         """Run the workflow from start to completion."""
         start_time = time.monotonic()
+        workflow_start_utc = datetime.now(timezone.utc)
 
         self._emit(
             "workflow.started",
@@ -245,7 +247,59 @@ class WorkflowExecutor:
                 ),
             )
 
+        self._write_usage_json(workflow_start_utc)
+
         return self.result
+
+    def _write_usage_json(self, since: datetime) -> None:
+        """Write aggregated token usage to ``.factory/<mode>/usage.json``.
+
+        Sums cost and token counts from ``agent.completed`` events emitted
+        during this workflow run.  The file follows the ``AgentUsage`` field
+        names so downstream consumers (balor-fianna) can read it directly.
+        Best-effort: a failure here must not mask a workflow result.
+        """
+        try:
+            from factory.events import load_events
+
+            events = load_events(self.project_path, since=since)
+            input_tokens = 0
+            output_tokens = 0
+            cache_read_tokens = 0
+            cache_creation_tokens = 0
+            total_cost_usd = 0.0
+
+            for ev in events:
+                if ev.get("type") != "agent.completed":
+                    continue
+                data = ev.get("data", {})
+                input_tokens += int(data.get("input_tokens", 0) or 0)
+                output_tokens += int(data.get("output_tokens", 0) or 0)
+                cache_read_tokens += int(data.get("cache_read_tokens", 0) or 0)
+                total_cost_usd += float(data.get("total_cost_usd", 0.0) or 0.0)
+
+            if not any((input_tokens, output_tokens, total_cost_usd)):
+                return
+
+            usage_dir = self.project_path / ".factory" / self.workflow.name
+            usage_dir.mkdir(parents=True, exist_ok=True)
+            usage = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_creation_tokens": cache_creation_tokens,
+                "total_cost_usd": round(total_cost_usd, 6),
+            }
+            (usage_dir / "usage.json").write_text(json.dumps(usage, indent=2) + "\n")
+            log.info(
+                "workflow.usage_written",
+                workflow=self.workflow.name,
+                cost_usd=usage["total_cost_usd"],
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+        except Exception:
+            log.warning("workflow.usage_write_failed", exc_info=True)
 
     async def _execute_from(self, node_id: str) -> None:
         """Execute starting from the given node, following edges."""
