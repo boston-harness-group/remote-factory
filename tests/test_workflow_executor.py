@@ -1266,3 +1266,105 @@ async def test_agent_stdout_does_not_overwrite_tool_written_file(tmp_path: Path)
         f"Expected: {agent_written_content!r}\n"
         f"Got: {actual!r}"
     )
+
+
+# ── Usage JSON ────────────────────────────────────────────────────
+
+
+class TestUsageJson:
+    """Verify that _write_usage_json aggregates agent cost data."""
+
+    async def test_writes_usage_from_agent_events(self, tmp_project: Path) -> None:
+        """usage.json is written with summed cost/tokens from agent.completed events."""
+        import json
+        from datetime import datetime, timezone
+
+        from factory.events import emit_event
+
+        before = datetime.now(timezone.utc)
+        emit_event(tmp_project, "agent.completed", agent="analyst", data={
+            "return_code": 0,
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "cache_read_tokens": 200,
+            "total_cost_usd": 0.25,
+        })
+        emit_event(tmp_project, "agent.completed", agent="builder", data={
+            "return_code": 0,
+            "input_tokens": 3000,
+            "output_tokens": 1500,
+            "cache_read_tokens": 600,
+            "total_cost_usd": 0.75,
+        })
+
+        wf = Workflow(
+            name="exploit",
+            nodes={"a": FnNode(id="a", command="true", writes=set())},
+            edges=[],
+            start_node="a",
+        )
+        executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
+        executor._write_usage_json(before)
+
+        usage_path = tmp_project / ".factory" / "exploit" / "usage.json"
+        assert usage_path.exists()
+        usage = json.loads(usage_path.read_text())
+        assert usage["input_tokens"] == 4000
+        assert usage["output_tokens"] == 2000
+        assert usage["cache_read_tokens"] == 800
+        assert usage["total_cost_usd"] == 1.0
+
+    async def test_no_usage_when_no_agent_events(self, tmp_project: Path) -> None:
+        """No usage.json written when there are no agent.completed events."""
+        from datetime import datetime, timezone
+
+        wf = Workflow(
+            name="patch",
+            nodes={"a": FnNode(id="a", command="true", writes=set())},
+            edges=[],
+            start_node="a",
+        )
+        executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
+        executor._write_usage_json(datetime.now(timezone.utc))
+
+        usage_path = tmp_project / ".factory" / "patch" / "usage.json"
+        assert not usage_path.exists()
+
+    async def test_filters_events_before_workflow_start(self, tmp_project: Path) -> None:
+        """Only events after the workflow start timestamp are counted."""
+        import json
+        from datetime import datetime, timezone
+        import time
+
+        from factory.events import emit_event
+
+        emit_event(tmp_project, "agent.completed", agent="old", data={
+            "return_code": 0,
+            "input_tokens": 9999,
+            "output_tokens": 9999,
+            "total_cost_usd": 99.0,
+        })
+
+        time.sleep(0.01)
+        after = datetime.now(timezone.utc)
+
+        emit_event(tmp_project, "agent.completed", agent="new", data={
+            "return_code": 0,
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_cost_usd": 0.05,
+        })
+
+        wf = Workflow(
+            name="coverage",
+            nodes={"a": FnNode(id="a", command="true", writes=set())},
+            edges=[],
+            start_node="a",
+        )
+        executor = WorkflowExecutor(wf, tmp_project, dry_run=True)
+        executor._write_usage_json(after)
+
+        usage = json.loads((tmp_project / ".factory" / "coverage" / "usage.json").read_text())
+        assert usage["input_tokens"] == 100
+        assert usage["output_tokens"] == 50
+        assert usage["total_cost_usd"] == 0.05

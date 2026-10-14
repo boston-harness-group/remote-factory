@@ -263,7 +263,7 @@ def test_finalize_event_with_null_scores(tmp_path: Path) -> None:
     with patch("factory.store.ExperimentStore", return_value=mock_store), \
          patch("factory.cli.store._run", return_value=None), \
          patch("factory.events.load_events", return_value=[]), \
-         patch("factory.events.sum_agent_costs", return_value=0.0):
+         patch("factory.events.sum_agent_usage", return_value={}):
         from factory.cli import cmd_finalize
         cmd_finalize(ns)
 

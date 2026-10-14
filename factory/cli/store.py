@@ -82,7 +82,7 @@ def cmd_finalize(args: argparse.Namespace) -> int:
 
     cost = args.cost
     if cost is None:
-        from factory.events import load_events, sum_agent_costs
+        from factory.events import load_events, sum_agent_usage
         exp_events = load_events(project_path)
         exp_start = None
         for ev in reversed(exp_events):
@@ -91,7 +91,7 @@ def cmd_finalize(args: argparse.Namespace) -> int:
                 if ts_str:
                     exp_start = datetime.fromisoformat(ts_str)
                     break
-        cost = sum_agent_costs(project_path, since=exp_start) or None
+        cost = sum_agent_usage(project_path, since=exp_start).get("total_cost_usd") or None
 
     record = ExperimentRecord(
         id=args.id,

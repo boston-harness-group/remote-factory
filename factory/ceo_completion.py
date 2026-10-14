@@ -416,6 +416,33 @@ def _extract_session_id(project_path: Path) -> str | None:
     return None
 
 
+def _write_ceo_usage_json(project_path: Path, mode: str, since: datetime) -> None:
+    """Write aggregated token usage to ``.factory/<mode>/usage.json``.
+
+    Covers the CEO ``skill`` engine path, which does not go through
+    WorkflowExecutor.execute().
+    """
+    try:
+        from factory.events import sum_agent_usage
+
+        usage = sum_agent_usage(project_path, since=since)
+        if not usage:
+            return
+
+        usage_dir = project_path / ".factory" / mode
+        usage_dir.mkdir(parents=True, exist_ok=True)
+        (usage_dir / "usage.json").write_text(json.dumps(usage, indent=2) + "\n")
+        log.info(
+            "ceo.usage_written",
+            mode=mode,
+            cost_usd=usage["total_cost_usd"],
+            input_tokens=usage["input_tokens"],
+            output_tokens=usage["output_tokens"],
+        )
+    except Exception:
+        log.warning("ceo.usage_write_failed", exc_info=True)
+
+
 async def run_ceo_with_completion_guard(
     project_path: Path,
     initial_task: str,
@@ -577,6 +604,7 @@ async def run_ceo_with_completion_guard(
         gap = _detect_incomplete(project_path, mode, cycle_started_at=cycle_state.started_at)
         if gap is None:
             log.info("ceo_complete", attempt=attempt)
+            _write_ceo_usage_json(project_path, workflow_mode or mode, cycle_state.started_at)
             # Cycle complete — delete cycle state so next invocation starts fresh
             delete_cycle_state(project_path)
             return result, code

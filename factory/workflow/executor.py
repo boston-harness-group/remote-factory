@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 from collections import deque
+from datetime import datetime, timezone
 import json
 import re
 import shlex
@@ -172,6 +173,7 @@ class WorkflowExecutor:
     async def execute(self) -> ExecutionResult:
         """Run the workflow from start to completion."""
         start_time = time.monotonic()
+        workflow_start_utc = datetime.now(timezone.utc)
 
         self._emit(
             "workflow.started",
@@ -245,7 +247,31 @@ class WorkflowExecutor:
                 ),
             )
 
+        self._write_usage_json(workflow_start_utc)
+
         return self.result
+
+    def _write_usage_json(self, since: datetime) -> None:
+        """Write aggregated token usage to ``.factory/<mode>/usage.json``."""
+        try:
+            from factory.events import sum_agent_usage
+
+            usage = sum_agent_usage(self.project_path, since=since)
+            if not usage:
+                return
+
+            usage_dir = self.project_path / ".factory" / self.workflow.name
+            usage_dir.mkdir(parents=True, exist_ok=True)
+            (usage_dir / "usage.json").write_text(json.dumps(usage, indent=2) + "\n")
+            log.info(
+                "workflow.usage_written",
+                workflow=self.workflow.name,
+                cost_usd=usage["total_cost_usd"],
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"],
+            )
+        except Exception:
+            log.warning("workflow.usage_write_failed", exc_info=True)
 
     async def _execute_from(self, node_id: str) -> None:
         """Execute starting from the given node, following edges."""

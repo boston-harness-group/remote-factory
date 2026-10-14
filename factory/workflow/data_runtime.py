@@ -497,11 +497,11 @@ async def run_fork(
                         # invoke_agent (agent.completed → total_cost_usd).
                         # Never fabricate cost from duration — if cost is
                         # unknown, leave it as 0.0.
-                        from factory.events import sum_agent_costs
+                        from factory.events import sum_agent_usage
 
-                        branch_cost = sum_agent_costs(
+                        branch_cost = float(sum_agent_usage(
                             item_project_path, since=_cost_start,
-                        )
+                        ).get("total_cost_usd", 0.0))
                         if branch_cost == 0.0:
                             log.warning(
                                 "item_cost_zero",
@@ -514,11 +514,11 @@ async def run_fork(
                         # NOT errored (which would exclude from scoring).
                         # Read agent costs even on crash — agents may have
                         # run (and spent money) before the failure.
-                        from factory.events import sum_agent_costs as _sum_costs
+                        from factory.events import sum_agent_usage as _sum_usage
 
-                        branch_cost = _sum_costs(
+                        branch_cost = float(_sum_usage(
                             item_project_path, since=_cost_start,
-                        )
+                        ).get("total_cost_usd", 0.0))
                         duration_s = time.monotonic() - t0
                         log.warning(
                             "branch_execution_failed",
