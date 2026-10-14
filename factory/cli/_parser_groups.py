@@ -647,6 +647,8 @@ def add_entry_point_parsers(sub: argparse._SubParsersAction) -> None:  # type: i
                     help="Claude model override")
     p.add_argument("--loop", action="store_true", default=False,
                     help="Enable workflow-tune loop: adds /workflow-tune skill for iterative tuning")
+    p.add_argument("--profile", default=None,
+                    help="Credential profile from ~/.factory/config.toml")
 
     from factory.cli.contained import build_contained_parser
     build_contained_parser(sub)
