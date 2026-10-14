@@ -66,19 +66,45 @@ def load_events(
     return events
 
 
-def sum_agent_costs(
+def sum_agent_usage(
     project_path: Path,
     *,
     since: datetime | None = None,
-) -> float:
-    """Sum total_cost_usd from agent.completed events, optionally since a timestamp."""
+) -> dict[str, int | float]:
+    """Sum token counts and cost from agent.completed events.
+
+    Returns a dict with input_tokens, output_tokens, cache_read_tokens,
+    cache_creation_tokens, and total_cost_usd.  Returns an empty dict
+    when no usage was found.
+    """
     events = load_events(project_path, since=since)
-    total = 0.0
+    input_tokens = 0
+    output_tokens = 0
+    cache_read_tokens = 0
+    cache_creation_tokens = 0
+    total_cost_usd = 0.0
+
     for ev in events:
         if ev.get("type") != "agent.completed":
             continue
-        total += ev.get("data", {}).get("total_cost_usd", 0.0)
-    return total
+        data = ev.get("data", {})
+        input_tokens += int(data.get("input_tokens", 0) or 0)
+        output_tokens += int(data.get("output_tokens", 0) or 0)
+        cache_read_tokens += int(data.get("cache_read_tokens", 0) or 0)
+        cache_creation_tokens += int(data.get("cache_creation_tokens", 0) or 0)
+        total_cost_usd += float(data.get("total_cost_usd", 0.0) or 0.0)
+
+    if not any((input_tokens, output_tokens, total_cost_usd)):
+        return {}
+
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+        "total_cost_usd": round(total_cost_usd, 6),
+    }
+
 
 
 def discover_factory_projects(projects_dir: Path, *, max_depth: int = 3) -> list[Path]:
