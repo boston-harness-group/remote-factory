@@ -571,6 +571,46 @@ class TestAutoApproveEvent:
         assert len(auto_approve_calls) == 0
 
 
+class TestInteractiveUsageJson:
+    def test_interactive_ceo_run_writes_usage_json(self, tmp_project):
+        """An interactive (non-headless) CEO run writes .factory/<mode>/usage.json.
+
+        Regression guard: the usage aggregator used to run only on the --headless
+        completion-guard path, so interactive runs (what exploit-pov uses) produced
+        no usage.json and downstream cost data stayed null.
+        """
+        from factory.events import emit_event
+
+        def _emit_and_ok(*args, **kwargs):
+            emit_event(
+                tmp_project,
+                "agent.completed",
+                agent="ceo",
+                data={
+                    "input_tokens": 1000,
+                    "output_tokens": 500,
+                    "cache_read_tokens": 200,
+                    "total_cost_usd": 0.25,
+                },
+            )
+            return MagicMock(returncode=0)
+
+        with (
+            patch("factory.runners.claude.subprocess.run", MagicMock(side_effect=_emit_and_ok)),
+            patch("factory.cli._ceo_helpers._ensure_dashboard"),
+            patch("factory.graph.is_graphify_installed", return_value=False),
+        ):
+            result = main(["ceo", str(tmp_project), "--mode", "design"])
+
+        assert result == 0
+        usage_path = tmp_project / ".factory" / "design" / "usage.json"
+        assert usage_path.exists()
+        usage = json.loads(usage_path.read_text())
+        assert usage["input_tokens"] == 1000
+        assert usage["output_tokens"] == 500
+        assert usage["total_cost_usd"] == 0.25
+
+
 def _make_config(*, research_target: dict | None = None) -> dict:
     """Build a valid FactoryConfig dict for testing."""
     config: dict = {

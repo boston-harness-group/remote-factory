@@ -9,6 +9,7 @@ import re
 import structlog
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from factory.cli._ceo_dispatch import _start_ceo_tailer, _stop_ceo_tailer
@@ -836,8 +837,11 @@ def _execute_ceo(
                 pass
         _stop_ceo_tailer(ceo_tailer)
         complete_cycle_session(project_path, cycle_span_id)
-        from factory.ceo_completion import print_resume_hint
+        from factory.ceo_completion import print_resume_hint, write_usage_json
 
+        write_usage_json(
+            wt_path, ceo_mode, datetime.fromtimestamp(_ceo_start, tz=timezone.utc)
+        )
         print_resume_hint(project_path)
         if not no_worktree:
             assert wt_branch is not None
