@@ -416,11 +416,13 @@ def _extract_session_id(project_path: Path) -> str | None:
     return None
 
 
-def _write_ceo_usage_json(project_path: Path, mode: str, since: datetime) -> None:
+def write_usage_json(project_path: Path, mode: str, since: datetime) -> None:
     """Write aggregated token usage to ``.factory/<mode>/usage.json``.
 
-    Covers the CEO ``skill`` engine path, which does not go through
-    WorkflowExecutor.execute().
+    Called after both the headless completion-guard path and the interactive
+    CEO path complete, so every CEO run (not just ``--headless``) produces
+    usage data for downstream consumers. Covers the CEO ``skill`` engine path,
+    which does not go through WorkflowExecutor.execute().
     """
     try:
         from factory.events import sum_agent_usage
@@ -604,7 +606,7 @@ async def run_ceo_with_completion_guard(
         gap = _detect_incomplete(project_path, mode, cycle_started_at=cycle_state.started_at)
         if gap is None:
             log.info("ceo_complete", attempt=attempt)
-            _write_ceo_usage_json(project_path, workflow_mode or mode, cycle_state.started_at)
+            write_usage_json(project_path, workflow_mode or mode, cycle_state.started_at)
             # Cycle complete — delete cycle state so next invocation starts fresh
             delete_cycle_state(project_path)
             return result, code

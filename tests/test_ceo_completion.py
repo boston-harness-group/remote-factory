@@ -1286,3 +1286,40 @@ class TestResumeHintInCompletionGuard:
         captured = capsys.readouterr()
         assert "Session: interrupt-session" in captured.err
         assert f"Resume with: factory resume {tmp_path}" in captured.err
+
+
+class TestWriteUsageJson:
+    """Tests for the public write_usage_json aggregator (CEO skill-engine path)."""
+
+    def test_writes_usage_to_mode_subdir(self, tmp_path: Path) -> None:
+        """agent.completed events after `since` are summed into .factory/<mode>/usage.json."""
+        from factory.ceo_completion import write_usage_json
+        from factory.events import emit_event
+
+        since = datetime.now(timezone.utc) - timedelta(seconds=1)
+        emit_event(tmp_path, "agent.completed", agent="researcher", data={
+            "input_tokens": 1000, "output_tokens": 500,
+            "cache_read_tokens": 200, "total_cost_usd": 0.25,
+        })
+        emit_event(tmp_path, "agent.completed", agent="builder", data={
+            "input_tokens": 3000, "output_tokens": 1500,
+            "cache_read_tokens": 600, "total_cost_usd": 0.75,
+        })
+
+        write_usage_json(tmp_path, "exploit-pov", since)
+
+        usage_path = tmp_path / ".factory" / "exploit-pov" / "usage.json"
+        assert usage_path.exists()
+        usage = json.loads(usage_path.read_text())
+        assert usage["input_tokens"] == 4000
+        assert usage["output_tokens"] == 2000
+        assert usage["cache_read_tokens"] == 800
+        assert usage["total_cost_usd"] == 1.0
+
+    def test_no_file_when_no_agent_events(self, tmp_path: Path) -> None:
+        """No usage.json is written when there are no agent.completed events."""
+        from factory.ceo_completion import write_usage_json
+
+        write_usage_json(tmp_path, "design", datetime.now(timezone.utc))
+
+        assert not (tmp_path / ".factory" / "design" / "usage.json").exists()
