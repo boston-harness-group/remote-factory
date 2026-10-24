@@ -327,6 +327,65 @@ class TestRefactoryAgentFilter:
         assert "begin" in help_text
 
 
+class TestRefactoryProfileFlag:
+    """Tests for --profile on factory refactory (credential profile overlay)."""
+
+    def test_parser_accepts_profile(self):
+        parser = build_parser()
+        args = parser.parse_args(["refactory", "--profile", "rlaude", "/tmp/proj"])
+        assert args.profile == "rlaude"
+        assert args.path == "/tmp/proj"
+
+    def test_parser_profile_defaults_to_none(self):
+        parser = build_parser()
+        args = parser.parse_args(["refactory", "/tmp/proj"])
+        assert args.profile is None
+
+    def test_cmd_refactory_loads_profile(self, monkeypatch, tmp_path):
+        """cmd_refactory applies the credential profile before resolving the CLI."""
+        import factory.cli.ceo as ceo_mod
+
+        loaded = []
+        monkeypatch.setattr("factory.user_config.load_config",
+                            lambda profile=None: loaded.append(profile) or {})
+        monkeypatch.setattr("shutil.which", lambda bin_: str(tmp_path / "claude"))
+        monkeypatch.setattr("factory.refactory.setup_workspace", lambda path: None)
+        monkeypatch.setattr("factory.refactory.get_session_id", lambda path, reset=False: "sess-1")
+        monkeypatch.setattr("factory.agents.runner.resolve_prompt", lambda role: "# prompt")
+        monkeypatch.setattr("factory.runners.claude._claude_bin", lambda: "claude")
+        monkeypatch.setattr("os.chdir", lambda path: None)
+        execvp_args = []
+        monkeypatch.setattr("os.execvp", lambda bin_, cmd: execvp_args.append((bin_, cmd)))
+
+        args = argparse.Namespace(path=str(tmp_path), reset=False, model=None,
+                                  loop=False, profile="rlaude")
+        ceo_mod.cmd_refactory(args)
+
+        assert loaded == ["rlaude"]
+        assert execvp_args, "refactory should launch the claude CLI"
+
+    def test_cmd_refactory_skips_profile_when_unset(self, monkeypatch, tmp_path):
+        """Without --profile, no config load happens (matches previous behavior)."""
+        import factory.cli.ceo as ceo_mod
+
+        loaded = []
+        monkeypatch.setattr("factory.user_config.load_config",
+                            lambda profile=None: loaded.append(profile) or {})
+        monkeypatch.setattr("shutil.which", lambda bin_: str(tmp_path / "claude"))
+        monkeypatch.setattr("factory.refactory.setup_workspace", lambda path: None)
+        monkeypatch.setattr("factory.refactory.get_session_id", lambda path, reset=False: "sess-1")
+        monkeypatch.setattr("factory.agents.runner.resolve_prompt", lambda role: "# prompt")
+        monkeypatch.setattr("factory.runners.claude._claude_bin", lambda: "claude")
+        monkeypatch.setattr("os.chdir", lambda path: None)
+        monkeypatch.setattr("os.execvp", lambda bin_, cmd: None)
+
+        args = argparse.Namespace(path=str(tmp_path), reset=False, model=None,
+                                  loop=False, profile=None)
+        ceo_mod.cmd_refactory(args)
+
+        assert loaded == []
+
+
 class TestCmdCeoDesign:
     def test_design_headless_incompatible(self, capsys):
         result = main(["ceo", "an idea", "--mode", "design", "--headless"])

@@ -265,8 +265,13 @@ def cmd_refactory(args: argparse.Namespace) -> int:
 
     from factory.agents.runner import resolve_prompt
     from factory.refactory import get_session_id, setup_workspace
+    from factory.user_config import load_config
 
     from factory.runners.claude import _claude_bin
+
+    profile = getattr(args, "profile", None)
+    if profile:
+        load_config(profile=profile)
 
     bin_ = _claude_bin()
     claude_path = shutil.which(bin_)
