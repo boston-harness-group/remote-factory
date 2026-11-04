@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ── project state (inlined so the graph language has zero runtime deps) ──
@@ -136,6 +136,53 @@ class ArtifactCheck(BaseModel):
     must_contain: list[str] = Field(default_factory=list)
 
 
+MAX_GUARD_TEXT_LEN: int = 4096
+"""Maximum length in chars of one :class:`Guard` text field (argv-safety bound)."""
+
+_RESERVED_GUARD_SEQUENCES: tuple[str, ...] = ("{project_path}", "{{", "}}", "<!--", "-->")
+
+
+class Guard(BaseModel):
+    """A single behavioural rule attached to an AgentNode — pure data (DEC-004).
+
+    The owner of a guard is the node it is attached to: there is deliberately no
+    id, name, owner, role, mode, binding or severity field. ``rule`` is the
+    binding text injected into the guarded agent's prompt and audited by the
+    generated checker; ``audit_hint`` is optional extra "how to verify" guidance
+    (``""`` means "use the compiler default", see
+    :data:`factory.workflow.guardrails.DEFAULT_AUDIT_HINT`).
+
+    Both fields reject the reserved sequences in
+    :data:`_RESERVED_GUARD_SEQUENCES`: ``{project_path}`` is substituted verbatim
+    into every surface the text reaches (including a shell command), and
+    ``{{``/``}}``/``<!--``/``-->`` are template-slot and SKILL.md annotation
+    markers that guard text could otherwise truncate or corrupt. Rejecting them
+    at construction is the only place that fails fast for every mode.
+    """
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    rule: str = Field(min_length=1, max_length=MAX_GUARD_TEXT_LEN)
+    audit_hint: str = Field(default="", max_length=MAX_GUARD_TEXT_LEN)
+
+    @field_validator("rule", "audit_hint")
+    @classmethod
+    def _reject_reserved_sequences(cls, value: str) -> str:
+        for sequence in _RESERVED_GUARD_SEQUENCES:
+            if sequence in value:
+                raise ValueError(
+                    "Guard text must not contain {project_path}, {{, }}, <!-- or -->"
+                )
+        return value
+
+    @field_validator("rule")
+    @classmethod
+    def _require_non_empty_rule(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Guard.rule must be non-empty")
+        return value
+
+
 class AgentNode(Node):
     """Node that invokes a Claude Code agent."""
 
@@ -148,6 +195,8 @@ class AgentNode(Node):
     timeout: int | None = None
     max_iterations: int = 1
     post_checks: list[ArtifactCheck] = Field(default_factory=list)
+    guards: list[Guard] = Field(default_factory=list)
+    guard_max_iterations: int = Field(default=3, ge=1)
 
 
 class FnNode(Node):

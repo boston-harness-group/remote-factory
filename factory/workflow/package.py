@@ -16,6 +16,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from factory.workflow.guardrails import expand_agent_guards
 from factory.workflow.primitives import (
     Edge,
     FnNode,
@@ -183,7 +184,9 @@ class Package(BaseModel):
         wf.terminal = self.terminal
         if self.contract.capabilities:
             wf.declared_capabilities = frozenset(self.contract.capabilities)
-        return wf
+        # Last step: expand attached guards into checker stages. Must run after the
+        # _prompt_* re-application above, which replaces prompt_template wholesale.
+        return expand_agent_guards(wf)
 
 
 # ── composition operators ──────────────────────────────────────────
