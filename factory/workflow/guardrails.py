@@ -15,11 +15,11 @@ What does **not** get expanded (§3.4, ASM-004): expansion runs only where a fla
 graph is produced through :meth:`factory.workflow.package.Package.compile`. A
 hand-built ``Workflow`` that never calls ``compile()`` keeps its ``guards`` as
 inert data — they serialize, they do not enforce. Guards on an agent that is a
-``ForkNode`` target, or on a ``blocking=False`` agent, are rejected at expansion.
-A guarded agent reached through a ``DataNode`` branch path or inside a
-``SubgraphForkNode`` subgraph does get a stage emitted (expansion is generic over
-``workflow.nodes``), but running it in those contexts is unverified and
-unsupported in this PR (ASM-005).
+``ForkNode`` target, on a ``blocking=False`` agent, or in a per-item context —
+reachable through a ``DataNode`` branch or inside a ``SubgraphForkNode``
+subgraph — are rejected at expansion (ASM-005): guard artifacts are keyed by the
+agent segment alone, so a stage that runs once per item would race on the shared
+``token``/``rules.json``/verdict files.
 
 Expansion is pure (the input ``Workflow`` is untouched) and idempotent **by
 ensuring, not by skipping**: the prompt block is re-appended whenever
@@ -38,7 +38,9 @@ and the agents instead of overwriting a node.
 
 Dependency direction: this module imports :mod:`factory.workflow.primitives` and
 nothing else from the engine; the runtime half is the standalone
-:mod:`factory.workflow.guardrails_aggregate` CLI.
+:mod:`factory.workflow.guardrails_aggregate` CLI. It is unrelated to
+:mod:`factory.workflow.guard`, the structural diff checker used by verified
+skill generation.
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ from pathlib import Path
 from factory.workflow.primitives import (
     AgentNode,
     AgentRole,
+    DataNode,
     Edge,
     FnNode,
     ForkNode,
@@ -60,6 +63,7 @@ from factory.workflow.primitives import (
     Guard,
     JoinNode,
     NodeType,
+    SubgraphForkNode,
     VerdictType,
     Workflow,
 )
@@ -353,6 +357,64 @@ def _fork_targets(workflow: Workflow) -> set[str]:
     return targets
 
 
+def _edge_index(workflow: Workflow, *, reverse: bool = False) -> dict[str, list[str]]:
+    """Adjacency index: source → targets, or target → sources when ``reverse``."""
+    adjacency: dict[str, list[str]] = {}
+    for edge in workflow.edges:
+        source, target = (edge.target, edge.source) if reverse else (edge.source, edge.target)
+        adjacency.setdefault(source, []).append(target)
+    return adjacency
+
+
+def _reachable(workflow: Workflow, start: str, *, reverse: bool = False) -> set[str]:
+    """Node ids reachable from ``start`` (inclusive), following or reversing edges."""
+    adjacency = _edge_index(workflow, reverse=reverse)
+    seen: set[str] = set()
+    stack = [start]
+    while stack:
+        node_id = stack.pop()
+        if node_id in seen or node_id not in workflow.nodes:
+            continue
+        seen.add(node_id)
+        stack.extend(adjacency.get(node_id, ()))
+    return seen
+
+
+def _datanode_branch_region(workflow: Workflow, data_node_id: str) -> set[str]:
+    """Node ids the executor runs once per data item: the DataNode's branch, minus joins."""
+    adjacency = _edge_index(workflow)
+    region: set[str] = set()
+    stack = list(adjacency.get(data_node_id, ()))
+    while stack:
+        node_id = stack.pop()
+        if node_id in region:
+            continue
+        node = workflow.nodes.get(node_id)
+        if node is None or isinstance(node, JoinNode):
+            continue
+        region.add(node_id)
+        stack.extend(adjacency.get(node_id, ()))
+    return region
+
+
+def _per_branch_contexts(workflow: Workflow) -> dict[str, str]:
+    """Map node id → the per-item fork context it runs in (ASM-005, rejection at expansion)."""
+    contexts: dict[str, str] = {}
+    for node_id, node in workflow.nodes.items():
+        if isinstance(node, DataNode):
+            for member in _datanode_branch_region(workflow, node_id):
+                contexts.setdefault(member, f"DataNode '{node_id}' branch")
+        elif isinstance(node, SubgraphForkNode):
+            entry, exit_id = node.subgraph_entry, node.subgraph_exit
+            if entry not in workflow.nodes or exit_id not in workflow.nodes:
+                continue
+            # Mirror the executor: only nodes on paths entry → exit run in the branch.
+            region = _reachable(workflow, entry) & _reachable(workflow, exit_id, reverse=True)
+            for member in region:
+                contexts.setdefault(member, f"SubgraphForkNode '{node_id}' subgraph")
+    return contexts
+
+
 def _verify_stage(
     workflow: Workflow,
     agent_id: str,
@@ -420,10 +482,17 @@ def expand_agent_guards(workflow: Workflow) -> Workflow:
     Pure: the input workflow is untouched, and the caller receives a deep copy.
     The stage is spliced only when absent; when present and consistent with the
     node's current guards it is left untouched, but the prompt block is still
-    ensured (R-006). Any partial or stale stage raises ``ValueError``.
+    ensured (R-006). Any partial or stale stage raises ``ValueError``, as does a
+    guard on an unsupported placement (``ForkNode`` target, ``blocking=False``, or
+    inside a ``DataNode`` branch / ``SubgraphForkNode`` subgraph).
+
+    The generated reset/check commands embed ``sys.executable``, so a persisted
+    expanded graph is not portable across interpreter paths; rebuild from the
+    source package instead of reusing a serialized expanded graph elsewhere.
     """
     out = workflow.model_copy(deep=True)
     fork_targets = _fork_targets(out)
+    per_branch = _per_branch_contexts(out)
     seen_segments: dict[str, str] = {}
     # Generated id → agent that generated it, so a collision can name both sides.
     owners: dict[str, str] = {}
@@ -447,6 +516,12 @@ def expand_agent_guards(workflow: Workflow) -> Workflow:
             raise ValueError(
                 f"guarded agent {agent_id!r} is a ForkNode target; a guard stage cannot "
                 "run inside a fork branch"
+            )
+        if agent_id in per_branch:
+            raise ValueError(
+                f"guarded agent {agent_id!r} is inside a {per_branch[agent_id]}; a guard "
+                "stage runs once per item there and would share its artifact dir across "
+                "items — attach the guard to an agent on the single-run path instead"
             )
         slugs = _unique_slugs(node.guards)
         checker_ids = [f"guard_{segment}_{slug}" for slug in slugs]

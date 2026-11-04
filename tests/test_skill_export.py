@@ -337,6 +337,24 @@ class TestGateToCheckpoint:
         assert "RELOOP" in result
         assert "builder" in result
 
+    def test_reloop_budget_prefers_gate_cap(self) -> None:
+        # A generated guard gate enforces its own max_iterations at runtime; the rendered
+        # skill must show that number, not the RELOOP target's unrelated default (3).
+        gate = GateNode(id="guard_draft_gate", evaluator_type="fn", max_iterations=2)
+        draft = _make_agent("draft")
+        reloop = Edge(
+            source="guard_draft_gate",
+            target="draft",
+            condition=VerdictType.RELOOP,
+        )
+        wf = _minimal_workflow(
+            nodes={"guard_draft_gate": gate, "draft": draft},
+            edges=[reloop],
+            start="guard_draft_gate",
+        )
+        result = _gate_to_checkpoint(gate, [reloop], wf)
+        assert "{{max_iterations_guard_draft_gate::2}}" in result
+
     def test_emits_gate_prompt_slot(self) -> None:
         gate = GateNode(
             id="gate_review",

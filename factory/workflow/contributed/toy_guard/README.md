@@ -59,10 +59,11 @@ The two guards on `draft`, in attachment order:
 - A guarded agent with `blocking=False` is **rejected** at expansion: the
   executor would schedule it in the background and immediately run reset /
   checkers / gate, so the stage could read `ABSENT` and false-pass.
-- Guards on agents reached through a `DataNode` branch path or inside a
-  `SubgraphForkNode` subgraph do get a stage emitted (expansion walks
-  `workflow.nodes`), but running them in those contexts is **unverified and
-  unsupported** in this PR (ASM-005). Do not attach guards there.
+- Guards on agents in a per-item context — reachable through a `DataNode`
+  branch or inside a `SubgraphForkNode` subgraph — are **rejected** at expansion
+  (ASM-005): guard artifacts are keyed by the agent segment alone, so a stage
+  that runs once per item would race on the shared `token`/`rules.json`/verdict
+  files. Attach the guard to an agent on the single-run path instead.
 
 ## Usage
 

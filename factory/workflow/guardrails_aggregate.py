@@ -28,6 +28,7 @@ subprocess whose ``cwd`` is the project directory.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -69,6 +70,18 @@ def _canonical_json(payload: dict[str, str]) -> str:
     return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
+def _write_atomic(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` via a sibling temp file + ``os.replace`` (crash-atomic).
+
+    The stage has a single serial writer (``reset`` runs before the checker fork), so
+    this is not a concurrency guard: it keeps a crash mid-write from leaving a torn
+    ``rules.json``/``token`` for the next run to classify.
+    """
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp_path.write_text(text, encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
 def _one_line(text: str) -> str:
     """Collapse every run of whitespace to one space (the reloop fix is single-line)."""
     return " ".join(text.split())
@@ -104,11 +117,11 @@ def _reset(project_path: str, segment: str, raw_payload: str) -> int:
             f"json_payload is {payload_bytes} bytes; max {MAX_RULES_PAYLOAD_BYTES}"
         )
     stage.mkdir(parents=True, exist_ok=True)
-    (stage / "rules.json").write_text(canonical + "\n", encoding="utf-8")
+    _write_atomic(stage / "rules.json", canonical + "\n")
     for slug in payload:
         (stage / f"{slug}.json").unlink(missing_ok=True)
     (stage / "violations.md").unlink(missing_ok=True)
-    (stage / "token").write_text(uuid.uuid4().hex + "\n", encoding="utf-8")
+    _write_atomic(stage / "token", uuid.uuid4().hex + "\n")
     print(f"guard stage reset: {stage} ({len(payload)} rule(s))")
     return 0
 
@@ -161,7 +174,7 @@ def _write_violations(
         lines.append(f"- evidence: {evidence if evidence else '(none given)'}")
         lines.append(f"- fix: {fix if fix else '(none given)'}")
     lines.append("")
-    (stage / "violations.md").write_text("\n".join(lines), encoding="utf-8")
+    _write_atomic(stage / "violations.md", "\n".join(lines))
 
 
 def _check(project_path: str, segment: str, slugs: list[str]) -> int:

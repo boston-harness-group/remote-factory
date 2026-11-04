@@ -28,11 +28,9 @@ never calls ``compile()`` keeps its ``guards`` list as inert data — it
 serializes, it does not enforce — including builtin modes in ``definitions.py``,
 contributed workflow files that return a hand-built graph, and YAML overrides
 via ``factory.skillopt.yaml_surface.yaml_to_workflow``. Guards on an
-``AgentNode`` that is a ``ForkNode`` target, or on a ``blocking=False`` agent,
-are rejected by expansion; they are not silently ignored. Guards on agents
-reached through a ``DataNode`` branch path or inside a ``SubgraphForkNode``
-subgraph do get a stage emitted (expansion is generic over ``workflow.nodes``),
-but running them there is unverified and unsupported in this PR (ASM-005).
+``AgentNode`` that is a ``ForkNode`` target, on a ``blocking=False`` agent, or in
+a per-item context (a ``DataNode`` branch or a ``SubgraphForkNode`` subgraph)
+are rejected by expansion; they are not silently ignored (ASM-005).
 
 This mode is a deterministic test fixture: the e2e tests drive it through
 ``WorkflowExecutor(agent_fn=...)`` with stub agents, so no model, CLI, network

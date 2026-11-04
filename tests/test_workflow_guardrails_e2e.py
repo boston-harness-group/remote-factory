@@ -320,6 +320,7 @@ class TestToyModeCli:
         assert "factory.workflow.guardrails_aggregate" in content
         assert guard_rules_payload(_SLUGS, GUARDS) in content
         assert validate_skill(content) == []
-        # N-010: the rendered budget comes from the RELOOP target's
-        # AgentNode.max_iterations (default 1 -> hardcoded 3), not the gate.
-        assert "max 3 iterations" in content
+        # The rendered budget tracks enforcement: the generated gate carries
+        # GUARD_MAX_ITERATIONS, so SKILL.md must show it (not the RELOOP target's
+        # unrelated AgentNode.max_iterations default of 1 -> hardcoded 3).
+        assert f"max {GUARD_MAX_ITERATIONS} iterations" in content

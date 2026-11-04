@@ -49,6 +49,7 @@ from factory.workflow.primitives import (
     GateNode,
     JoinNode,
     NodeType,
+    SubgraphForkNode,
     VerdictType,
     Workflow,
 )
@@ -566,7 +567,10 @@ class TestExpansionShape:
             payload,
         ]
 
-    def test_expansion_covers_branch_agents_structure_only(self) -> None:
+    def test_datanode_branch_agent_rejected(self) -> None:
+        # Guard artifacts are keyed by agent segment alone, so a per-item stage would
+        # race on the shared token/rules.json/verdict files (ASM-005). Reject loudly
+        # instead of emitting an unverified stage.
         data = DataNode(id="items", source_path="items.jsonl", source_format="jsonl")
         branch = _guarded("branch")
         join = JoinNode(id="join", sources=["branch"])
@@ -580,11 +584,61 @@ class TestExpansionShape:
             start_node="items",
             runtime_inputs=frozenset({"items.jsonl"}),
         )
+        with pytest.raises(ValueError, match="DataNode") as exc_info:
+            expand_agent_guards(workflow)
+        message = str(exc_info.value)
+        assert "'branch'" in message
+        assert "'items'" in message
+        assert not any(nid.startswith("guard_") for nid in workflow.nodes)  # purity
+
+    def test_subgraph_fork_agent_rejected(self) -> None:
+        fork = SubgraphForkNode(
+            id="branches", subgraph_entry="branch", subgraph_exit="branch_done"
+        )
+        workflow = Workflow(
+            name="subgraph-fork",
+            nodes={
+                "branches": fork,
+                "branch": _guarded("branch"),
+                "branch_done": _agent("branch_done"),
+            },
+            edges=[
+                Edge(source="branches", target="branch"),
+                Edge(source="branch", target="branch_done"),
+            ],
+            start_node="branches",
+        )
+        with pytest.raises(ValueError, match="SubgraphForkNode") as exc_info:
+            expand_agent_guards(workflow)
+        message = str(exc_info.value)
+        assert "'branch'" in message
+        assert "'branches'" in message
+        assert not any(nid.startswith("guard_") for nid in workflow.nodes)  # purity
+
+    def test_unguarded_branch_agent_does_not_block_expansion(self) -> None:
+        # Only the guarded agent is rejected: an unguarded DataNode branch and a
+        # guarded single-run agent in the same graph still expand.
+        data = DataNode(id="items", source_path="items.jsonl", source_format="jsonl")
+        workflow = Workflow(
+            name="mixed",
+            nodes={
+                "prep": _guarded("prep"),
+                "items": data,
+                "branch": _agent("branch"),
+                "join": JoinNode(id="join", sources=["branch"]),
+            },
+            edges=[
+                Edge(source="prep", target="items"),
+                Edge(source="items", target="branch"),
+                Edge(source="branch", target="join"),
+            ],
+            start_node="prep",
+            runtime_inputs=frozenset({"items.jsonl"}),
+        )
         expanded = expand_agent_guards(workflow)
-        segment = _agent_segment("branch")
-        # R-005 is generic over workflow.nodes; runtime support is ASM-005 (not claimed).
+        segment = _agent_segment("prep")
         assert f"guard_{segment}_gate" in expanded.nodes
-        assert f"guard_{segment}_reset" in expanded.nodes
+        assert f"guard_{_agent_segment('branch')}_gate" not in expanded.nodes
 
 
 # ── R-015 / UC-020: shell safety ───────────────────────────────
