@@ -442,7 +442,7 @@ class DirectFeatureBenchEvaluator:
             if result.returncode == 0:
                 return 1.0
 
-            from factory.outer_loop.featurebench_evaluator import parse_pytest_stdout
+            from factory.outer_loop.benchmark_evaluator import parse_pytest_stdout
             metrics = parse_pytest_stdout(result.stdout or "")
             return metrics.get("pass_rate", 0.0)
         finally:
