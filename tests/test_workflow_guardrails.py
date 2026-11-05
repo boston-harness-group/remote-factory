@@ -63,9 +63,6 @@ RULE_A = "no egress outside the sandbox"
 RULE_B = "cite every test run"
 
 
-# ── helpers ──────────────────────────────────────────────────────
-
-
 def _guard(rule: str = RULE_A, audit_hint: str = "") -> Guard:
     return Guard(rule=rule, audit_hint=audit_hint)
 
@@ -205,9 +202,6 @@ def _parsing_executor(project: Path) -> WorkflowExecutor:
     return WorkflowExecutor(workflow, project, validate=False)
 
 
-# ── R-001: the Guard model ───────────────────────────────────────
-
-
 class TestGuardModel:
     def test_defaults(self) -> None:
         guard = Guard(rule="x")
@@ -270,9 +264,6 @@ class TestGuardModel:
         assert proc.returncode == 0, proc.stderr
 
 
-# ── R-003: AgentNode fields + serialization ─────────────────────
-
-
 class TestAgentNodeGuardFields:
     def test_defaults(self) -> None:
         node = _agent()
@@ -314,9 +305,6 @@ class TestSerialization:
         assert draft.guard_max_iterations == 3
 
 
-# ── R-004: with_guards ──────────────────────────────────────────
-
-
 class TestWithGuards:
     def test_sets_fields(self) -> None:
         attached = with_guards(_agent(), [_guard()], max_iterations=2)
@@ -329,12 +317,9 @@ class TestWithGuards:
         node = _guarded(guards=[_guard(RULE_A), _guard(RULE_B)])
         attached = with_guards(node, caller_guards, max_iterations=2)
 
-        # Copy: the input node is unchanged.
         assert node.guard_max_iterations == 3
         assert len(node.guards) == 2
-        # Replace, not append: re-attaching yields one guard.
         assert len(attached.guards) == 1
-        # Guard objects are copied by value, not aliased.
         caller_guards.append(_guard("third rule"))
         caller_guards[0].rule = "mutated by the caller"
         assert len(attached.guards) == 1
@@ -355,9 +340,6 @@ class TestWithGuards:
         before = workflow.to_dict()
         expanded = expand_agent_guards(workflow)
         assert expanded.to_dict() == before
-
-
-# ── SD-004: slug derivation ────────────────────────────────────
 
 
 class TestGuardSlug:
@@ -410,33 +392,23 @@ class TestGuardSlug:
         assert slugs == [guard_slug(RULE_A), f"{guard_slug(RULE_A)}_2", f"{guard_slug(RULE_A)}_3"]
 
     def test_unique_slugs_reserve_structural_suffixes(self) -> None:
-        # A slug equal to a stage suffix must not reproduce a structural node id
-        # (M1-001). The disambiguation is the ordinary `_2` fold, and it is
-        # deterministic: same input list, same output, every call.
         for suffix in ("reset", "fork", "join", "gate"):
             assert _unique_slugs([_guard(suffix)]) == [f"{suffix}_2"]
         guards = [_guard("fork"), _guard("fork"), _guard("gate")]
         assert _unique_slugs(guards) == _unique_slugs(guards) == ["fork_2", "fork_3", "gate_2"]
 
 
-# ── R-005: expansion shape ─────────────────────────────────────
-
-
 class TestExpansionShape:
     def test_node_and_edge_counts(self) -> None:
         one = expand_agent_guards(_toy(successors=1))
-        assert len(one.nodes) == 2 + 4 + 2  # G5: 8 nodes for 2 guards
-        assert len(one.edges) == 6  # 5 + S for S=1
+        assert len(one.nodes) == 2 + 4 + 2
+        assert len(one.edges) == 6
         two = expand_agent_guards(_toy(successors=2))
         assert len(two.nodes) == 3 + 4 + 2
-        assert len(two.edges) == 6 + (2 - 1)  # 6 + (S-1)
+        assert len(two.edges) == 6 + (2 - 1)
 
     @pytest.mark.parametrize("suffix", ["reset", "fork", "join", "gate"])
     def test_reserved_stage_suffix_slug_never_overwrites(self, suffix: str) -> None:
-        # M1-001: a rule of exactly `fork` used to produce the checker id
-        # `guard_draft_fork`, silently replacing the ForkNode (4+N became 4+N-1,
-        # validation stayed clean, re-expansion then rejected the graph). The slug
-        # must be suffixed instead, and the stage must stay structurally intact.
         expanded = expand_agent_guards(_toy(guards=[_guard(suffix)]))
         segment = _agent_segment("draft")
         checker_id = f"guard_{segment}_{suffix}_2"
@@ -451,14 +423,12 @@ class TestExpansionShape:
         assert isinstance(join, JoinNode)
         assert isinstance(gate, GateNode)
         assert fork.targets == join.sources == [checker_id]
-        assert len(expanded.nodes) == 2 + 4 + 1  # R-005 invariant 1, nothing overwritten
+        assert len(expanded.nodes) == 2 + 4 + 1
         assert validate_workflow(expanded) == []
-        assert expand_agent_guards(expanded).to_dict() == expanded.to_dict()  # R-006/F-007
+        assert expand_agent_guards(expanded).to_dict() == expanded.to_dict()
 
     @pytest.mark.parametrize("budget", [2, 7])
     def test_gate_carries_guard_budget(self, budget: int) -> None:
-        # §4.4/R-005: GateNode.max_iterations is the agent's guard budget, not a
-        # constant (the default 3 makes hardcoding it invisible; 2 and 7 do not).
         expanded = expand_agent_guards(_toy(max_iterations=budget))
         gate = expanded.nodes[f"guard_{_agent_segment('draft')}_gate"]
         assert isinstance(gate, GateNode)
@@ -568,9 +538,6 @@ class TestExpansionShape:
         ]
 
     def test_datanode_branch_agent_rejected(self) -> None:
-        # Guard artifacts are keyed by agent segment alone, so a per-item stage would
-        # race on the shared token/rules.json/verdict files (ASM-005). Reject loudly
-        # instead of emitting an unverified stage.
         data = DataNode(id="items", source_path="items.jsonl", source_format="jsonl")
         branch = _guarded("branch")
         join = JoinNode(id="join", sources=["branch"])
@@ -589,7 +556,7 @@ class TestExpansionShape:
         message = str(exc_info.value)
         assert "'branch'" in message
         assert "'items'" in message
-        assert not any(nid.startswith("guard_") for nid in workflow.nodes)  # purity
+        assert not any(nid.startswith("guard_") for nid in workflow.nodes)
 
     def test_subgraph_fork_agent_rejected(self) -> None:
         fork = SubgraphForkNode(
@@ -613,11 +580,9 @@ class TestExpansionShape:
         message = str(exc_info.value)
         assert "'branch'" in message
         assert "'branches'" in message
-        assert not any(nid.startswith("guard_") for nid in workflow.nodes)  # purity
+        assert not any(nid.startswith("guard_") for nid in workflow.nodes)
 
     def test_unguarded_branch_agent_does_not_block_expansion(self) -> None:
-        # Only the guarded agent is rejected: an unguarded DataNode branch and a
-        # guarded single-run agent in the same graph still expand.
         data = DataNode(id="items", source_path="items.jsonl", source_format="jsonl")
         workflow = Workflow(
             name="mixed",
@@ -639,9 +604,6 @@ class TestExpansionShape:
         segment = _agent_segment("prep")
         assert f"guard_{segment}_gate" in expanded.nodes
         assert f"guard_{_agent_segment('branch')}_gate" not in expanded.nodes
-
-
-# ── R-015 / UC-020: shell safety ───────────────────────────────
 
 
 def _assert_quoted_round_trip(project: Path, agent_id: str, segment: str) -> None:
@@ -692,9 +654,6 @@ class TestCommandQuoting:
         assert not (tmp_path / "pwned").exists()
 
 
-# ── R-005 / UC-004: graph validation ───────────────────────────
-
-
 class TestGraphValidation:
     @pytest.mark.parametrize("shape", ["one-successor", "two-successors", "unconditional", "terminal"])
     def test_validates_clean(self, shape: str) -> None:
@@ -703,9 +662,6 @@ class TestGraphValidation:
         ]
         expanded = expand_agent_guards(_toy(successors=successors))
         assert validate_workflow(expanded) == []
-
-
-# ── R-006 / UC-017: idempotency, purity, stale stages ──────────
 
 
 class TestExpansionIdempotency:
@@ -726,7 +682,6 @@ class TestExpansionIdempotency:
         assert isinstance(node, AgentNode)
         assert [guard.rule for guard in node.guards] == [RULE_A, RULE_B]
         assert node.guard_max_iterations == 2
-        # §4.4/R-005: the gate's budget is the node's budget, not the default.
         gate = expanded.nodes[f"guard_{_agent_segment('draft')}_gate"]
         assert isinstance(gate, GateNode)
         assert gate.max_iterations == node.guard_max_iterations == 2
@@ -734,7 +689,7 @@ class TestExpansionIdempotency:
     def test_stale_stage_rejected(self) -> None:
         old_rule = "one two three four five six seven eight"
         new_rule = "one two three four five six seven eight nine ten extra"
-        assert guard_slug(old_rule) == guard_slug(new_rule)  # edit past the 40-char cap
+        assert guard_slug(old_rule) == guard_slug(new_rule)
 
         expanded = expand_agent_guards(_toy(guards=[_guard(old_rule)]))
         stale = expanded.model_copy(deep=True)
@@ -757,8 +712,6 @@ class TestExpansionIdempotency:
         with pytest.raises(ValueError, match="does not match"):
             expand_agent_guards(hinted)
 
-        # Budget drift on either side is stale: the gate was generated with the
-        # old budget, or the node now asks for a different one (§5.7/R-006).
         rebudgeted_gate = expanded.model_copy(deep=True)
         gate = rebudgeted_gate.nodes[f"guard_{_agent_segment('draft')}_gate"]
         assert isinstance(gate, GateNode)
@@ -776,9 +729,6 @@ class TestExpansionIdempotency:
             expand_agent_guards(rebudgeted_node)
 
     def test_join_sources_edits_rejected(self) -> None:
-        # NIT/M1-003: join.sources is an extra consistency witness (a superset of
-        # the spec's enumerated witnesses), so a hand-edited join cannot silently
-        # run with fewer checkers than the node's guards.
         expanded = expand_agent_guards(_toy())
         join_id = f"guard_{_agent_segment('draft')}_join"
         join = expanded.nodes[join_id]
@@ -812,9 +762,6 @@ class TestExpansionPurity:
         before = workflow.to_dict()
         expand_agent_guards(workflow)
         assert workflow.to_dict() == before
-
-
-# ── R-007: prompt injection ────────────────────────────────────
 
 
 class TestInjection:
@@ -876,18 +823,12 @@ class TestExportSafety:
                 assert "<!--" not in text
                 assert "-->" not in text
 
-        # Why construction-time rejection is required: both corruptions are silent.
-        # A `}}` in a slot value truncates the resolved text and leaves a stray marker.
         assert templates.resolve(templates.emit("rule", "abc }} def")) == "abc  def}}"
-        # A `-->` closes an annotation early, truncating the captured command.
         probe = (
             "<!-- node: AgentNode id=draft -->\n"
             '<!-- command: echo "before --> after" -->\n'
         )
         assert extract_annotations(probe)["draft"]["command"] == 'echo "before'
-
-
-# ── R-007 / UC-005: the Package.compile() hook ─────────────────
 
 
 class TestCompileHook:
@@ -941,9 +882,6 @@ class TestPromptRepair:
         assert not any(nid.startswith("guard_") for nid in compiled.nodes)
 
 
-# ── R-013: expansion validation boundaries ─────────────────────
-
-
 class TestExpansionValidation:
     def test_fork_target_rejected(self) -> None:
         workflow = Workflow(
@@ -987,7 +925,6 @@ class TestExpansionValidation:
         assert str(payload_bytes) in message
         assert str(MAX_RULES_PAYLOAD_BYTES) in message
 
-        # A payload exactly at the cap is accepted.
         max_rules = [_guard("x" * MAX_GUARD_TEXT_LEN) for _ in range(15)]
         base = guard_rules_payload(_unique_slugs(max_rules), max_rules)
         last_slug = guard_slug("q" * 40)
@@ -1027,8 +964,6 @@ class TestExpansionValidation:
         assert "share guard segment" in message
 
     def test_stage_insert_never_overwrites(self) -> None:
-        # M1-001's general guard, pinned at the merge helper: whatever routes a
-        # generated id here, an occupied id is an error, never a silent overwrite.
         workflow = Workflow(
             name="overwrite", nodes={"draft": _agent()}, edges=[], start_node="draft"
         )
@@ -1038,13 +973,9 @@ class TestExpansionValidation:
         message = str(exc_info.value)
         assert "'draft'" in message
         assert "existing node" in message
-        assert isinstance(workflow.nodes["draft"], AgentNode)  # nothing replaced
+        assert isinstance(workflow.nodes["draft"], AgentNode)
 
     def test_two_segment_checker_id_collision_named(self) -> None:
-        # M1-001/NIT-2: distinct segments can derive the same checker id —
-        # 'a' + rule 'b c' and 'a_b' + rule 'c' both want guard_a_b_c. This used to
-        # raise "partially present" (misleading, indistinguishable from a deleted
-        # node); it must name the colliding id and both agents, and must not overwrite.
         left_rule, right_rule = "b c", "c"
         left_id = f"guard_{_agent_segment('a')}_{guard_slug(left_rule)}"
         right_id = f"guard_{_agent_segment('a_b')}_{guard_slug(right_rule)}"
@@ -1065,7 +996,7 @@ class TestExpansionValidation:
         assert "'a'" in message and "'a_b'" in message
         assert "collides" in message
         assert "partially present" not in message
-        assert "guard_a_b_c" not in workflow.nodes  # input untouched (purity)
+        assert "guard_a_b_c" not in workflow.nodes
 
     def test_two_agents_no_collision(self) -> None:
         shared = _guard("shared rule")
@@ -1084,9 +1015,6 @@ class TestExpansionValidation:
         assert first_ids and second_ids
         assert first_ids.isdisjoint(second_ids)
         assert guard_dir("first") != guard_dir("second")
-
-
-# ── R-008/R-014: aggregator check ─────────────────────────────
 
 
 class TestAggregatorCheck:
@@ -1189,7 +1117,6 @@ class TestAggregatorCheck:
         assert lines[0].startswith("fail: guard verdicts missing or stale:")
         for slug in ("alpha", "beta", "gamma"):
             assert f"{slug}: missing" in lines[0]
-        # Per-guard diagnostics are stderr, never the verdict line.
         assert "alpha: missing" in proc.stderr
         assert not (stage / "violations.md").exists()
 
@@ -1235,9 +1162,6 @@ class TestRuleChannel:
         assert _stdout_line(proc).startswith("fail: guard rule registry malformed:")
 
 
-# ── R-009: aggregator reset ───────────────────────────────────
-
-
 class TestAggregatorReset:
     def test_reset(self, tmp_path: Path) -> None:
         stage = _stage(tmp_path)
@@ -1265,7 +1189,7 @@ class TestAggregatorReset:
         assert (stage / "rules.json").read_bytes() == first_rules
         second_token = _token(stage)
         assert second_token
-        assert second_token != first_token  # a fresh token every iteration
+        assert second_token != first_token
 
     def test_reset_over_cap_exits_2(self, tmp_path: Path) -> None:
         oversized = {f"r{index:02d}": "x" * MAX_GUARD_TEXT_LEN for index in range(17)}
@@ -1301,9 +1225,6 @@ class TestAggregatorReset:
         proc = _run_check(tmp_path, ["alpha"])
         assert proc.returncode == 0
         assert _stdout_line(proc) == "pass: 1 guard(s) clean"
-
-
-# ── R-008: the real stdout through the real parser ────────────
 
 
 class TestFnGateParsing:

@@ -137,7 +137,6 @@ class ArtifactCheck(BaseModel):
 
 
 MAX_GUARD_TEXT_LEN: int = 4096
-"""Maximum length in chars of one :class:`Guard` text field (argv-safety bound)."""
 
 _RESERVED_GUARD_SEQUENCES: tuple[str, ...] = ("{project_path}", "{{", "}}", "<!--", "-->")
 

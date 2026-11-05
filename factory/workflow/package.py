@@ -184,8 +184,6 @@ class Package(BaseModel):
         wf.terminal = self.terminal
         if self.contract.capabilities:
             wf.declared_capabilities = frozenset(self.contract.capabilities)
-        # Last step: expand attached guards into checker stages. Must run after the
-        # _prompt_* re-application above, which replaces prompt_template wholesale.
         return expand_agent_guards(wf)
 
 

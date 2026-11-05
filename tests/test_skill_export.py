@@ -338,8 +338,6 @@ class TestGateToCheckpoint:
         assert "builder" in result
 
     def test_reloop_budget_prefers_gate_cap(self) -> None:
-        # A generated guard gate enforces its own max_iterations at runtime; the rendered
-        # skill must show that number, not the RELOOP target's unrelated default (3).
         gate = GateNode(id="guard_draft_gate", evaluator_type="fn", max_iterations=2)
         draft = _make_agent("draft")
         reloop = Edge(

@@ -59,16 +59,13 @@ meta = {
 }
 
 TOY_AGENT_ID: str = "draft"
-"""Id of the single guarded agent; its normalised segment is also ``draft``."""
 
 GUARD_MAX_ITERATIONS: int = 2
-"""Reloop budget for the generated gate (proves the budget reaches the graph)."""
 
 GUARDS: tuple[Guard, ...] = (
     Guard(rule="draft.md must state Status: ready"),
     Guard(rule="draft.md must not contain TBD"),
 )
-"""The two guards attached to ``draft``, in attachment order."""
 
 _DRAFT_PROMPT = (
     "You are drafting a short note for the toy-guard mode.\n\n"

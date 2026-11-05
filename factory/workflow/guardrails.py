@@ -83,17 +83,10 @@ __all__ = [
 ]
 
 GUARDRAILS_HEADER: str = "## Guardrails (binding)"
-"""Prompt block header appended to a guarded agent's ``prompt_template`` (§5.2)."""
 
 GUARD_ARTIFACT_ROOT: str = ".factory/guards"
-"""Project-relative root of the per-agent guard artifact dirs (§4.6)."""
 
 MAX_RULES_PAYLOAD_BYTES: int = 65536
-"""Per-agent argv budget for the ``{slug: rule}`` reset payload.
-
-The payload is one ``execve`` argument and Linux's ``MAX_ARG_STRLEN`` is 131072
-bytes; half of it leaves headroom for the interpreter path and other argv.
-"""
 
 DEFAULT_AUDIT_HINT: str = (
     "Inspect the project's actual state (git diff, git status, the produced artifacts). "
@@ -102,17 +95,10 @@ DEFAULT_AUDIT_HINT: str = (
 )
 
 GUARD_SLUG_RE: re.Pattern[str] = re.compile(r"^[a-z0-9_]+$")
-"""One source of truth for the generated-id / artifact-filename charset (§6.3)."""
 
 _GUARD_SLUG_MAX_LEN: int = 40
 _CHECKER_ROLE: AgentRole = AgentRole.CODE_REVIEWER
-# The four fixed stage-node suffixes (§4.4). A checker slug equal to one of them
-# would produce the id of a structural node; the stage would then overwrite it,
-# silently dropping the reset/fork/join/gate node (M1-001).
 _RESERVED_STAGE_SUFFIXES: tuple[str, ...] = ("reset", "fork", "join", "gate")
-
-
-# ── id derivation (§6.3, SD-004) ─────────────────────────────────
 
 
 def guard_slug(rule: str) -> str:
@@ -200,9 +186,6 @@ def guard_dir(agent_id_or_segment: str) -> Path:
     return Path(GUARD_ARTIFACT_ROOT) / _agent_segment(agent_id_or_segment)
 
 
-# ── generated text (§4.5, §5.2, §6.4) ────────────────────────────
-
-
 def guard_rules_payload(slugs: Sequence[str], guards: Sequence[Guard]) -> str:
     """Compact JSON object slug → rule (sorted keys, no trailing newline), UNQUOTED.
 
@@ -279,9 +262,6 @@ def _check_command(segment: str, slugs: Sequence[str]) -> str:
     )
 
 
-# ── generated nodes (§4.4) ───────────────────────────────────────
-
-
 def _reset_node(segment: str, node: AgentNode) -> FnNode:
     stage_dir = guard_dir(segment)
     return FnNode(
@@ -326,9 +306,6 @@ def _gate_node(segment: str, slugs: Sequence[str], node: AgentNode) -> GateNode:
     )
 
 
-# ── attach (§6.2, R-004/SD-013) ──────────────────────────────────
-
-
 def with_guards(
     node: AgentNode, guards: Sequence[Guard], *, max_iterations: int = 3
 ) -> AgentNode:
@@ -344,9 +321,6 @@ def with_guards(
             "guard_max_iterations": max_iterations,
         },
     )
-
-
-# ── expansion (§5.1) ─────────────────────────────────────────────
 
 
 def _fork_targets(workflow: Workflow) -> set[str]:
@@ -408,7 +382,6 @@ def _per_branch_contexts(workflow: Workflow) -> dict[str, str]:
             entry, exit_id = node.subgraph_entry, node.subgraph_exit
             if entry not in workflow.nodes or exit_id not in workflow.nodes:
                 continue
-            # Mirror the executor: only nodes on paths entry → exit run in the branch.
             region = _reachable(workflow, entry) & _reachable(workflow, exit_id, reverse=True)
             for member in region:
                 contexts.setdefault(member, f"SubgraphForkNode '{node_id}' subgraph")
@@ -494,7 +467,6 @@ def expand_agent_guards(workflow: Workflow) -> Workflow:
     fork_targets = _fork_targets(out)
     per_branch = _per_branch_contexts(out)
     seen_segments: dict[str, str] = {}
-    # Generated id → agent that generated it, so a collision can name both sides.
     owners: dict[str, str] = {}
     for agent_id in sorted(out.nodes):
         node = out.nodes[agent_id]
@@ -533,14 +505,12 @@ def expand_agent_guards(workflow: Workflow) -> Workflow:
                 f"max {MAX_RULES_PAYLOAD_BYTES}"
             )
 
-        # 1. Prompt ENSURE (not skip): repair a block wiped by a PROMPT_MUTATE.
         block = _guard_block(node)
         if block:
             out.nodes[agent_id] = node.model_copy(
                 update={"prompt_template": (node.prompt_template or "") + block}
             )
 
-        # 2. Splice the stage when absent; verify (never silently reuse) when present.
         reset_id = f"guard_{segment}_reset"
         fork_id = f"guard_{segment}_fork"
         join_id = f"guard_{segment}_join"
@@ -549,8 +519,6 @@ def expand_agent_guards(workflow: Workflow) -> Workflow:
         present = structural & out.nodes.keys()
         occupied = present | (set(checker_ids) & out.nodes.keys())
         if occupied:
-            # An occupied id that another agent's stage generated in this same call
-            # is a cross-agent collision, not a partial stage: name it (M1-001).
             foreign = sorted(
                 node_id for node_id in occupied if owners.get(node_id, agent_id) != agent_id
             )
@@ -565,12 +533,6 @@ def expand_agent_guards(workflow: Workflow) -> Workflow:
             _verify_stage(out, agent_id, segment, node, slugs, checker_ids)
             continue
 
-        # 3. Build the whole stage before touching the graph. The presence gate above
-        # already routes a complete same-stage id set to _verify_stage, so every
-        # generated id is new today; `_add_stage_nodes` below is the guard that makes
-        # the silent-overwrite failure mode (a checker id equal to guard_<seg>_fork,
-        # or two segments deriving the same checker id) impossible even if that gate
-        # is edited (M1-001).
         stage: dict[str, NodeType] = {
             reset_id: _reset_node(segment, node),
             fork_id: ForkNode(id=fork_id, targets=checker_ids),
@@ -580,7 +542,6 @@ def expand_agent_guards(workflow: Workflow) -> Workflow:
         stage[join_id] = JoinNode(id=join_id, sources=checker_ids)
         stage[gate_id] = _gate_node(segment, slugs, node)
 
-        # 4. Resplice outgoing edges — rewrite, never append a second out-edge.
         succ_edges = [edge for edge in out.edges if edge.source == agent_id]
         for edge in succ_edges:
             label = edge.condition_label
@@ -602,6 +563,5 @@ def expand_agent_guards(workflow: Workflow) -> Workflow:
         ]
         out.edges.append(Edge(source=gate_id, target=agent_id, condition=VerdictType.RELOOP))
 
-        # 5. Add the stage nodes (the helper re-checks that no id is taken).
         _add_stage_nodes(out, stage, agent_id, owners)
     return out

@@ -78,8 +78,6 @@ def _write_verdict(project: Path, node_id: str, stub: StubState) -> tuple[str, i
     if stub.scenario == "crash":
         raise RuntimeError(f"checker {slug} crashed")
     if stub.scenario == "missing":
-        # No verdict file: auto_write_outputs persists this prose, and the
-        # aggregator classifies the resulting non-JSON file as malformed.
         return ("checker produced no verdict", 0)
     stage = project / _STAGE_DIR
     token = (stage / "token").read_text(encoding="utf-8").strip()
@@ -206,7 +204,6 @@ class TestToyModeExecution:
         assert _RELOOP_FIX in feedback
         for guard in GUARDS:
             assert guard.rule not in feedback
-        # The prompt itself still carries the binding block by design.
         assert GUARDRAILS_HEADER in tasks[1]
 
     async def test_violations_md_carries_rule(self, tmp_path: Path) -> None:
@@ -216,7 +213,6 @@ class TestToyModeExecution:
         assert content is not None, "violations.md was absent at the reloop re-run"
         assert f"## {_SLUGS[0]}" in content
         assert f"- rule: {GUARDS[0].rule.strip()}" in content
-        # Last-iteration-only: the successful re-run's reset deletes it.
         assert not (tmp_path / _STAGE_DIR / "violations.md").exists()
 
     async def test_exhaustion_halts(self, tmp_path: Path) -> None:
@@ -247,8 +243,6 @@ class TestToyModeExecution:
         assert run.result.halted
         assert run.result.halt_reason.startswith("fork branch 'guard_draft_")
         assert "fork branch" in run.result.halt_reason
-        # A checker that raises halts in the fork branch before the aggregator,
-        # so there is no `fail:` line (R-012).
         assert "fail:" not in run.result.halt_reason
 
 
@@ -320,7 +314,4 @@ class TestToyModeCli:
         assert "factory.workflow.guardrails_aggregate" in content
         assert guard_rules_payload(_SLUGS, GUARDS) in content
         assert validate_skill(content) == []
-        # The rendered budget tracks enforcement: the generated gate carries
-        # GUARD_MAX_ITERATIONS, so SKILL.md must show it (not the RELOOP target's
-        # unrelated AgentNode.max_iterations default of 1 -> hardcoded 3).
         assert f"max {GUARD_MAX_ITERATIONS} iterations" in content
