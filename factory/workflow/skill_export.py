@@ -497,12 +497,7 @@ def _gate_to_checkpoint(
 
 
 def _resolve_max_iterations(edge: Edge, workflow: Workflow) -> int:
-    """Resolve a RELOOP budget: the gate's own cap when set, else the target agent's.
-
-    A gate carrying ``max_iterations`` (generated guard gates, fn gates) enforces that
-    number at runtime, so the rendered skill must show it rather than the RELOOP
-    target's unrelated budget.
-    """
+    """RELOOP budget: the gate's cap when set, else the target agent's."""
     source_node = workflow.nodes.get(edge.source)
     if isinstance(source_node, GateNode) and source_node.max_iterations is not None:
         return source_node.max_iterations

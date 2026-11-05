@@ -1,9 +1,4 @@
-"""Unit + contract tests for agent-scoped guardrails (INT-002, DEC-008).
-
-Every test is offline and deterministic: the only subprocesses are this
-interpreter running the aggregator CLI (and this interpreter importing the
-guardrails module); no agent CLI, no API key, no network.
-"""
+"""Offline unit/contract tests for agent-scoped guardrails."""
 
 from __future__ import annotations
 
@@ -90,7 +85,6 @@ def _toy(
     max_iterations: int = 3,
     successors: int = 1,
 ) -> Workflow:
-    """2-node toy mode: guarded ``draft`` then ``publish`` (spec §10.1/G5 shape)."""
     nodes: dict[str, Any] = {
         "draft": _guarded(guards=guards, max_iterations=max_iterations),
     }

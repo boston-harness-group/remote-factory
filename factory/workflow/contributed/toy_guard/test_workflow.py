@@ -1,9 +1,4 @@
-"""Tests for the toy-guard contributed workflow (INT-002 guardrail e2e fixture).
-
-Collected by the normal pytest run (as for every contributed mode). These are
-structural contract checks; the behavioural proof through the real executor is
-``tests/test_workflow_guardrails_e2e.py``.
-"""
+"""Structural checks for the toy-guard contributed workflow."""
 
 from __future__ import annotations
 
@@ -35,8 +30,6 @@ GATE_ID = f"guard_{SEGMENT}_gate"
 
 
 class TestToyGuardMeta:
-    """Tests for the module-level meta dict."""
-
     def test_meta_has_name(self) -> None:
         assert meta["name"] == "toy-guard"
 
@@ -45,17 +38,13 @@ class TestToyGuardMeta:
 
 
 class TestToyGuardGraph:
-    """Structural checks for the compiled toy-guard graph."""
-
     def test_node_count(self) -> None:
-        """2 mode nodes + 4 fixed stage nodes + 2 checkers = 8 nodes."""
         wf = workflow()
         assert len(wf.nodes) == 8
         expected = {"draft", "publish", RESET_ID, FORK_ID, JOIN_ID, GATE_ID, *CHECKER_IDS}
         assert sorted(wf.nodes) == sorted(expected)
 
     def test_edge_count(self) -> None:
-        """draft->reset->fork->join->gate, gate->publish PROCEED, gate->draft RELOOP."""
         wf = workflow()
         assert len(wf.edges) == 6
 
@@ -132,8 +121,6 @@ class TestToyGuardGraph:
 
 
 class TestToyGuardRegistration:
-    """Tests for the lazy registry entry in definitions.py."""
-
     def test_registered_in_register_all(self) -> None:
         workflows = register_all()
         assert "toy-guard" in workflows

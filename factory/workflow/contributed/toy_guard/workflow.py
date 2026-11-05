@@ -1,40 +1,6 @@
-"""Toy guard mode — deterministic end-to-end fixture for agent guardrails (INT-002).
-
-A two-node mode (``draft`` → ``publish``) composed as a
-:class:`~factory.workflow.package.Package` and returned through
-``Package.compile()``, with two guards attached to ``draft`` via
-:func:`factory.workflow.guardrails.with_guards`. Compiling splices the generated
-checker stage, so the returned graph is::
-
-    draft (AgentNode, 2 guards, budget 2)
-      -> guard_draft_reset (FnNode)  -> guard_draft_fork (ForkNode)
-      -> {guard_draft_<slug> ...}    -> guard_draft_join (JoinNode)
-      -> guard_draft_gate (GateNode, fn)
-         -> PROCEED -> publish (AgentNode)
-         -> RELOOP  -> draft
-
-The graph returned by ``workflow()`` has exactly 8 nodes / 6 edges: 2 authored
-mode nodes + 4 fixed stage nodes + 2 checkers (the authored graph before
-expansion is 2 nodes / 1 edge), and the gate reloops at most
-``GUARD_MAX_ITERATIONS = 2`` times.
-
-``WorkflowRegistry`` returns whatever ``workflow()`` returns, so a
-package-composed mode must return ``…compile()`` for ``show`` / ``validate`` /
-``export-skills`` to see the stage — this mode does exactly that. What does
-**not** get expanded (§3.4, ASM-004): ``expand_agent_guards`` runs **only**
-where a flat graph is produced through
-:meth:`factory.workflow.package.Package.compile`. A hand-built ``Workflow`` that
-never calls ``compile()`` keeps its ``guards`` list as inert data — it
-serializes, it does not enforce — including builtin modes in ``definitions.py``,
-contributed workflow files that return a hand-built graph, and YAML overrides
-via ``factory.skillopt.yaml_surface.yaml_to_workflow``. Guards on an
-``AgentNode`` that is a ``ForkNode`` target, on a ``blocking=False`` agent, or in
-a per-item context (a ``DataNode`` branch or a ``SubgraphForkNode`` subgraph)
-are rejected by expansion; they are not silently ignored (ASM-005).
-
-This mode is a deterministic test fixture: the e2e tests drive it through
-``WorkflowExecutor(agent_fn=...)`` with stub agents, so no model, CLI, network
-or paid service is involved.
+"""Toy guard mode — a 2-node ``draft`` -> ``publish`` package whose draft agent
+carries two guards and is compiled, so the checker stage expands (8 nodes / 6
+edges). Deterministic fixture: stub agents only, no model/CLI/network.
 """
 
 from __future__ import annotations
@@ -81,7 +47,6 @@ _PUBLISH_PROMPT = (
 
 
 def workflow() -> Workflow:
-    """Build the toy-guard package and return its compiled (guard-expanded) graph."""
     draft = with_guards(
         AgentNode(
             id=TOY_AGENT_ID,

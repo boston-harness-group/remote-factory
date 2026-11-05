@@ -1,28 +1,8 @@
-"""Aggregator / reset CLI for generated guard stages (INT-002, DEC-008).
+"""Reset/check CLI for a generated guard stage (runs as a bare subprocess).
 
-Invoked by the two commands :mod:`factory.workflow.guardrails` generates::
-
-    python -m factory.workflow.guardrails_aggregate reset project_path agent_segment json_payload
-    python -m factory.workflow.guardrails_aggregate check project_path agent_segment slug [slug ...]
-
-``reset`` clears stale verdicts, persists the slug→rule registry
-(``<guard_dir>/rules.json``) from its argv payload and writes a fresh iteration
-token. ``check`` reconciles the per-guard verdict JSONs against that token and
-emits the fn-gate protocol on **stdout line 1**:
-
-    pass: <N> guard(s) clean
-    reloop: <slug>: <fix>[ | <slug>: <fix>]
-    fail: <reason>
-
-Exit-code contract (R-008): **exit 0 for every verdict case**, including
-``fail:`` — the executor turns a non-zero gate exit into a halt with a different,
-unlabelled reason and would make the reloop branch unreachable. Non-zero (2) is
-reserved for usage / argument-validation errors, which fail closed at the FnNode
-or gate. Diagnostics go to stderr so nothing can precede the verdict on line 1.
-
-The module is standalone: stdlib plus the :mod:`factory.workflow.guardrails`
-constants only (no executor, no package, no network), so it runs from a bare
-subprocess whose ``cwd`` is the project directory.
+``reset`` writes the rule registry + a fresh token; ``check`` prints the verdict
+on stdout line 1: ``pass: <N> guard(s) clean`` / ``reloop: <slug>: <fix>`` /
+``fail: <reason>``. Exit 0 on every verdict (including ``fail:``); 2 = usage errors.
 """
 
 from __future__ import annotations
@@ -51,7 +31,6 @@ _VERDICT_KINDS = frozenset({"missing", "malformed", "stale"})
 
 
 def _usage_error(detail: str) -> SystemExit:
-    """Build the ``SystemExit(2)`` for an argument/validation error (fail-closed)."""
     print(_USAGE, file=sys.stderr)
     print(f"error: {detail}", file=sys.stderr)
     return SystemExit(2)
@@ -66,29 +45,20 @@ def _stage_dir(project_path: str, segment: str) -> Path:
 
 
 def _canonical_json(payload: dict[str, str]) -> str:
-    """The one canonical serialization of the rule registry (§4.6/§6.5)."""
     return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
 def _write_atomic(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` via a sibling temp file + ``os.replace`` (crash-atomic).
-
-    The stage has a single serial writer (``reset`` runs before the checker fork), so
-    this is not a concurrency guard: it keeps a crash mid-write from leaving a torn
-    ``rules.json``/``token`` for the next run to classify.
-    """
     tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     tmp_path.write_text(text, encoding="utf-8")
     os.replace(tmp_path, path)
 
 
 def _one_line(text: str) -> str:
-    """Collapse every run of whitespace to one space (the reloop fix is single-line)."""
     return " ".join(text.split())
 
 
 def _emit(line: str) -> int:
-    """Print the verdict on stdout line 1 and return the always-zero exit code."""
     print(line)
     return 0
 
@@ -127,7 +97,6 @@ def _reset(project_path: str, segment: str, raw_payload: str) -> int:
 
 
 def _classify_verdict(path: Path, slug: str, token: str) -> tuple[str, str, str]:
-    """Classify one verdict file per §4.6 (``missing``/``malformed``/``stale``/…)."""
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -225,7 +194,6 @@ def _check(project_path: str, segment: str, slugs: list[str]) -> int:
 
 
 def main(argv: list[str]) -> int:
-    """Dispatch one aggregator verb; returns the process exit code."""
     if not argv:
         raise _usage_error("missing verb (expected reset or check)")
     verb, args = argv[0], argv[1:]

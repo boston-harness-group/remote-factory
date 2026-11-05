@@ -1,13 +1,4 @@
-"""End-to-end guardrail tests through the real ``WorkflowExecutor`` (INT-002).
-
-Drives the ``toy-guard`` contributed mode with a deterministic stub agent: the
-only subprocesses are the local aggregator CLI and ``python -m factory workflow
-validate``. No model binary, API key, network or paid service is involved.
-
-See spec §10.2. The stub is a module-level ``fake_agent`` bound to per-test
-state via ``functools.partial`` — do **not** use ``FakeAgent.behavior`` keyed on
-``node_id``: that hook never receives ``node_id``.
-"""
+"""End-to-end guardrail tests through the real executor with stub agents."""
 
 from __future__ import annotations
 
@@ -54,8 +45,6 @@ _WORKTREE_ROOT = Path(__file__).resolve().parents[1]
 
 @dataclass
 class StubState:
-    """Per-run state recorded by the stub agent."""
-
     scenario: str
     calls: list[str] = field(default_factory=list)
     tasks: dict[str, list[str]] = field(default_factory=dict)
@@ -108,7 +97,6 @@ async def fake_agent(
     node_id: str | None = None,
     **_extra: Any,
 ) -> tuple[str, int]:
-    """Stub agent implementing every §10.2 scenario for the toy-guard graph."""
     del role, model, timeout
     assert node_id is not None, "the executor always passes node_id"
     project = Path(project_path)
@@ -129,8 +117,6 @@ async def fake_agent(
 
 @dataclass
 class Run:
-    """Everything a test needs from one executor run."""
-
     result: ExecutionResult
     stub: StubState
     executor: WorkflowExecutor
@@ -149,15 +135,12 @@ async def _run(project: Path, scenario: str) -> Run:
 
 @pytest.fixture(autouse=True)
 def _reset_registry() -> Iterator[None]:
-    """Isolate registry state for the in-process CLI tests (and restore it after)."""
     WorkflowRegistry.reset()
     yield
     WorkflowRegistry.reset()
 
 
 class TestToyModeGraph:
-    """R-011 — the registered mode expands through ``Package.compile()``."""
-
     def test_registered_and_expanded(self) -> None:
         WorkflowRegistry.reset()
         wf = WorkflowRegistry.get_workflow("toy-guard")
@@ -181,8 +164,6 @@ class TestToyModeGraph:
 
 
 class TestToyModeExecution:
-    """UC-001/002/009/010/012/013 through the real executor with stub agents."""
-
     async def test_pass(self, tmp_path: Path) -> None:
         run = await _run(tmp_path, "pass")
         assert run.result.success, run.result.halt_reason
@@ -247,8 +228,6 @@ class TestToyModeExecution:
 
 
 class TestToyModeCli:
-    """UC-015 — the CLI-observable acceptance for the registered toy mode."""
-
     def test_validate_file(self) -> None:
         proc = subprocess.run(
             [

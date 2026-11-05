@@ -142,22 +142,7 @@ _RESERVED_GUARD_SEQUENCES: tuple[str, ...] = ("{project_path}", "{{", "}}", "<!-
 
 
 class Guard(BaseModel):
-    """A single behavioural rule attached to an AgentNode — pure data (DEC-004).
-
-    The owner of a guard is the node it is attached to: there is deliberately no
-    id, name, owner, role, mode, binding or severity field. ``rule`` is the
-    binding text injected into the guarded agent's prompt and audited by the
-    generated checker; ``audit_hint`` is optional extra "how to verify" guidance
-    (``""`` means "use the compiler default", see
-    :data:`factory.workflow.guardrails.DEFAULT_AUDIT_HINT`).
-
-    Both fields reject the reserved sequences in
-    :data:`_RESERVED_GUARD_SEQUENCES`: ``{project_path}`` is substituted verbatim
-    into every surface the text reaches (including a shell command), and
-    ``{{``/``}}``/``<!--``/``-->`` are template-slot and SKILL.md annotation
-    markers that guard text could otherwise truncate or corrupt. Rejecting them
-    at construction is the only place that fails fast for every mode.
-    """
+    """A behavioural rule attached to an AgentNode (rule + optional audit hint)."""
 
     model_config = ConfigDict(strict=True, extra="forbid")
 

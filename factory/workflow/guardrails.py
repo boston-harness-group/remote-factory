@@ -1,46 +1,10 @@
-"""Agent-scoped guardrails — attach, expand, inject (INT-002, PR 1).
+"""Agent-scoped guardrails: ``Guard``, ``with_guards`` and compile-time expansion.
 
-A guard is data: a rule plus an optional audit hint attached to one
-:class:`~factory.workflow.primitives.AgentNode`. Expansion splices a generated
-parallel checker stage immediately after that agent, and reloops to that agent on
-violation::
-
-    A -> guard_<seg>_reset(Fn) -> guard_<seg>_fork(Fork)
-      -> {guard_<seg>_<slug>(Agent) ...} -> guard_<seg>_join(Join)
-      -> guard_<seg>_gate(Gate, fn)
-      -> PROCEED -> A's original successor(s)
-      -> RELOOP  -> A
-
-What does **not** get expanded (§3.4, ASM-004): expansion runs only where a flat
-graph is produced through :meth:`factory.workflow.package.Package.compile`. A
-hand-built ``Workflow`` that never calls ``compile()`` keeps its ``guards`` as
-inert data — they serialize, they do not enforce. Guards on an agent that is a
-``ForkNode`` target, on a ``blocking=False`` agent, or in a per-item context —
-reachable through a ``DataNode`` branch or inside a ``SubgraphForkNode``
-subgraph — are rejected at expansion (ASM-005): guard artifacts are keyed by the
-agent segment alone, so a stage that runs once per item would race on the shared
-``token``/``rules.json``/verdict files.
-
-Expansion is pure (the input ``Workflow`` is untouched) and idempotent **by
-ensuring, not by skipping**: the prompt block is re-appended whenever
-``GUARDRAILS_HEADER`` is absent, and an already-present stage is verified against
-a fresh build (``fork.targets``, ``join.sources``, ``gate.max_iterations``, the
-generated reset and check commands, and every generated checker prompt) and
-rejected with ``ValueError`` on any mismatch. The caller rebuilds from the source
-package.
-
-Generated ids must never collide with a node that is already in the graph: the
-four structural suffixes are pre-seeded in :func:`_unique_slugs`, so a rule that
-reduces to ``fork`` yields the checker id ``guard_<seg>_fork_2`` rather than the
-``ForkNode`` id, and any remaining generated-id collision (e.g. two distinct
-agent segments deriving the same checker id) raises ``ValueError`` naming the id
-and the agents instead of overwriting a node.
-
-Dependency direction: this module imports :mod:`factory.workflow.primitives` and
-nothing else from the engine; the runtime half is the standalone
-:mod:`factory.workflow.guardrails_aggregate` CLI. It is unrelated to
-:mod:`factory.workflow.guard`, the structural diff checker used by verified
-skill generation.
+``Package.compile()`` splices a checker stage after each guarded agent
+(``A -> reset -> fork -> checkers -> join -> gate``); the gate PROCEEDs to A's
+successors and RELOOPs to A on violation. Expansion is pure and idempotent and
+rejects unsupported placements. Guards on a graph that never calls ``compile()``
+are inert.
 """
 
 from __future__ import annotations
@@ -102,14 +66,6 @@ _RESERVED_STAGE_SUFFIXES: tuple[str, ...] = ("reset", "fork", "join", "gate")
 
 
 def guard_slug(rule: str) -> str:
-    """Deterministic, path- and node-id-safe slug for a rule.
-
-    Lowercases, splits on every maximal run outside ``[a-z0-9]``, joins whole
-    tokens with ``_`` while the result fits in 40 chars (stopping at the first
-    token that would overflow — never a mid-token cut, except that a single
-    over-long *first* token is hard-truncated to 40 chars), strips trailing
-    ``_`` and falls back to ``"guard"`` when nothing is left.
-    """
     tokens = [token for token in re.split(r"[^a-z0-9]+", rule.lower()) if token]
     parts: list[str] = []
     for index, token in enumerate(tokens):
@@ -125,15 +81,6 @@ def guard_slug(rule: str) -> str:
 
 
 def _unique_slugs(guards: Sequence[Guard]) -> list[str]:
-    """Fold :func:`guard_slug` over attachment order, disambiguating collisions.
-
-    The four structural stage suffixes are pre-seeded as taken, so a rule that
-    reduces to exactly ``reset``/``fork``/``join``/``gate`` is disambiguated like
-    any other repeated slug (``fork`` ⇒ ``fork_2``) instead of reproducing a
-    ``guard_<seg>_<suffix>`` stage id. This is the SD-004 reading recorded for
-    M1-001: reserved ids stay reserved, the stage keeps its ``4 + N`` shape, and
-    nothing is renamed for every other rule.
-    """
     used: set[str] = set(_RESERVED_STAGE_SUFFIXES)
     slugs: list[str] = []
     for guard in guards:
@@ -149,13 +96,6 @@ def _unique_slugs(guards: Sequence[Guard]) -> list[str]:
 
 
 def _collision_error(node_id: str, agent_id: str, owners: dict[str, str]) -> ValueError:
-    """Error naming a generated id that is already taken (M1-001, NIT-2).
-
-    ``owners`` maps ids generated earlier in this expansion to their agent, so the
-    message can name both colliding agents instead of claiming a "partially
-    present" stage. An id with no recorded owner is a node that was in the graph
-    before this call.
-    """
     owner = owners.get(node_id)
     holder = (
         f"the guard stage generated for agent {owner!r}"
@@ -169,7 +109,6 @@ def _collision_error(node_id: str, agent_id: str, owners: dict[str, str]) -> Val
 
 
 def _agent_segment(agent_id: str) -> str:
-    """Node-id/file segment for an agent id: lowercase ``[a-z0-9_]+``, never empty."""
     segment = re.sub(r"[^a-z0-9]+", "_", agent_id.lower()).strip("_")
     if not segment:
         raise ValueError(f"guard segment for agent id {agent_id!r} is empty")
@@ -177,23 +116,11 @@ def _agent_segment(agent_id: str) -> str:
 
 
 def guard_dir(agent_id_or_segment: str) -> Path:
-    """Project-relative artifact dir for an agent: ``GUARD_ARTIFACT_ROOT / segment``.
-
-    Accepts either the raw agent id or the already-normalised segment
-    (:func:`_agent_segment` is idempotent on ``[a-z0-9_]+``); raises
-    ``ValueError`` when the segment is empty.
-    """
     return Path(GUARD_ARTIFACT_ROOT) / _agent_segment(agent_id_or_segment)
 
 
 def guard_rules_payload(slugs: Sequence[str], guards: Sequence[Guard]) -> str:
-    """Compact JSON object slug → rule (sorted keys, no trailing newline), UNQUOTED.
-
-    Returns exactly ``json.dumps(dict(zip(slugs, rules)), ensure_ascii=True,
-    sort_keys=True, separators=(",", ":"))``. The command builder applies
-    ``shlex.quote``; the ``reset`` verb writes these canonical bytes plus a
-    trailing ``"\\n"``.
-    """
+    """Canonical JSON ``{slug: rule}`` payload (unquoted; callers shlex-quote)."""
     return json.dumps(
         dict(zip(slugs, (guard.rule for guard in guards))),
         ensure_ascii=True,
@@ -203,7 +130,6 @@ def guard_rules_payload(slugs: Sequence[str], guards: Sequence[Guard]) -> str:
 
 
 def _guard_block(node: AgentNode) -> str:
-    """Block to append, or ``""`` when ``GUARDRAILS_HEADER`` is already present."""
     if GUARDRAILS_HEADER in (node.prompt_template or ""):
         return ""
     rules = "".join(f"- {guard.rule.strip()}\n" for guard in node.guards)
@@ -211,7 +137,6 @@ def _guard_block(node: AgentNode) -> str:
 
 
 def _checker_prompt(agent_id: str, slug: str, guard: Guard) -> str:
-    """Deterministic checker prompt per §4.5 (embeds the rule + audit hint; no markers)."""
     stage_dir = guard_dir(agent_id)
     verdict_path = (stage_dir / f"{slug}.json").as_posix()
     token_path = (stage_dir / "token").as_posix()
@@ -245,7 +170,6 @@ def _checker_prompt(agent_id: str, slug: str, guard: Guard) -> str:
 
 
 def _reset_command(segment: str, node: AgentNode) -> str:
-    """Deterministic reset FnNode command per §6.4 (embeds the quoted rules payload)."""
     payload = guard_rules_payload(_unique_slugs(node.guards), node.guards)
     return (
         f"{shlex.quote(sys.executable)} -m factory.workflow.guardrails_aggregate reset "
@@ -254,7 +178,6 @@ def _reset_command(segment: str, node: AgentNode) -> str:
 
 
 def _check_command(segment: str, slugs: Sequence[str]) -> str:
-    """Deterministic gate evaluator_command per §6.4 (segment + slugs, no rule text)."""
     slug_args = " ".join(shlex.quote(slug) for slug in slugs)
     return (
         f"{shlex.quote(sys.executable)} -m factory.workflow.guardrails_aggregate check "
@@ -309,7 +232,6 @@ def _gate_node(segment: str, slugs: Sequence[str], node: AgentNode) -> GateNode:
 def with_guards(
     node: AgentNode, guards: Sequence[Guard], *, max_iterations: int = 3
 ) -> AgentNode:
-    """Return a copy of ``node`` with its guard list **replaced** and the budget set."""
     if not isinstance(node, AgentNode):
         raise TypeError(f"with_guards expects an AgentNode, got {type(node).__name__}")
     if max_iterations < 1:
@@ -332,7 +254,6 @@ def _fork_targets(workflow: Workflow) -> set[str]:
 
 
 def _edge_index(workflow: Workflow, *, reverse: bool = False) -> dict[str, list[str]]:
-    """Adjacency index: source → targets, or target → sources when ``reverse``."""
     adjacency: dict[str, list[str]] = {}
     for edge in workflow.edges:
         source, target = (edge.target, edge.source) if reverse else (edge.source, edge.target)
@@ -341,7 +262,6 @@ def _edge_index(workflow: Workflow, *, reverse: bool = False) -> dict[str, list[
 
 
 def _reachable(workflow: Workflow, start: str, *, reverse: bool = False) -> set[str]:
-    """Node ids reachable from ``start`` (inclusive), following or reversing edges."""
     adjacency = _edge_index(workflow, reverse=reverse)
     seen: set[str] = set()
     stack = [start]
@@ -355,7 +275,6 @@ def _reachable(workflow: Workflow, start: str, *, reverse: bool = False) -> set[
 
 
 def _datanode_branch_region(workflow: Workflow, data_node_id: str) -> set[str]:
-    """Node ids the executor runs once per data item: the DataNode's branch, minus joins."""
     adjacency = _edge_index(workflow)
     region: set[str] = set()
     stack = list(adjacency.get(data_node_id, ()))
@@ -372,7 +291,6 @@ def _datanode_branch_region(workflow: Workflow, data_node_id: str) -> set[str]:
 
 
 def _per_branch_contexts(workflow: Workflow) -> dict[str, str]:
-    """Map node id → the per-item fork context it runs in (ASM-005, rejection at expansion)."""
     contexts: dict[str, str] = {}
     for node_id, node in workflow.nodes.items():
         if isinstance(node, DataNode):
@@ -396,7 +314,6 @@ def _verify_stage(
     slugs: list[str],
     checker_ids: list[str],
 ) -> None:
-    """Raise when a present stage disagrees with the node's *current* guards (R-006)."""
     reset = workflow.nodes[f"guard_{segment}_reset"]
     fork = workflow.nodes[f"guard_{segment}_fork"]
     join = workflow.nodes[f"guard_{segment}_join"]
@@ -433,15 +350,6 @@ def _add_stage_nodes(
     agent_id: str,
     owners: dict[str, str],
 ) -> None:
-    """Insert a generated stage, refusing to overwrite any existing node (M1-001).
-
-    The presence gate in :func:`expand_agent_guards` already routes a complete
-    same-stage id set to :func:`_verify_stage`, so every generated id is new when
-    this is called today. The check stays because a silent ``dict`` overwrite is
-    the exact M1-001 failure mode: a checker id that equals ``guard_<seg>_fork``
-    (or two segments deriving the same checker id) must fail loudly even if that
-    gate is ever edited.
-    """
     for node_id in stage:
         if node_id in workflow.nodes:
             raise _collision_error(node_id, agent_id, owners)
@@ -450,19 +358,7 @@ def _add_stage_nodes(
 
 
 def expand_agent_guards(workflow: Workflow) -> Workflow:
-    """Splice one guard-checker stage after every guarded ``AgentNode`` (R-005).
-
-    Pure: the input workflow is untouched, and the caller receives a deep copy.
-    The stage is spliced only when absent; when present and consistent with the
-    node's current guards it is left untouched, but the prompt block is still
-    ensured (R-006). Any partial or stale stage raises ``ValueError``, as does a
-    guard on an unsupported placement (``ForkNode`` target, ``blocking=False``, or
-    inside a ``DataNode`` branch / ``SubgraphForkNode`` subgraph).
-
-    The generated reset/check commands embed ``sys.executable``, so a persisted
-    expanded graph is not portable across interpreter paths; rebuild from the
-    source package instead of reusing a serialized expanded graph elsewhere.
-    """
+    """Expand every guarded agent's stage; pure, idempotent, raises when unsupported."""
     out = workflow.model_copy(deep=True)
     fork_targets = _fork_targets(out)
     per_branch = _per_branch_contexts(out)
