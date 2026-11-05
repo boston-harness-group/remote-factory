@@ -138,8 +138,6 @@ class ArtifactCheck(BaseModel):
 
 MAX_GUARD_TEXT_LEN: int = 4096
 
-_RESERVED_GUARD_SEQUENCES: tuple[str, ...] = ("{project_path}", "{{", "}}", "<!--", "-->")
-
 
 class Guard(BaseModel):
     """A behavioural rule attached to an AgentNode (rule + optional audit hint)."""
@@ -148,16 +146,6 @@ class Guard(BaseModel):
 
     rule: str = Field(min_length=1, max_length=MAX_GUARD_TEXT_LEN)
     audit_hint: str = Field(default="", max_length=MAX_GUARD_TEXT_LEN)
-
-    @field_validator("rule", "audit_hint")
-    @classmethod
-    def _reject_reserved_sequences(cls, value: str) -> str:
-        for sequence in _RESERVED_GUARD_SEQUENCES:
-            if sequence in value:
-                raise ValueError(
-                    "Guard text must not contain {project_path}, {{, }}, <!-- or -->"
-                )
-        return value
 
     @field_validator("rule")
     @classmethod

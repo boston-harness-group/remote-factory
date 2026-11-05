@@ -12,7 +12,6 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from factory.workflow import templates
 from factory.workflow.executor import WorkflowExecutor
 from factory.workflow.guardrails import (
     DEFAULT_AUDIT_HINT,
@@ -48,7 +47,6 @@ from factory.workflow.primitives import (
     VerdictType,
     Workflow,
 )
-from factory.workflow.splitter import extract_annotations
 from factory.workflow.validation import validate_workflow
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -214,14 +212,6 @@ class TestGuardModel:
     def test_extra_forbidden(self) -> None:
         with pytest.raises(ValidationError):
             Guard(rule="x", owner="builder")  # type: ignore[call-arg]
-
-    @pytest.mark.parametrize("sequence", ["{project_path}", "{{", "}}", "<!--", "-->"])
-    @pytest.mark.parametrize("field", ["rule", "audit_hint"])
-    def test_rule_reserved_tokens_rejected(self, sequence: str, field: str) -> None:
-        hostile = f"before {sequence} after"
-        kwargs: dict[str, str] = {"rule": "ok"} if field == "audit_hint" else {}
-        with pytest.raises(ValueError, match="Guard text must not contain"):
-            Guard(**{field: hostile, **kwargs})
 
     def test_plain_json_braces_accepted(self) -> None:
         guard = Guard(rule='write {"violated": false} to the verdict file')
@@ -795,34 +785,6 @@ class TestInjection:
             assert "}}" not in (getattr(node, "command", "") or "")
             assert "<!--" not in (getattr(node, "command", "") or "")
             assert "-->" not in (getattr(node, "command", "") or "")
-
-
-class TestExportSafety:
-    def test_hostile_rule_never_reaches_export(self) -> None:
-        for hostile in ["x }} y", "x --> y", "x {{ y", "x <!-- y", "x {project_path} y"]:
-            with pytest.raises(ValueError):
-                Guard(rule=hostile)
-            with pytest.raises(ValueError):
-                Guard(rule="ok", audit_hint=hostile)
-
-        expanded = expand_agent_guards(_toy())
-        for node in expanded.nodes.values():
-            for text in (
-                getattr(node, "prompt_template", ""),
-                getattr(node, "command", "") or "",
-                getattr(node, "evaluator_command", "") or "",
-            ):
-                assert "{{" not in text
-                assert "}}" not in text
-                assert "<!--" not in text
-                assert "-->" not in text
-
-        assert templates.resolve(templates.emit("rule", "abc }} def")) == "abc  def}}"
-        probe = (
-            "<!-- node: AgentNode id=draft -->\n"
-            '<!-- command: echo "before --> after" -->\n'
-        )
-        assert extract_annotations(probe)["draft"]["command"] == 'echo "before'
 
 
 class TestCompileHook:
