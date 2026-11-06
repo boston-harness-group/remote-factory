@@ -28,7 +28,10 @@ def cmd_workflow(args: argparse.Namespace) -> int:
     """Dispatch workflow subcommands."""
     sub = getattr(args, "workflow_command", None)
     if not sub:
-        print("Usage: factory workflow {run,list,show,validate,export-skills,lint-contributed,tool}")
+        print(
+            "Usage: factory workflow "
+            "{run,list,show,validate,export-skills,lint-contributed,tool,guard}"
+        )
         return 1
 
     handlers = {
@@ -39,6 +42,7 @@ def cmd_workflow(args: argparse.Namespace) -> int:
         "export-skills": _cmd_export_skills,
         "lint-contributed": _cmd_lint_contributed,
         "tool": _cmd_tool,
+        "guard": _cmd_guard,
     }
 
     handler = handlers.get(sub)
@@ -284,6 +288,26 @@ def _cmd_lint_contributed(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_guard(args: argparse.Namespace) -> int:
+    """Dispatch a guard-stage verb (reset/check) to the aggregate CLI.
+
+    The generated guard commands call this subcommand, so a compiled graph
+    names no interpreter: whatever ``factory`` runs the graph runs the stage.
+    """
+    from factory.workflow.guardrails_aggregate import main as aggregate_main
+
+    sub = getattr(args, "guard_command", None)
+    argv: list[str]
+    if sub == "reset":
+        argv = ["reset", args.project_path, args.agent_segment, args.payload]
+    elif sub == "check":
+        argv = ["check", args.project_path, args.agent_segment, *args.slugs]
+    else:
+        print("Usage: factory workflow guard {reset,check}")
+        return 1
+    return aggregate_main(argv)
+
+
 def _cmd_tool(args: argparse.Namespace) -> int:
     """Dispatch tool subcommands for step-by-step workflow execution."""
     import sys
@@ -379,6 +403,20 @@ def add_workflow_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]
     p.add_argument(
         "--path", default=None, help="Base directory to scan (default: factory/workflow/contributed/)"
     )
+
+    # guard
+    p_guard = wf_sub.add_parser("guard", help="Reset or check a generated guard stage")
+    guard_sub = p_guard.add_subparsers(dest="guard_command")
+
+    p_guard_reset = guard_sub.add_parser("reset", help="Reset the stage and write a fresh token")
+    p_guard_reset.add_argument("project_path", help="Project path")
+    p_guard_reset.add_argument("agent_segment", help="Guard stage segment")
+    p_guard_reset.add_argument("payload", help="JSON object mapping guard slug to rule")
+
+    p_guard_check = guard_sub.add_parser("check", help="Aggregate checker verdicts into a verdict")
+    p_guard_check.add_argument("project_path", help="Project path")
+    p_guard_check.add_argument("agent_segment", help="Guard stage segment")
+    p_guard_check.add_argument("slugs", nargs="+", help="Guard slugs to reconcile")
 
     # tool
     p_tool = wf_sub.add_parser("tool", help="Tool-based workflow execution")

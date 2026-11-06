@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ── project state (inlined so the graph language has zero runtime deps) ──
@@ -136,6 +136,25 @@ class ArtifactCheck(BaseModel):
     must_contain: list[str] = Field(default_factory=list)
 
 
+MAX_GUARD_TEXT_LEN: int = 4096
+
+
+class Guard(BaseModel):
+    """A behavioural rule attached to an AgentNode (rule + optional audit hint)."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    rule: str = Field(min_length=1, max_length=MAX_GUARD_TEXT_LEN)
+    audit_hint: str = Field(default="", max_length=MAX_GUARD_TEXT_LEN)
+
+    @field_validator("rule")
+    @classmethod
+    def _require_non_empty_rule(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Guard.rule must be non-empty")
+        return value
+
+
 class AgentNode(Node):
     """Node that invokes a Claude Code agent."""
 
@@ -148,6 +167,8 @@ class AgentNode(Node):
     timeout: int | None = None
     max_iterations: int = 1
     post_checks: list[ArtifactCheck] = Field(default_factory=list)
+    guards: list[Guard] = Field(default_factory=list)
+    guard_max_iterations: int = Field(default=3, ge=1)
 
 
 class FnNode(Node):
