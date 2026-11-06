@@ -1,6 +1,6 @@
 # Toy Guard Workflow
 
-Deterministic end-to-end fixture for agent guardrails (INT-002). A two-node mode
+Deterministic end-to-end fixture for agent guardrails. A two-node mode
 (`draft` → `publish`) that is **composed as a `Package` and compiled**, so the
 generated guard checker stage is actually expanded by
 `factory.workflow.guardrails.expand_agent_guards`.
@@ -48,8 +48,8 @@ The two guards on `draft`, in attachment order:
   including builtin modes in `definitions.py`, contributed workflow files that
   return a hand-built graph, and YAML overrides via
   `factory.skillopt.yaml_surface.yaml_to_workflow`. A `guards` list on such a
-  node is inert data: it serializes, it does not enforce (ASM-004). This mode
-  returns `package.compile()` precisely so it does not hit that boundary.
+  node is inert data: it serializes, it does not enforce. This mode returns
+  `package.compile()` precisely so it does not hit that boundary.
 - `WorkflowRegistry` returns whatever `workflow()` returns, so a
   package-composed mode must return `…compile()` for `show` / `validate` /
   `export-skills` to see the stage. This mode does.
@@ -60,8 +60,8 @@ The two guards on `draft`, in attachment order:
   executor would schedule it in the background and immediately run reset /
   checkers / gate, so the stage could read `ABSENT` and false-pass.
 - Guards on agents in a per-item context — reachable through a `DataNode`
-  branch or inside a `SubgraphForkNode` subgraph — are **rejected** at expansion
-  (ASM-005): guard artifacts are keyed by the agent segment alone, so a stage
+  branch or inside a `SubgraphForkNode` subgraph — are **rejected** at
+  expansion: guard artifacts are keyed by the agent segment alone, so a stage
   that runs once per item would race on the shared `token`/`rules.json`/verdict
   files. Attach the guard to an agent on the single-run path instead.
 
@@ -73,9 +73,10 @@ factory workflow validate --file factory/workflow/contributed/toy_guard/workflow
 
 `factory workflow show toy-guard` / `export-skills` observe the expanded stage
 only where the install does not pre-populate `WorkflowRegistry` (the
-`composed_modes` entry point self-registers before discovery — ESC-001). The
-gates therefore exercise the real handlers **in-process** after
-`WorkflowRegistry.reset()`; `validate --file` bypasses the registry entirely.
+`composed_modes` entry point self-registers before discovery — a pre-existing
+registry-discovery quirk, unrelated to guards). The gates therefore exercise the
+real handlers **in-process** after `WorkflowRegistry.reset()`; `validate --file`
+bypasses the registry entirely.
 
 The mode is a test fixture: `tests/test_workflow_guardrails_e2e.py` drives it
 through `WorkflowExecutor(agent_fn=...)` with stub agents, so it needs no model,
