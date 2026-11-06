@@ -306,6 +306,50 @@ def _per_branch_contexts(workflow: Workflow) -> dict[str, str]:
     return contexts
 
 
+def _stage_mismatches(
+    workflow: Workflow,
+    agent_id: str,
+    segment: str,
+    node: AgentNode,
+    slugs: list[str],
+    checker_ids: list[str],
+) -> list[str]:
+    """Name every part of an existing stage that no longer matches the agent's guards."""
+    reset = workflow.nodes[f"guard_{segment}_reset"]
+    fork = workflow.nodes[f"guard_{segment}_fork"]
+    join = workflow.nodes[f"guard_{segment}_join"]
+    gate = workflow.nodes[f"guard_{segment}_gate"]
+    expected_reset = _reset_command(segment, node)
+    expected_check = _check_command(segment, slugs)
+    mismatches: list[str] = []
+    if not isinstance(reset, FnNode):
+        mismatches.append("reset node type")
+    elif reset.command != expected_reset:
+        mismatches.append("reset command")
+    if not isinstance(fork, ForkNode):
+        mismatches.append("fork node type")
+    elif list(fork.targets) != checker_ids:
+        mismatches.append("fork target list")
+    if not isinstance(join, JoinNode):
+        mismatches.append("join node type")
+    elif list(join.sources) != checker_ids:
+        mismatches.append("join source list")
+    if not isinstance(gate, GateNode):
+        mismatches.append("gate node type")
+    else:
+        if gate.max_iterations != node.guard_max_iterations:
+            mismatches.append("gate iteration budget")
+        if gate.evaluator_command != expected_check:
+            mismatches.append("gate command")
+    for checker_id, slug, guard in zip(checker_ids, slugs, node.guards, strict=True):
+        checker = workflow.nodes[checker_id]
+        if not isinstance(checker, AgentNode):
+            mismatches.append(f"checker {checker_id!r} node type")
+        elif checker.prompt_template != _checker_prompt(agent_id, slug, guard):
+            mismatches.append(f"checker {checker_id!r} prompt")
+    return mismatches
+
+
 def _verify_stage(
     workflow: Workflow,
     agent_id: str,
@@ -314,33 +358,11 @@ def _verify_stage(
     slugs: list[str],
     checker_ids: list[str],
 ) -> None:
-    reset = workflow.nodes[f"guard_{segment}_reset"]
-    fork = workflow.nodes[f"guard_{segment}_fork"]
-    join = workflow.nodes[f"guard_{segment}_join"]
-    gate = workflow.nodes[f"guard_{segment}_gate"]
-    stale = (
-        not isinstance(reset, FnNode)
-        or not isinstance(fork, ForkNode)
-        or not isinstance(join, JoinNode)
-        or not isinstance(gate, GateNode)
-        or list(fork.targets) != checker_ids
-        or list(join.sources) != checker_ids
-        or gate.max_iterations != node.guard_max_iterations
-        or reset.command != _reset_command(segment, node)
-        or gate.evaluator_command != _check_command(segment, slugs)
-    )
-    for checker_id, slug, guard in zip(checker_ids, slugs, node.guards, strict=True):
-        checker = workflow.nodes[checker_id]
-        if not isinstance(checker, AgentNode):
-            stale = True
-            break
-        if checker.prompt_template != _checker_prompt(agent_id, slug, guard):
-            stale = True
-            break
-    if stale:
+    mismatches = _stage_mismatches(workflow, agent_id, segment, node, slugs, checker_ids)
+    if mismatches:
         raise ValueError(
             f"guard stage for agent {agent_id!r} exists but does not match its current "
-            "guards; rebuild from the source package"
+            f"guards; differs in: {', '.join(mismatches)}; rebuild from the source package"
         )
 
 
@@ -420,10 +442,13 @@ def expand_agent_guards(workflow: Workflow) -> Workflow:
             )
             if foreign:
                 raise _collision_error(foreign[0], agent_id, owners)
-            if present != structural or not set(checker_ids) <= out.nodes.keys():
+            missing = sorted(structural - present) + [
+                node_id for node_id in checker_ids if node_id not in out.nodes
+            ]
+            if missing:
                 raise ValueError(
                     f"guard stage for agent {agent_id!r} is partially present "
-                    f"(structural ids present: {sorted(present)}); rebuild from the "
+                    f"(missing stage ids: {', '.join(missing)}); rebuild from the "
                     "source package"
                 )
             _verify_stage(out, agent_id, segment, node, slugs, checker_ids)

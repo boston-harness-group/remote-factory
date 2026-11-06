@@ -739,6 +739,73 @@ class TestExpansionIdempotency:
         with pytest.raises(ValueError, match="partially present"):
             expand_agent_guards(missing_checker)
 
+    def test_stale_stage_names_the_reset_command(self) -> None:
+        old_rule = "one two three four five six seven eight"
+        new_rule = "one two three four five six seven eight nine ten extra"
+        assert guard_slug(old_rule) == guard_slug(new_rule)
+
+        expanded = expand_agent_guards(_toy(guards=[_guard(old_rule)]))
+        stale = expanded.model_copy(deep=True)
+        node = stale.nodes["draft"]
+        assert isinstance(node, AgentNode)
+        stale.nodes["draft"] = with_guards(
+            node, [Guard(rule=new_rule)], max_iterations=node.guard_max_iterations
+        )
+        with pytest.raises(ValueError, match="does not match") as exc_info:
+            expand_agent_guards(stale)
+
+        message = str(exc_info.value)
+        assert "differs in: reset command" in message
+        assert "rebuild from the source package" in message
+        assert "different interpreter" not in message
+
+    def test_stale_stage_names_every_differing_field(self) -> None:
+        expanded = expand_agent_guards(_toy())
+        segment = _agent_segment("draft")
+        node = expanded.nodes["draft"]
+        gate = expanded.nodes[f"guard_{segment}_gate"]
+        assert isinstance(node, AgentNode)
+        assert isinstance(gate, GateNode)
+        slug = _unique_slugs(node.guards)[0]
+        checker = expanded.nodes[f"guard_{segment}_{slug}"]
+        assert isinstance(checker, AgentNode)
+
+        tampered = expanded.model_copy(deep=True)
+        tampered.nodes[gate.id] = gate.model_copy(update={"max_iterations": 9})
+        tampered.nodes[checker.id] = checker.model_copy(
+            update={"prompt_template": checker.prompt_template + "extra"}
+        )
+        with pytest.raises(ValueError, match="does not match") as exc_info:
+            expand_agent_guards(tampered)
+
+        message = str(exc_info.value)
+        assert "differs in:" in message
+        assert "gate iteration budget" in message
+        assert f"checker {checker.id!r} prompt" in message
+
+    def test_partial_stage_names_the_missing_ids(self) -> None:
+        expanded = expand_agent_guards(_toy())
+        segment = _agent_segment("draft")
+        node = expanded.nodes["draft"]
+        assert isinstance(node, AgentNode)
+
+        missing_join = expanded.model_copy(deep=True)
+        del missing_join.nodes[f"guard_{segment}_join"]
+        with pytest.raises(ValueError, match="partially present") as exc_info:
+            expand_agent_guards(missing_join)
+        message = str(exc_info.value)
+        assert f"missing stage ids: guard_{segment}_join" in message
+        assert "rebuild from the source package" in message
+
+        renamed = expanded.model_copy(deep=True)
+        renamed.nodes["draft"] = with_guards(
+            node, [Guard(rule="a different rule")], max_iterations=node.guard_max_iterations
+        )
+        with pytest.raises(ValueError, match="partially present") as exc_info:
+            expand_agent_guards(renamed)
+        message = str(exc_info.value)
+        assert f"missing stage ids: guard_{segment}_a_different_rule" in message
+
 
 class TestExpansionPurity:
     def test_input_unchanged(self) -> None:
