@@ -28,8 +28,10 @@ from factory.workflow.guardrails import (
     _unique_slugs,
     expand_agent_guards,
     guard_dir,
+    guard_gate_id,
     guard_rules_payload,
     guard_slug,
+    inert_guards,
     with_guards,
 )
 from factory.workflow.package import Package
@@ -727,6 +729,65 @@ class TestGraphValidation:
         ]
         expanded = expand_agent_guards(_toy(successors=successors))
         assert validate_workflow(expanded) == []
+
+
+INERT_DRAFT = (
+    "agent 'draft' has 2 guard(s) but no guard stage; guards are inert until "
+    "the graph is expanded with Package.compile()"
+)
+
+
+class TestInertGuards:
+    def test_hand_built_graph_reports_guards(self) -> None:
+        assert validate_workflow(_toy()) == [INERT_DRAFT]
+
+    def test_inert_guards_returns_the_message(self) -> None:
+        assert inert_guards(_toy()) == [INERT_DRAFT]
+
+    def test_compiled_package_is_clean(self) -> None:
+        assert validate_workflow(_package().compile()) == []
+
+    def test_expanded_graph_is_clean(self) -> None:
+        assert validate_workflow(expand_agent_guards(_toy())) == []
+
+    def test_reloaded_expanded_graph_is_clean(self) -> None:
+        expanded = expand_agent_guards(_toy())
+        assert validate_workflow(Workflow.from_dict(expanded.to_dict())) == []
+
+    def test_unguarded_graph_is_clean(self) -> None:
+        workflow = Workflow(
+            name="plain",
+            nodes={"draft": _agent(), "publish": _agent("publish")},
+            edges=[Edge(source="draft", target="publish")],
+            start_node="draft",
+        )
+        assert validate_workflow(workflow) == []
+
+    def test_structural_and_inert_issues_are_both_reported(self) -> None:
+        workflow = _toy()
+        workflow.start_node = "ghost"
+        workflow.edges.append(Edge(source="publish", target="ghost"))
+        assert validate_workflow(workflow) == [
+            "start_node 'ghost' not in nodes",
+            "edge target 'ghost' not in nodes",
+            INERT_DRAFT,
+        ]
+
+    def test_segmentless_agent_id_reports_instead_of_raising(self) -> None:
+        workflow = Workflow(
+            name="odd",
+            nodes={"***": _guarded("***")},
+            edges=[],
+            start_node="***",
+        )
+        assert validate_workflow(workflow) == [
+            "agent '***' has 2 guard(s) but no guard stage; guards are inert until "
+            "the graph is expanded with Package.compile()",
+        ]
+
+    def test_gate_id_matches_expansion(self) -> None:
+        assert guard_gate_id("Draft Agent") == "guard_draft_agent_gate"
+        assert guard_gate_id("draft") in expand_agent_guards(_toy()).nodes
 
 
 class TestExpansionIdempotency:

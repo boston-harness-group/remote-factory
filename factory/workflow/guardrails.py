@@ -40,8 +40,11 @@ __all__ = [
     "Guard",
     "expand_agent_guards",
     "guard_dir",
+    "guard_gate_id",
     "guard_rules_payload",
     "guard_slug",
+    "guard_stage_segment",
+    "inert_guards",
     "with_guards",
 ]
 
@@ -108,11 +111,21 @@ def _collision_error(node_id: str, agent_id: str, owners: dict[str, str]) -> Val
     )
 
 
+def guard_stage_segment(agent_id: str) -> str:
+    """Stage-id segment for ``agent_id``; empty when the id has no usable characters."""
+    return re.sub(r"[^a-z0-9]+", "_", agent_id.lower()).strip("_")
+
+
 def _agent_segment(agent_id: str) -> str:
-    segment = re.sub(r"[^a-z0-9]+", "_", agent_id.lower()).strip("_")
+    segment = guard_stage_segment(agent_id)
     if not segment:
         raise ValueError(f"guard segment for agent id {agent_id!r} is empty")
     return segment
+
+
+def guard_gate_id(agent_id: str) -> str:
+    """Node id of the gate that enforces ``agent_id``'s guards once it is compiled."""
+    return f"guard_{_agent_segment(agent_id)}_gate"
 
 
 def guard_dir(agent_id_or_segment: str) -> Path:
@@ -312,7 +325,7 @@ def _stage_mismatches(
     reset = workflow.nodes[f"guard_{segment}_reset"]
     fork = workflow.nodes[f"guard_{segment}_fork"]
     join = workflow.nodes[f"guard_{segment}_join"]
-    gate = workflow.nodes[f"guard_{segment}_gate"]
+    gate = workflow.nodes[guard_gate_id(agent_id)]
     expected_reset = _reset_command(segment, node)
     expected_check = _check_command(segment, slugs)
     mismatches: list[str] = []
@@ -426,7 +439,7 @@ def expand_agent_guards(workflow: Workflow) -> Workflow:
         reset_id = f"guard_{segment}_reset"
         fork_id = f"guard_{segment}_fork"
         join_id = f"guard_{segment}_join"
-        gate_id = f"guard_{segment}_gate"
+        gate_id = guard_gate_id(agent_id)
         structural = {reset_id, fork_id, join_id, gate_id}
         present = structural & out.nodes.keys()
         occupied = present | (set(checker_ids) & out.nodes.keys())
@@ -480,3 +493,24 @@ def expand_agent_guards(workflow: Workflow) -> Workflow:
 
         _add_stage_nodes(out, stage, agent_id, owners)
     return out
+
+
+def inert_guards(workflow: Workflow) -> list[str]:
+    """Report guarded agents whose checker stage was never spliced into the graph.
+
+    Guards enforce only after ``Package.compile()`` expands them; a hand-built
+    graph keeps them as inert data, so it serializes and enforces nothing.
+    """
+    issues: list[str] = []
+    for agent_id in sorted(workflow.nodes):
+        node = workflow.nodes[agent_id]
+        if not isinstance(node, AgentNode) or not node.guards:
+            continue
+        segment = guard_stage_segment(agent_id)
+        if segment and isinstance(workflow.nodes.get(guard_gate_id(agent_id)), GateNode):
+            continue
+        issues.append(
+            f"agent '{agent_id}' has {len(node.guards)} guard(s) but no guard stage; "
+            "guards are inert until the graph is expanded with Package.compile()"
+        )
+    return issues
