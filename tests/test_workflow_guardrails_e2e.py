@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -41,6 +42,14 @@ _GATE_ID = f"guard_{_SEGMENT}_gate"
 _CHECKER_PREFIX = f"guard_{_SEGMENT}_"
 _RELOOP_FIX = "adjust the draft accordingly"
 _WORKTREE_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _repo_on_pythonpath(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the spawned ``factory`` console script import this checkout."""
+    existing = os.environ.get("PYTHONPATH")
+    entries = [str(_WORKTREE_ROOT), *([existing] if existing else [])]
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(entries))
 
 
 @dataclass
@@ -290,7 +299,7 @@ class TestToyModeCli:
         assert GUARDRAILS_HEADER in content
         for guard in GUARDS:
             assert guard.rule in content
-        assert "factory.workflow.guardrails_aggregate" in content
+        assert "factory workflow guard" in content
         assert guard_rules_payload(_SLUGS, GUARDS) in content
         assert validate_skill(content) == []
         assert f"max {GUARD_MAX_ITERATIONS} iterations" in content

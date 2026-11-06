@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import re
 import shlex
-import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -63,6 +62,7 @@ GUARD_SLUG_RE: re.Pattern[str] = re.compile(r"^[a-z0-9_]+$")
 _GUARD_SLUG_MAX_LEN: int = 40
 _CHECKER_ROLE: AgentRole = AgentRole.CODE_REVIEWER
 _RESERVED_STAGE_SUFFIXES: tuple[str, ...] = ("reset", "fork", "join", "gate")
+_GUARD_CLI: str = "factory workflow guard"
 
 
 def guard_slug(rule: str) -> str:
@@ -171,18 +171,12 @@ def _checker_prompt(agent_id: str, slug: str, guard: Guard) -> str:
 
 def _reset_command(segment: str, node: AgentNode) -> str:
     payload = guard_rules_payload(_unique_slugs(node.guards), node.guards)
-    return (
-        f"{shlex.quote(sys.executable)} -m factory.workflow.guardrails_aggregate reset "
-        f"{{project_path}} {shlex.quote(segment)} {shlex.quote(payload)}"
-    )
+    return f"{_GUARD_CLI} reset {{project_path}} {shlex.quote(segment)} {shlex.quote(payload)}"
 
 
 def _check_command(segment: str, slugs: Sequence[str]) -> str:
     slug_args = " ".join(shlex.quote(slug) for slug in slugs)
-    return (
-        f"{shlex.quote(sys.executable)} -m factory.workflow.guardrails_aggregate check "
-        f"{{project_path}} {shlex.quote(segment)} {slug_args}"
-    )
+    return f"{_GUARD_CLI} check {{project_path}} {shlex.quote(segment)} {slug_args}"
 
 
 def _reset_node(segment: str, node: AgentNode) -> FnNode:

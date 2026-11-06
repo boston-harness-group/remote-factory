@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -54,6 +55,14 @@ PYTHON = sys.executable
 AGGREGATOR = "factory.workflow.guardrails_aggregate"
 RULE_A = "no egress outside the sandbox"
 RULE_B = "cite every test run"
+
+
+@pytest.fixture(autouse=True)
+def _repo_on_pythonpath(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the spawned ``factory`` console script import this checkout."""
+    existing = os.environ.get("PYTHONPATH")
+    entries = [str(REPO_ROOT), *([existing] if existing else [])]
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(entries))
 
 
 def _guard(rule: str = RULE_A, audit_hint: str = "") -> Guard:
@@ -512,9 +521,10 @@ class TestExpansionShape:
 
         project = Path("/tmp/guard-project")
         substituted = reset.command.replace("{project_path}", shlex.quote(str(project)))
-        assert shlex.split(substituted)[1:] == [
-            "-m",
-            AGGREGATOR,
+        assert shlex.split(substituted) == [
+            "factory",
+            "workflow",
+            "guard",
             "reset",
             str(project),
             segment,
@@ -612,9 +622,10 @@ def _assert_quoted_round_trip(project: Path, agent_id: str, segment: str) -> Non
 
     substituted = reset.command.replace("{project_path}", shlex.quote(str(project)))
     argv = shlex.split(substituted)
-    assert argv[1:] == [
-        "-m",
-        AGGREGATOR,
+    assert argv == [
+        "factory",
+        "workflow",
+        "guard",
         "reset",
         str(project),
         segment,
@@ -636,6 +647,76 @@ class TestCommandQuoting:
         agent_id = f"draft; touch {tmp_path / 'pwned'}"
         _assert_quoted_round_trip(tmp_path, agent_id, _agent_segment(agent_id))
         assert not (tmp_path / "pwned").exists()
+
+
+class TestHostIndependence:
+    def test_commands_name_no_interpreter(self) -> None:
+        expanded = expand_agent_guards(_toy())
+        segment = _agent_segment("draft")
+        reset = expanded.nodes[f"guard_{segment}_reset"]
+        gate = expanded.nodes[f"guard_{segment}_gate"]
+        assert isinstance(reset, FnNode)
+        assert isinstance(gate, GateNode)
+        assert gate.evaluator_command is not None
+
+        for command in (reset.command, gate.evaluator_command):
+            assert sys.executable not in command
+            assert not Path(shlex.split(command)[0]).is_absolute()
+        assert reset.command.startswith("factory workflow guard reset ")
+        assert gate.evaluator_command.startswith("factory workflow guard check ")
+
+    def test_serialized_graph_reexpands_under_another_interpreter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        serialized = expand_agent_guards(_toy()).to_dict()
+        monkeypatch.setattr(sys, "executable", "/opt/other-venv/bin/python")
+
+        reloaded = Workflow.from_dict(serialized)
+        again = expand_agent_guards(reloaded)
+        assert again.to_dict() == serialized
+
+
+class TestGuardCli:
+    def test_reset_then_check_via_cli(self, tmp_path: Path) -> None:
+        payload = {"alpha": "alpha rule"}
+        reset = subprocess.run(
+            [
+                PYTHON,
+                "-m",
+                "factory",
+                "workflow",
+                "guard",
+                "reset",
+                str(tmp_path),
+                "draft",
+                json.dumps(payload),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert reset.returncode == 0, reset.stderr
+
+        stage = _stage(tmp_path)
+        _write_verdict(stage, "alpha", _token(stage))
+        check = subprocess.run(
+            [
+                PYTHON,
+                "-m",
+                "factory",
+                "workflow",
+                "guard",
+                "check",
+                str(tmp_path),
+                "draft",
+                "alpha",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert check.returncode == 0, check.stderr
+        assert _stdout_line(check) == "pass: 1 guard(s) clean"
 
 
 class TestGraphValidation:

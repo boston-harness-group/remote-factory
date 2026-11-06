@@ -21,10 +21,8 @@ from factory.workflow.guardrails import (
 )
 
 _USAGE = (
-    "usage: python -m factory.workflow.guardrails_aggregate reset "
-    "project_path agent_segment json_payload\n"
-    "       python -m factory.workflow.guardrails_aggregate check "
-    "project_path agent_segment slug [slug ...]"
+    "usage: factory workflow guard reset project_path agent_segment json_payload\n"
+    "       factory workflow guard check project_path agent_segment slug [slug ...]"
 )
 
 _VERDICT_KINDS = frozenset({"missing", "malformed", "stale"})

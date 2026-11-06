@@ -29,9 +29,8 @@ guard_draft_gate (GateNode, fn evaluator)
 
 8 nodes / 6 edges: the two authored nodes plus the four fixed stage nodes
 (`reset`, `fork`, `join`, `gate`) and two checkers. The gate command reconciles
-the checker verdicts via
-`python -m factory.workflow.guardrails_aggregate check`; the reset command
-persists `{slug: rule}` via `... guardrails_aggregate reset`. Verdicts, the
+the checker verdicts via `factory workflow guard check`; the reset command
+persists `{slug: rule}` via `factory workflow guard reset`. Verdicts, the
 iteration token and `violations.md` live under `.factory/guards/draft/`.
 
 The two guards on `draft`, in attachment order:
