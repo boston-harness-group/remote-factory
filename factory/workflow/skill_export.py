@@ -497,7 +497,10 @@ def _gate_to_checkpoint(
 
 
 def _resolve_max_iterations(edge: Edge, workflow: Workflow) -> int:
-    """Resolve max_iterations from the RELOOP edge target's AgentNode."""
+    """RELOOP budget: the gate's cap when set, else the target agent's."""
+    source_node = workflow.nodes.get(edge.source)
+    if isinstance(source_node, GateNode) and source_node.max_iterations is not None:
+        return source_node.max_iterations
     target_node = workflow.nodes.get(edge.target)
     if isinstance(target_node, AgentNode) and target_node.max_iterations != 1:
         return target_node.max_iterations

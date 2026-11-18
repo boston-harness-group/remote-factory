@@ -244,15 +244,13 @@ def validate_workflow(workflow: Workflow) -> list[str]:
     _validate_start_node(workflow, issues)
     _validate_edges(workflow, issues)
 
-    if issues:
-        return issues
-
     g: nx.DiGraph[str] = nx.DiGraph()
     nodes = workflow.nodes
     for nid in nodes:
         g.add_node(nid)
     for edge in workflow.edges:
-        g.add_edge(edge.source, edge.target, condition=edge.condition)
+        if edge.source in nodes and edge.target in nodes:
+            g.add_edge(edge.source, edge.target, condition=edge.condition)
 
     # Add implicit edges for SubgraphForkNode: node → subgraph_entry
     # so subgraph nodes are reachable in the graph
@@ -263,7 +261,8 @@ def validate_workflow(workflow: Workflow) -> list[str]:
                 g.add_edge(nid, entry, condition=None)
         # DataNode: edges are explicit now (real edges in graph)
 
-    _validate_reachability(g, workflow, issues)
+    if workflow.start_node in g:
+        _validate_reachability(g, workflow, issues)
     _validate_cycles(g, workflow, issues)
     _validate_data_dependencies(g, workflow, issues)
     _validate_fork_join_nodes(workflow, issues)
@@ -281,5 +280,9 @@ def validate_workflow(workflow: Workflow) -> list[str]:
                     issues.append(
                         f"subgraph_fork '{nid}': no path from entry '{entry}' to exit '{exit_node}'"
                     )
+
+    from factory.workflow.guardrails import inert_guards
+
+    issues.extend(inert_guards(workflow))
 
     return issues
