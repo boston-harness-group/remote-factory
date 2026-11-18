@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from unittest.mock import patch
+
+import pytest
 
 
 class TestDiskSpaceCheck:
@@ -1568,6 +1571,20 @@ class TestSelectParent:
 
 class TestEvolveSelectionPressure:
     """_cmd_evolve must bias offspring toward higher-scoring parents."""
+
+    @pytest.fixture(autouse=True)
+    def _waive_disk_preflight(self) -> Iterator[None]:
+        """Waive the outer-loop disk preflight for this class.
+
+        Both tests drive ``_cmd_evolve`` with a large population (200 -> 50 GB,
+        10 -> 12 GB required by ``_check_disk_space``). Disk headroom is an
+        *environment* precondition, not the selection-pressure behaviour under
+        test: CI runners have been observed with ~15 GB free, where
+        ``_cmd_evolve`` returns 1 before reaching the code asserted here. The
+        preflight itself is covered directly by ``TestDiskSpaceCheck``.
+        """
+        with patch("factory.cli.outer_loop._check_disk_space", return_value=True):
+            yield
 
     def test_offspring_biased_toward_high_scoring_parents(self, tmp_path: object) -> None:
         import argparse
