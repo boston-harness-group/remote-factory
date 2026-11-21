@@ -191,6 +191,7 @@ def _build_ceo_task(
     data_node: bool = False,
     task_ref: str | None = None,
     task_context: dict | None = None,
+    works_in_place: bool = False,
     from_plan: str | None = None,
     from_plan_feedback: list[str] | None = None,
     just_plan: bool = False,
@@ -347,13 +348,70 @@ def _build_ceo_task(
             f"from the approved spec.\n"
         )
 
+    update_entry = None
     if create_description and update_existing_mode:
+        from factory.workflow.registry import WorkflowRegistry
+
+        update_entry = WorkflowRegistry.discover(project_path).get(update_existing_mode)
+
+    if (
+        create_description
+        and update_existing_mode
+        and update_entry is not None
+        and update_entry.source == "project"
+        and str(update_entry.path).endswith(".py")
+    ):
+        wf_file = Path(update_entry.path)
+        try:
+            shown_file = wf_file.resolve().relative_to(Path(project_path).resolve())
+        except ValueError:
+            shown_file = wf_file
+        task += (
+            f"\n\n## Create Mode (Update Existing Workflow File)\n\n"
+            f"**Target mode:** {update_existing_mode}\n"
+            f"**File:** `{shown_file}` (source: {update_entry.source})\n"
+            f"**Requested changes:** {create_description}\n\n"
+            f"You are updating an EXISTING workflow defined in a workflow file, not creating "
+            f"a new mode and not changing factory source.\n\n"
+            f"**Before making any changes:**\n"
+            f"1. Read `{shown_file}` and run `factory workflow show {update_existing_mode}` "
+            f"from the project root to see its graph.\n"
+            f"2. Read its tests and its SKILL.md (if any) so you know its current behaviour.\n"
+            f"3. If the request names a sample input, run the workflow on it first, so you can "
+            f"confirm the problem or the starting behaviour. If the request's premise does not "
+            f"hold on that input, say so and ask instead of changing the workflow.\n\n"
+            f"**Edit rules:**\n"
+            f"- Edit `{shown_file}` in place and keep its `meta` name. This task explicitly "
+            f"allows changing this file even though it is under `.factory/` (that permission "
+            f"covers this workflow's own file, its tests and its SKILL.md only).\n"
+            f"- Do not create a second workflow or mode for the same purpose.\n"
+            f"- Do not modify factory source (definitions.py, models.py, _helpers.py, ceo.md, "
+            f"skill_export.py) for this change.\n"
+            f"- Change only what the request asks; leave unrelated nodes, edges and outputs "
+            f"unchanged. Update the workflow's docs so they match the change.\n\n"
+            f"**Verify before finishing:**\n"
+            f"1. `factory workflow validate {update_existing_mode}` passes (run from the project root)\n"
+            f"2. `factory workflow show {update_existing_mode}` reflects the changes\n"
+            f"3. The workflow's own tests pass\n"
+            f"4. Running it on the sample input (if one was named) shows the requested change\n"
+            f"5. The change is committed on the run branch, unless this run works in "
+            f"place (see Working in Place below)\n"
+        )
+    elif create_description and update_existing_mode:
         task += (
             f"\n\n## Create Mode (Update Existing Mode)\n\n"
             f"**Target mode:** {update_existing_mode}\n"
             f"**Requested changes:** {create_description}\n\n"
             f"You are updating an EXISTING factory workflow mode, not creating a new one.\n\n"
-            f"**Before making any changes:**\n"
+            + (
+                "This mode is composed in code from packages (registered with "
+                "`register_callable`, e.g. in `factory/workflow/packages.py`), not defined "
+                "in `definitions.py`: change its composition where it is registered; the "
+                "registration points below apply only where they name this mode.\n\n"
+                if update_entry is not None and update_entry.source == "package"
+                else ""
+            )
+            + f"**Before making any changes:**\n"
             f"1. Read the existing workflow definition: `factory workflow show {update_existing_mode}`\n"
             f"2. Read the current SKILL.md: `cat skills/workflow-{update_existing_mode}/SKILL.md`\n"
             f"3. Understand the current behavior before modifying it.\n\n"
@@ -454,6 +512,22 @@ def _build_ceo_task(
         )
 
     # --- DataNode directive: Builder creates workflow WITH DataNode ---
+    if works_in_place and mode == "create":
+        task += (
+            "\n\n## Working in Place\n\n"
+            "This run works directly in the person's checkout: the workflow file it writes "
+            "is not tracked by git there, so no run branch could carry it. Do NOT commit, "
+            "create branches or open a pull request, overriding any playbook step that "
+            "says to. Change only the workflow file under `.factory/workflows/` and its own "
+            "tests and SKILL.md, and leave the changes uncommitted for the person to review. "
+            "When the playbook says to export skills, run `factory workflow export-skills "
+            "--project-path . --output-dir .factory/skill-export` so nothing is written into "
+            "the project root. If this workflow's SKILL.md is kept somewhere tracked in "
+            "the project (for example `skills/workflow-<name>/SKILL.md`), copy the "
+            "regenerated `.factory/skill-export/workflow-<name>/SKILL.md` over it so it "
+            "does not go stale.\n"
+        )
+
     if create_description and data_node:
         task += (
             "\n\n## DataNode Directive\n\n"

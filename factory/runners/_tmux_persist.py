@@ -29,6 +29,10 @@ _WINDOW_POLL_INTERVAL = 0.1
 _WINDOW_POLL_TIMEOUT = 3.0
 
 
+#: Run-wide flags agents read from the environment (`factory.agents.runner`).
+_RUN_FLAGS = ("FACTORY_IN_PLACE", "FACTORY_NO_GITHUB")
+
+
 def find_project_path(cwd: Path) -> Path:
     """Find the project root by walking up from cwd looking for .factory/."""
     path = cwd.resolve()
@@ -255,9 +259,16 @@ async def run_in_tmux(
     sentinel_q = shlex.quote(str(sentinel_file))
     exitcode_q = shlex.quote(str(exitcode_file))
     project_path_q = shlex.quote(str(cwd.resolve()))
+    # A tmux pane starts with the tmux server's environment, not this process's, so the
+    # run-wide flags agents read (`invoke_agent`) are carried in the wrapper explicitly.
+    run_flags = "".join(
+        f"export {name}={shlex.quote(os.environ[name])}\n"
+        for name in _RUN_FLAGS if name in os.environ
+    )
     wrapper_script.write_text(
         "#!/bin/bash\n"
         f"export PROJECT_PATH={project_path_q}\n"
+        f"{run_flags}"
         f"cleanup() {{ local rc=$?; echo $rc > {exitcode_q}; touch {sentinel_q}; }}\n"
         "trap cleanup EXIT\n"
         f"{script_line}"

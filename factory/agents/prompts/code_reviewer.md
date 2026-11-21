@@ -81,7 +81,7 @@ Does the PR respect the project's structural constraints?
 - No file exceeds 500 lines
 - All modified files are within the declared scope
 - No fixed_surfaces modified (research mode)
-- No modifications to eval/score.py or .factory/ contents
+- No modifications to eval/score.py or .factory/ contents — except a workflow file under `.factory/workflows/` (and its tests and SKILL.md) when the task is to create or update that workflow
 
 ### 8. Acceptance Evidence
 

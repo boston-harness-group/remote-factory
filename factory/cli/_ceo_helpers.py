@@ -7,6 +7,7 @@ import json
 import os
 import re
 import structlog
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -330,6 +331,174 @@ def _validate_ceo_flags(
 # ── project resolution ────────────────────────────────────────
 
 
+def _git_ok(project_path: Path, *args: str) -> bool:
+    return subprocess.run(
+        ["git", *args], cwd=project_path, capture_output=True, text=True
+    ).returncode == 0
+
+
+def _create_runs_in_place(
+    project_path: Path, mode: str, plugin_mode: bool, update_existing_mode: str | None
+) -> bool:
+    """Whether a create run must work in the project itself instead of a worktree.
+
+    Decided for the file the run will write. A worktree's copy of a workflow file git
+    does not track (``.factory/`` gitignored, as recommended, or never committed) can't be
+    committed on the run branch, and removing the worktree at exit deletes it:
+    - updating a project workflow: in place when that file is not tracked;
+    - creating a new workflow: in place when a new file in ``.factory/workflows/``
+      would be gitignored (one that isn't is committed on the run branch as usual).
+    Updates of built-in modes (factory source), plugin packages and other modes keep
+    their worktree and branch.
+    """
+    if mode != "create" or plugin_mode:
+        return False
+    root = Path(project_path).resolve()
+    if not any((d / ".git").exists() for d in (root, *root.parents)):
+        return False  # not a git checkout: nothing to decide (and no worktree either)
+    if update_existing_mode:
+        from factory.workflow.registry import WorkflowRegistry
+
+        entry = WorkflowRegistry.discover(project_path).get(update_existing_mode)
+        if entry is None or entry.source != "project":
+            return False
+        try:
+            rel = Path(entry.path).resolve().relative_to(Path(project_path).resolve())
+        except ValueError:
+            return False
+        return not _git_ok(project_path, "ls-files", "--error-unmatch", "--", str(rel))
+    return _git_ok(
+        project_path, "check-ignore", "-q", "--no-index", "--",
+        ".factory/workflows/__new_workflow__.py",
+    )
+
+
+def _resolve_no_worktree(
+    requested: bool,
+    project_path: Path,
+    mode: str,
+    plugin_mode: bool,
+    update_existing_mode: str | None,
+) -> tuple[bool, bool]:
+    """``(no_worktree, forced_in_place)``: ``--no-worktree`` as asked, or forced on for
+    a create run `_create_runs_in_place` says must work in the project (and say so)."""
+    if requested:
+        return True, False
+    if _create_runs_in_place(project_path, mode, plugin_mode, update_existing_mode):
+        print(
+            "Note: the workflow file this create run writes is not tracked by git here, "
+            "so a run branch could not carry it; this run works in place and leaves its "
+            "changes uncommitted for you to review.",
+            file=sys.stderr,
+        )
+        return True, True
+    return False, False
+
+
+#: The person's branch and HEAD when an in-place create run started (None otherwise).
+_IN_PLACE_START: tuple[str, str] | None = None
+
+
+def _git_out(project_path: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args], cwd=project_path, capture_output=True, text=True
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+#: Where an in-place create run keeps a copy of ``.factory/workflows/`` as it was.
+IN_PLACE_BACKUP = Path(".factory") / "workflows-before-run"
+
+
+def _back_up_workflows(project_path: Path) -> Path | None:
+    """Copy ``.factory/workflows/`` to `IN_PLACE_BACKUP` (replacing an older copy).
+
+    An in-place run edits files git does not track, so neither ``git diff`` nor any
+    commit can show or restore their earlier state: this copy is the way back.
+    """
+    import shutil
+
+    source = Path(project_path) / ".factory" / "workflows"
+    if not source.is_dir():
+        return None
+    backup = Path(project_path) / IN_PLACE_BACKUP
+    shutil.rmtree(backup, ignore_errors=True)
+    shutil.copytree(source, backup, ignore=shutil.ignore_patterns("__pycache__"))
+    return backup
+
+
+def _begin_in_place_run(project_path: Path) -> None:
+    """Mark an in-place create run: every agent is told not to commit (FACTORY_IN_PLACE,
+    read by ``invoke_agent``), the person's branch and HEAD are recorded so the run's end
+    can check them, the workflows are backed up (`_back_up_workflows`), and existing
+    uncommitted work in the checkout is pointed out."""
+    global _IN_PLACE_START
+    os.environ["FACTORY_IN_PLACE"] = "1"
+    backup = _back_up_workflows(project_path)
+    if backup is not None:
+        print(
+            f"Note: the project's workflows as they were before this run are saved in "
+            f"{backup}; compare with `diff -r {IN_PLACE_BACKUP} .factory/workflows`.",
+            file=sys.stderr,
+        )
+    _IN_PLACE_START = (
+        _git_out(project_path, "rev-parse", "--abbrev-ref", "HEAD"),
+        _git_out(project_path, "rev-parse", "HEAD"),
+    )
+    if _git_out(project_path, "status", "--porcelain", "--untracked-files=no"):
+        print(
+            "Note: this checkout already has uncommitted changes; the run's changes will "
+            "sit next to them. Review with `git diff` before committing.",
+            file=sys.stderr,
+        )
+
+
+def _end_in_place_run(project_path: Path) -> None:
+    """After an in-place create run: say loudly if the person's branch or HEAD moved
+    (a run must not commit or switch branches in their checkout), with how to undo it."""
+    global _IN_PLACE_START
+    if _IN_PLACE_START is None:
+        return
+    branch0, head0 = _IN_PLACE_START
+    _IN_PLACE_START = None
+    os.environ.pop("FACTORY_IN_PLACE", None)
+    branch1 = _git_out(project_path, "rev-parse", "--abbrev-ref", "HEAD")
+    head1 = _git_out(project_path, "rev-parse", "HEAD")
+    if (Path(project_path) / IN_PLACE_BACKUP).is_dir():
+        print(
+            f"This run worked in place. Its changes are uncommitted; workflow files git "
+            f"does not track don't show in `git diff`, so compare them with "
+            f"`diff -r {IN_PLACE_BACKUP} .factory/workflows`.",
+            file=sys.stderr,
+        )
+    if (branch1, head1) == (branch0, head0):
+        return
+    log.warning("in_place_run_moved_head", branch_before=branch0, branch_after=branch1,
+                head_before=head0, head_after=head1)
+    lines = ["WARNING: this in-place run changed your checkout's git state."]
+    if branch1 != branch0:
+        lines.append(f"  It switched branch: {branch0} -> {branch1}. Back: git switch {branch0}")
+    if head1 != head0 and head0:
+        lines.append(
+            f"  Commits were added on {branch1}. To undo them but keep the changes: "
+            f"git reset --soft {head0}"
+        )
+    print("\n".join(lines), file=sys.stderr)
+
+
+def _looks_like_mode_name(name: str, known: dict) -> bool:
+    """Whether a "<name>: ..." prefix reads as a mode reference, not prose ("Note: ...").
+
+    A slug with a hyphen or underscore, or a near-miss of a known mode, is worth a
+    "no such mode" notice; a plain word like "Note" or "TODO" is not.
+    """
+    import difflib
+
+    if re.fullmatch(r"[a-z0-9]+(?:[_-][a-z0-9]+)+", name):
+        return True
+    return bool(difflib.get_close_matches(name.lower(), list(known), n=1, cutoff=0.8))
+
+
 def _resolve_ceo_project(
     raw_path: str,
     mode: str,
@@ -375,14 +544,37 @@ def _resolve_ceo_project(
         project_path, context = _resolve_input(raw_path, dir_name=dir_name)
         create_description = focus if focus else context
         if create_description and ":" in create_description:
-            m = re.match(r"^([a-z_-]+):\s*(.+)$", create_description, re.DOTALL)
+            m = re.match(r"^([A-Za-z0-9_-]+):\s*(.+)$", create_description, re.DOTALL)
             if m:
-                from factory.workflow.definitions import register_all
+                # Any mode the project can see is an update target: built-ins AND the
+                # project's own .factory/workflows/ (and user/plugin) workflows. Checking
+                # built-ins only made "my-mode: change" on a project mode silently create
+                # a second, duplicate mode.
+                from factory.workflow.registry import WorkflowRegistry
 
-                registered = register_all()
-                if m.group(1) in registered:
-                    update_existing_mode = m.group(1)
+                name = m.group(1)
+                entries = WorkflowRegistry.discover(project_path)
+                entry = entries.get(name)
+                if entry is not None and entry.source in ("user", "plugin"):
+                    # Its file lives outside this project (~/.factory/workflows or an
+                    # installed package): no run branch can carry the edit, and editing
+                    # a user workflow in place would change every project at once.
+                    print(
+                        f"Error: mode {name!r} is a {entry.source} workflow ({entry.path}), "
+                        "outside this project. To edit it here, copy it into "
+                        f"{project_path / '.factory' / 'workflows'}/ and run the update again.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                if entry is not None:
+                    update_existing_mode = name
                     create_description = m.group(2).strip()
+                elif _looks_like_mode_name(name, entries):
+                    print(
+                        f"Note: no existing mode named {name!r} in this project; "
+                        "creating a new mode from the full description.",
+                        file=sys.stderr,
+                    )
     elif mode in DESIGN_MODES and _design_is_existing:
         project_path, context = _resolve_input(raw_path, dir_name=dir_name)
         design_existing = True
@@ -573,7 +765,12 @@ def _execute_ceo(
         print("Error: --bg and --tmux-persist are mutually exclusive.", file=sys.stderr)
         return 1
     clean_pr_flag = getattr(args, "clean_pr", None)
-    no_worktree = getattr(args, "no_worktree", False)
+    no_worktree, works_in_place = _resolve_no_worktree(
+        getattr(args, "no_worktree", False), project_path, mode, plugin_mode,
+        update_existing_mode,
+    )
+    if works_in_place:
+        _begin_in_place_run(project_path)
 
     _print_banner(banner_mode)
     _ensure_dashboard(project_path)
@@ -717,6 +914,7 @@ def _execute_ceo(
         display_mode=banner_mode,
         create_description=create_description,
         update_existing_mode=update_existing_mode,
+        works_in_place=works_in_place,
         plugin_mode=plugin_mode,
         plugin_folder=plugin_folder,
         data_node=data_node,
@@ -843,6 +1041,7 @@ def _execute_ceo(
             wt_path, ceo_mode, datetime.fromtimestamp(_ceo_start, tz=timezone.utc)
         )
         print_resume_hint(project_path)
+        _end_in_place_run(project_path)
         if not no_worktree:
             assert wt_branch is not None
             remove_worktree(project_path, wt_path, wt_branch)
@@ -917,6 +1116,7 @@ def _run_headless(
             from factory.ceo_completion import print_resume_hint
 
             print_resume_hint(project_path)
+            _end_in_place_run(project_path)
             if not no_worktree and wt_branch:
                 remove_worktree(project_path, wt_path, wt_branch)
             if needs_materialize and _is_scaffold_only(project_path):
@@ -960,6 +1160,7 @@ def _run_headless(
         from factory.ceo_completion import print_resume_hint
 
         print_resume_hint(project_path)
+        _end_in_place_run(project_path)
         if not no_worktree:
             assert wt_branch is not None
             remove_worktree(project_path, wt_path, wt_branch)

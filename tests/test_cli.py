@@ -1972,8 +1972,10 @@ class TestCreateModeFocus:
         (tmp_path / ".git").mkdir()
         with _mock_foreground() as mock_run:
             main(["ceo", str(tmp_path), "--mode", "create", "--focus", "a PR validation mode"])
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
+        # The launcher may also run git (create's in-place check); claude runs once.
+        claude_calls = [c for c in mock_run.call_args_list if c.args[0][0] == "claude"]
+        assert len(claude_calls) == 1
+        cmd = claude_calls[0].args[0]
         dsp_idx = cmd.index("--dangerously-skip-permissions")
         task = cmd[dsp_idx + 1]
         assert "## Create Mode (New Portable Workflow)" in task
@@ -1984,8 +1986,10 @@ class TestCreateModeFocus:
         (tmp_path / ".git").mkdir()
         with _mock_foreground() as mock_run:
             main(["ceo", str(tmp_path), "--mode", "create"])
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
+        # The launcher may also run git (create's in-place check); claude runs once.
+        claude_calls = [c for c in mock_run.call_args_list if c.args[0][0] == "claude"]
+        assert len(claude_calls) == 1
+        cmd = claude_calls[0].args[0]
         dsp_idx = cmd.index("--dangerously-skip-permissions")
         task = cmd[dsp_idx + 1]
         assert "## Create Mode (New Portable Workflow)" not in task

@@ -396,6 +396,55 @@ class TestRunInTmux:
         assert "trap cleanup EXIT" in content
         assert "--settings" in content
 
+    async def test_wrapper_script_carries_the_run_flags_into_tmux(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A tmux pane starts with the tmux server's environment, so FACTORY_IN_PLACE and
+        FACTORY_NO_GITHUB must be exported by the wrapper or agents never see them."""
+        monkeypatch.setenv("FACTORY_IN_PLACE", "1")
+        monkeypatch.setenv("FACTORY_NO_GITHUB", "1")
+        project_path = tmp_path / "my-project"
+        project_path.mkdir()
+        captured_wrapper = {}
+        original_write_text = Path.write_text
+
+        def spy_write_text(self_path: Path, content: str, *args, **kwargs) -> None:
+            if self_path.name == "wrapper.sh":
+                captured_wrapper["content"] = content
+            original_write_text(self_path, content, *args, **kwargs)
+
+        with (
+            patch("factory.runners._tmux_persist.subprocess.run") as mock_run,
+            patch(
+                "factory.runners._tmux_persist._wait_for_sentinel",
+                new_callable=AsyncMock, return_value=True,
+            ),
+            patch("factory.runners._tmux_persist._wait_for_window_exit", new_callable=AsyncMock),
+            patch(
+                "factory.runners._tmux_persist._wait_for_exitcode",
+                new_callable=AsyncMock, return_value=0,
+            ),
+            patch("factory.runners._tmux_persist._window_exists", return_value=False),
+            patch("factory.runners._tmux_persist._POST_SEND_VERIFY_DELAY", 0),
+            patch.object(Path, "write_text", spy_write_text),
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="pane content")
+            with patch(
+                "factory.runners._tmux_persist.tempfile.mkdtemp", return_value=str(tmp_path / "tmp")
+            ):
+                tmpdir = tmp_path / "tmp"
+                tmpdir.mkdir()
+                (tmpdir / "output.log").write_text("agent output")
+                await run_in_tmux(
+                    "test prompt", "test task", project_path, "researcher", project_path,
+                    model="sonnet",
+                )
+
+        content = captured_wrapper["content"]
+        assert "export FACTORY_IN_PLACE=1\n" in content
+        assert "export FACTORY_NO_GITHUB=1\n" in content
+        assert content.index("export FACTORY_IN_PLACE") < content.index("script -q")
+
     async def test_claude_command_includes_settings_flag(self, tmp_path: Path) -> None:
         """Verify the claude command includes --settings pointing to settings.json."""
         project_path = tmp_path / "my-project"

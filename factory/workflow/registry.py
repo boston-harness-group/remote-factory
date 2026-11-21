@@ -27,9 +27,12 @@ log = structlog.get_logger()
 # appending to WorkflowRegistry._search_paths directly) rank as "plugin".
 _SOURCE_PRIORITY: dict[str, int] = {
     "builtin": 0,
-    "user": 1,
-    "plugin": 2,
-    "project": 3,
+    # Modes composed in code (packages.py): above built-ins, below anything a person
+    # wrote, so a user/plugin/project workflow of the same name still wins.
+    "package": 1,
+    "user": 2,
+    "plugin": 3,
+    "project": 4,
 }
 
 
@@ -60,13 +63,41 @@ class WorkflowRegistry:
     _entries: dict[str, WorkflowEntry] = {}
     _search_paths: list[tuple[str, str]] = []  # (path, source_label)
     _initialized: bool = False
+    #: Callables registered in code (``register_callable``), kept apart from
+    #: ``_entries`` so a ``discover()`` (which rebuilds ``_entries``) keeps them.
+    _callables: dict[str, WorkflowEntry] = {}
+    #: Whether ``_entries`` came from a ``discover()``, and for which project.
+    #: Registering a callable at import fills ``_entries`` without discovering,
+    #: so "non-empty" must not be read as "discovered".
+    _discovered: bool = False
+    _discovered_project: str | None = None
 
     @classmethod
     def reset(cls) -> None:
         """Reset registry state. Useful for testing."""
         cls._entries.clear()
         cls._search_paths.clear()
+        cls._callables.clear()
         cls._initialized = False
+        cls._discovered = False
+        cls._discovered_project = None
+
+    @classmethod
+    def _project_key(cls, project_path: Path | None) -> str | None:
+        return str(Path(project_path).resolve()) if project_path else None
+
+    @classmethod
+    def _needs_discovery(cls, project_path: Path | None) -> bool:
+        """Discover when nothing was discovered yet, or a different project is asked for.
+
+        A call with no project reuses the last discovery, whatever project it was for:
+        pass ``project_path`` whenever project workflows must be current.
+        """
+        if not cls._discovered:
+            return True
+        if project_path is None:
+            return False
+        return cls._project_key(project_path) != cls._discovered_project
 
     @classmethod
     def _ensure_initialized(cls) -> None:
@@ -91,7 +122,8 @@ class WorkflowRegistry:
           2. Plugin-registered paths (PluginRegistry.workflow_search_paths,
              plus any paths on WorkflowRegistry._search_paths)
           3. User-global (~/.factory/workflows/)
-          4. Built-in workflows (definitions.py)
+          4. Modes composed in code (``register_callable``, e.g. packages.py)
+          5. Built-in workflows (definitions.py)
 
         Parameters
         ----------
@@ -108,6 +140,13 @@ class WorkflowRegistry:
 
         # Built-in workflows (lowest priority)
         cls._load_builtins()
+
+        # Callables registered in code (composed packages). Re-added on every
+        # discovery: clearing _entries above must not drop them.
+        for name, entry in cls._callables.items():
+            prev = cls._entries.get(name)
+            if prev is None or _source_priority(entry.source) > _source_priority(prev.source):
+                cls._entries[name] = entry
 
         # User-global workflows
         for search_path, source in cls._search_paths:
@@ -132,6 +171,8 @@ class WorkflowRegistry:
 
         cls._warn_mode_drift()
 
+        cls._discovered = True
+        cls._discovered_project = cls._project_key(project_path)
         log.info("workflow_registry.discovered", count=len(cls._entries))
         return cls._entries
 
@@ -194,13 +235,17 @@ class WorkflowRegistry:
         The callable is stored lazily — it is only invoked when
         get_workflow() is called for this name.
         """
-        cls._entries[name] = WorkflowEntry(
+        entry = WorkflowEntry(
             name=name,
             description=description or f"Composed mode: {name}",
             path=f"<{source}>",
             source=source,
             _workflow_fn=fn,
         )
+        cls._callables[name] = entry
+        prev = cls._entries.get(name)
+        if prev is None or _source_priority(source) >= _source_priority(prev.source):
+            cls._entries[name] = entry
 
     @classmethod
     def _load_builtins(cls) -> None:
@@ -275,7 +320,7 @@ class WorkflowRegistry:
 
         Returns None if not found.
         """
-        if not cls._entries:
+        if cls._needs_discovery(project_path):
             cls.discover(project_path)
 
         entry = cls._entries.get(name)
@@ -290,7 +335,7 @@ class WorkflowRegistry:
     @classmethod
     def list_workflows(cls, project_path: Path | None = None) -> list[WorkflowEntry]:
         """List all discovered workflows."""
-        if not cls._entries:
+        if cls._needs_discovery(project_path):
             cls.discover(project_path)
         return sorted(cls._entries.values(), key=lambda e: (e.source != "builtin", e.name))
 

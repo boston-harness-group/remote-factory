@@ -741,3 +741,42 @@ class TestNoGithubPropagation:
         """FACTORY_NO_GITHUB is not set when --no-github is not passed."""
         monkeypatch.delenv("FACTORY_NO_GITHUB", raising=False)
         assert os.environ.get("FACTORY_NO_GITHUB") is None
+
+
+class TestInPlacePropagation:
+    """An in-place create run tells every agent it starts not to commit (FACTORY_IN_PLACE)."""
+
+    @staticmethod
+    async def _prompt(tmp_path, monkeypatch) -> str:
+        import factory.agents.runner as runner_module
+        from factory.agents.runner import invoke_agent
+
+        (tmp_path / ".factory").mkdir(exist_ok=True)
+        captured: list[str] = []
+
+        class MockRunner:
+            name = "claude"
+
+            async def headless(self, request):
+                captured.append(request.prompt)
+                from factory.models import AgentRunResult
+
+                return AgentRunResult(stdout="ok", return_code=0)
+
+        monkeypatch.setattr(runner_module, "get_runner", lambda *a, **k: MockRunner())
+        await invoke_agent("builder", "build it", tmp_path)
+        return captured[0]
+
+    @pytest.mark.asyncio
+    async def test_builder_is_told_not_to_commit_in_place(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("FACTORY_IN_PLACE", "1")
+        prompt = await self._prompt(tmp_path, monkeypatch)
+        assert "## Working in Place" in prompt and "Do NOT commit" in prompt
+        assert "--output-dir .factory/skill-export" in prompt
+        assert ".factory/skill-export/workflow-<name>/" in prompt
+
+    @pytest.mark.asyncio
+    async def test_no_section_outside_in_place_runs(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("FACTORY_IN_PLACE", raising=False)
+        prompt = await self._prompt(tmp_path, monkeypatch)
+        assert "## Working in Place" not in prompt

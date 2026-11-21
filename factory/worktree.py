@@ -584,11 +584,76 @@ def remove_worktree(project_path: Path, worktree_path: Path, branch: str) -> Non
         capture_output=True,
     )
 
-    subprocess.run(
-        ["git", "branch", "-D", branch],
+    _delete_run_branch(project_path, branch)
+
+
+def _unsaved_commit_count(project_path: Path, branch: str) -> int | None:
+    """Commits on *branch* that no other local branch and no remote-tracking branch holds.
+
+    0 when the branch is fully merged or pushed, or does not exist (nothing to lose).
+    ``None`` when git cannot answer: the caller must then keep the branch, since
+    "unknown" must never read as "nothing to lose".
+    """
+    exists = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
         cwd=project_path,
         capture_output=True,
     )
+    if exists.returncode != 0:
+        return 0  # no such branch: nothing to keep or delete
+    result = subprocess.run(
+        [
+            "git", "rev-list", "--count", f"refs/heads/{branch}", "--not",
+            # With --branches, git matches --exclude against the name WITHOUT refs/heads/.
+            f"--exclude={branch}", "--branches", "--remotes", "--",
+        ],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def _delete_run_branch(project_path: Path, branch: str) -> None:
+    """Delete a finished run's branch, unless it holds work that exists nowhere else.
+
+    Every place that cleans up a run branch goes through here: a --no-github run
+    commits its result on the run branch and never pushes it, so a plain
+    ``git branch -D`` destroyed that result (a create run's new mode was left as an
+    unreachable commit this way). Kept branches are logged, announced on stderr and
+    recorded as a ``worktree.branch_kept`` event so they can be found later.
+    """
+    unsaved = _unsaved_commit_count(project_path, branch)
+    if unsaved == 0:
+        subprocess.run(
+            ["git", "branch", "-D", branch],
+            cwd=project_path,
+            capture_output=True,
+        )
+        return
+    reason = "unknown" if unsaved is None else f"{unsaved} commit(s) not merged or pushed anywhere"
+    log.warning("worktree_branch_kept", branch=branch, unsaved_commits=unsaved)
+    print(
+        f"Kept branch {branch}: {reason}.\n"
+        f"  Take the work:  git merge {branch}\n"
+        f"  Discard it:     git branch -D {branch}",
+        file=sys.stderr,
+    )
+    try:
+        from factory.events import emit_event
+
+        emit_event(
+            project_path,
+            "worktree.branch_kept",
+            data={"branch": branch, "unsaved_commits": unsaved},
+        )
+    except Exception:
+        pass
 
 
 _STANDARD_BRANCH_RE = re.compile(r"^factory/(run-[0-9a-f]+|exp-\d+)$")
@@ -709,11 +774,7 @@ def prune_stale(project_path: Path) -> list[str]:
                 shutil.rmtree(d)
                 pruned.append(f"Removed orphaned directory: {name}")
                 log.info("worktree_pruned_orphan", name=name)
-                subprocess.run(
-                    ["git", "branch", "-D", branch],
-                    cwd=project_path,
-                    capture_output=True,
-                )
+                _delete_run_branch(project_path, branch)
 
     # --- Sweep 2: idle git-registered worktrees (worktree GC) ---
     from factory import user_config
@@ -794,11 +855,7 @@ def prune_stale(project_path: Path) -> list[str]:
                 cwd=project_path,
                 capture_output=True,
             )
-            subprocess.run(
-                ["git", "branch", "-D", real_branch],
-                cwd=project_path,
-                capture_output=True,
-            )
+            _delete_run_branch(project_path, real_branch)
 
             try:
                 from factory.events import emit_event
