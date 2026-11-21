@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import asyncio
 import json
 from pathlib import Path
@@ -234,10 +235,15 @@ def _cmd_export_skills(args: argparse.Namespace) -> int:
     """Export workflow definitions as Claude Code SKILL.md files."""
     from factory.workflow.skill_export import export_all_skills, validate_skill
 
-    output_dir = Path(getattr(args, "output_dir", None) or ".").resolve()
     verify = getattr(args, "verify", False)
 
     project_path = Path(getattr(args, "project_path", None) or ".").resolve()
+    output_arg = getattr(args, "output_dir", None)
+    if output_arg is None and os.environ.get("FACTORY_IN_PLACE") == "1":
+        # An in-place create run works in the person's own checkout: exporting every
+        # mode's SKILL.md into its root would leave ~20 untracked folders there.
+        output_arg = str(project_path / ".factory" / "skill-export")
+    output_dir = Path(output_arg or ".").resolve()
     entries = WorkflowRegistry.discover(project_path)
     workflows = {}
     for name, entry in entries.items():
@@ -393,7 +399,10 @@ def add_workflow_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]
     # export-skills
     p = wf_sub.add_parser("export-skills", help="Export workflows as SKILL.md files")
     p.add_argument(
-        "--output-dir", default=".", help="Output directory (default: current directory)"
+        "--output-dir",
+        default=None,
+        help="Output directory (default: current directory; .factory/skill-export "
+        "during an in-place create run)",
     )
     p.add_argument("--verify", action="store_true", help="Validate generated skills")
     p.add_argument("--project-path", default=None, help="Project path for local workflow discovery")

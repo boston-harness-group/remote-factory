@@ -33,7 +33,7 @@ You will be given:
 
 - When in doubt between two tiers, choose the higher tier (conservative)
 - If the request is ambiguous or underspecified, classify as Tier 3 with a note explaining what clarification is needed
-- If the request would require modifying eval/score.py or .factory/ contents, classify as Tier 3
+- If the request would require modifying eval/score.py or .factory/ contents, classify as Tier 3 — except a workflow file under `.factory/workflows/` (and its tests and SKILL.md) when the task is to create or update that workflow
 - If the request requires adding new test files (not just modifying existing ones), bump up one tier
 
 ## Output Format

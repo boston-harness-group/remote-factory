@@ -422,6 +422,40 @@ class TestCmdValidate:
 
 
 class TestCmdExportSkills:
+    @pytest.mark.parametrize("in_place", [True, False])
+    def test_an_in_place_run_exports_under_factory_not_the_checkout_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, in_place: bool
+    ) -> None:
+        """An in-place create run works in the person's checkout: with no --output-dir,
+        the export goes to .factory/skill-export, never ~20 folders in their root."""
+        monkeypatch.chdir(tmp_path)
+        if in_place:
+            monkeypatch.setenv("FACTORY_IN_PLACE", "1")
+        else:
+            monkeypatch.delenv("FACTORY_IN_PLACE", raising=False)
+        with (
+            patch.object(WorkflowRegistry, "discover", return_value={}),
+            patch("factory.workflow.skill_export.export_all_skills", return_value=[]) as ex,
+        ):
+            args = argparse.Namespace(output_dir=None, verify=False, project_path=str(tmp_path))
+            assert _cmd_export_skills(args) == 0
+        expected = tmp_path / ".factory" / "skill-export" if in_place else tmp_path
+        assert ex.call_args.args[0] == expected.resolve()
+
+    def test_an_explicit_output_dir_wins_in_place(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FACTORY_IN_PLACE", "1")
+        with (
+            patch.object(WorkflowRegistry, "discover", return_value={}),
+            patch("factory.workflow.skill_export.export_all_skills", return_value=[]) as ex,
+        ):
+            args = argparse.Namespace(
+                output_dir=str(tmp_path / "out"), verify=False, project_path=str(tmp_path)
+            )
+            assert _cmd_export_skills(args) == 0
+        assert ex.call_args.args[0] == (tmp_path / "out").resolve()
+
     def test_export_no_verify(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         fake_paths = [tmp_path / "skill-a" / "SKILL.md", tmp_path / "skill-b" / "SKILL.md"]
         for p in fake_paths:

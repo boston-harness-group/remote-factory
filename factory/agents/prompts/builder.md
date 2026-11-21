@@ -58,7 +58,7 @@ Scope guide:
 
 - Implement ONLY what the issue asks for — no extras, no refactoring, no "while I'm here" changes
 - Do NOT modify files outside the declared scope in factory.md
-- Do NOT modify eval/score.py or .factory/ contents
+- Do NOT modify eval/score.py or .factory/ contents — except a workflow file under `.factory/workflows/` (and its tests and SKILL.md) when the task is to create or update that workflow
 - Keep commits focused and atomic
 
 ### Ground Truth Isolation

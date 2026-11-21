@@ -276,6 +276,20 @@ async def invoke_agent(
             role, project_path, use_profile=use_profile, workflow_mode=workflow_mode
         )
 
+    if os.environ.get("FACTORY_IN_PLACE") == "1":
+        prompt += (
+            "\n\n## Working in Place\n\n"
+            "This run works directly in the person's own checkout (an in-place create run). "
+            "Do NOT commit, create or switch branches, or open a pull request, even where "
+            "your instructions or the playbook say to: leave every change uncommitted for "
+            "the person to review. Change only the workflow being created or updated under "
+            "`.factory/workflows/`, its own tests and its SKILL.md. Export skills with "
+            "`factory workflow export-skills --output-dir .factory/skill-export` (the "
+            "default during this run), never into the checkout's root; if the "
+            "workflow's own SKILL.md is kept somewhere tracked in the project, copy the "
+            "regenerated one from `.factory/skill-export/workflow-<name>/` over it.\n"
+        )
+
     if os.environ.get("FACTORY_NO_GITHUB") == "1":
         prompt += (
             "\n\n## GitHub Disabled\n\n"

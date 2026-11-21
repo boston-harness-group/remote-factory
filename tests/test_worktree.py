@@ -1806,3 +1806,155 @@ class TestDetachedHeadWorktreeSurvives:
             f"Detached-HEAD worktree appeared in pruned messages: {pruned}"
         )
         mock_emit.assert_not_called()
+
+
+# ── A run's unsaved work is kept, not force-deleted ─────────────────
+
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "test",
+    "GIT_AUTHOR_EMAIL": "test@test.com",
+    "GIT_COMMITTER_NAME": "test",
+    "GIT_COMMITTER_EMAIL": "test@test.com",
+    "PATH": "/usr/bin:/bin:/usr/local/bin",
+}
+
+
+def _commit(repo: Path, name: str, home: Path) -> str:
+    (repo / name).write_text(name)
+    env = {**_GIT_ENV, "HOME": str(home)}
+    subprocess.run(["git", "add", name], cwd=repo, capture_output=True, check=True, env=env)
+    subprocess.run(
+        ["git", "commit", "-m", f"add {name}"], cwd=repo, capture_output=True, check=True, env=env
+    )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def _branch_exists(repo: Path, branch: str) -> bool:
+    out = subprocess.run(
+        ["git", "branch", "--list", branch], cwd=repo, capture_output=True, text=True
+    ).stdout
+    return branch in out
+
+
+class TestRemoveWorktreeKeepsUnsavedWork:
+    """A --no-github run commits its result on the run branch and never pushes it.
+
+    remove_worktree used to `git branch -D` that branch at exit, leaving the run's only
+    copy of its work as an unreachable commit (seen with a create run's new mode).
+    """
+
+    def test_branch_with_unmerged_unpushed_commits_is_kept(
+        self, git_project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        wt_path, branch = create_worktree(git_project)
+        sha = _commit(wt_path, "work.txt", tmp_path)
+
+        remove_worktree(git_project, wt_path, branch)
+
+        assert not wt_path.exists()
+        assert _branch_exists(git_project, branch)
+        head = subprocess.run(
+            ["git", "rev-parse", branch], cwd=git_project, capture_output=True, text=True
+        ).stdout.strip()
+        assert head == sha
+        assert f"git merge {branch}" in capsys.readouterr().err
+
+    def test_branch_whose_commits_are_merged_is_deleted(
+        self, git_project: Path, tmp_path: Path
+    ) -> None:
+        wt_path, branch = create_worktree(git_project)
+        _commit(wt_path, "work.txt", tmp_path)
+        env = {**_GIT_ENV, "HOME": str(tmp_path)}
+        subprocess.run(
+            ["git", "merge", "--ff-only", branch], cwd=git_project,
+            capture_output=True, check=True, env=env,
+        )
+
+        remove_worktree(git_project, wt_path, branch)
+
+        assert not _branch_exists(git_project, branch)
+
+    def test_branch_with_no_commits_is_deleted(self, git_project: Path) -> None:
+        wt_path, branch = create_worktree(git_project)
+        remove_worktree(git_project, wt_path, branch)
+        assert not _branch_exists(git_project, branch)
+
+
+class TestRunBranchGuard:
+    def test_a_tag_with_the_branch_name_does_not_get_the_branch_deleted(
+        self, git_project: Path, tmp_path: Path
+    ) -> None:
+        wt_path, branch = create_worktree(git_project)
+        _commit(wt_path, "work.txt", tmp_path)
+        env = {**_GIT_ENV, "HOME": str(tmp_path)}
+        subprocess.run(["git", "tag", branch, "HEAD"], cwd=git_project, check=True,
+                       capture_output=True, env=env)
+
+        remove_worktree(git_project, wt_path, branch)
+
+        assert _branch_exists(git_project, branch)
+
+    def test_a_pushed_branch_is_deleted(self, git_project: Path, tmp_path: Path) -> None:
+        remote = tmp_path / "remote.git"
+        env = {**_GIT_ENV, "HOME": str(tmp_path)}
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, env=env)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=git_project,
+                       check=True, capture_output=True, env=env)
+        wt_path, branch = create_worktree(git_project)
+        _commit(wt_path, "work.txt", tmp_path)
+        subprocess.run(["git", "push", "-q", "origin", branch], cwd=wt_path, check=True,
+                       capture_output=True, env=env)
+        subprocess.run(["git", "fetch", "-q", "origin"], cwd=git_project, check=True,
+                       capture_output=True, env=env)
+
+        remove_worktree(git_project, wt_path, branch)
+
+        assert not _branch_exists(git_project, branch)
+
+    def test_every_run_branch_delete_goes_through_the_guard(self) -> None:
+        import inspect
+
+        import factory.worktree as wt
+
+        assert inspect.getsource(wt).count('"branch", "-D"') == 1
+
+
+def test_a_git_error_keeps_the_branch(
+    git_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unknown must never read as "nothing to lose": if git cannot answer, keep the branch."""
+    import factory.worktree as wt
+
+    wt_path, branch = create_worktree(git_project)
+    _commit(wt_path, "work.txt", tmp_path)
+    real_run = subprocess.run
+
+    def failing_rev_list(args, *a, **kw):
+        if isinstance(args, list) and args[:2] == ["git", "rev-list"]:
+            return subprocess.CompletedProcess(args, 128, stdout="", stderr="fatal: broken")
+        return real_run(args, *a, **kw)
+
+    monkeypatch.setattr(wt.subprocess, "run", failing_rev_list)
+    remove_worktree(git_project, wt_path, branch)
+    monkeypatch.undo()
+
+    assert _branch_exists(git_project, branch)
+
+
+def test_a_kept_branch_is_recorded_as_an_event(
+    git_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Kept branches must be findable later: one worktree.branch_kept event per branch."""
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "factory.events.emit_event", lambda project, kind, data=None: events.append((kind, data))
+    )
+    wt_path, branch = create_worktree(git_project)
+    _commit(wt_path, "work.txt", tmp_path)
+
+    remove_worktree(git_project, wt_path, branch)
+
+    kept = [d for k, d in events if k == "worktree.branch_kept"]
+    assert kept == [{"branch": branch, "unsaved_commits": 1}]

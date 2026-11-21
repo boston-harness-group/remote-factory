@@ -39,13 +39,9 @@ def _reset_registry():
 
 
 def _register_workflow(wf: Workflow) -> None:
-    from factory.workflow.registry import WorkflowEntry
-    WorkflowRegistry._entries[wf.name] = WorkflowEntry(
-        name=wf.name,
-        description="test workflow",
-        path="<test>",
-        source="builtin",
-        _workflow_fn=lambda _wf=wf: _wf,
+    """Register a workflow through the public API, so a later discovery keeps it."""
+    WorkflowRegistry.register_callable(
+        wf.name, lambda _wf=wf: _wf, source="builtin", description="test workflow"
     )
 
 
